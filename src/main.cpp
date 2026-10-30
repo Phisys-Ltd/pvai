@@ -56,6 +56,7 @@ const char *kUsage =
     "       pvai stop SESSION                          end a session started with start\n"
     "       pvai send [--voice] SESSION TEXT           type TEXT into a session (for tests)\n"
     "       pvai propose HOST[/SESSION] [TEXT]         suggest a message to another session; the owner releases it\n"
+    "       pvai peers                                 list the sessions propose can reach, also on other hosts\n"
     "       pvai watch                                 print what the daemon tells apps\n"
     "       pvai --version | version                   print the version\n";
 
@@ -319,6 +320,63 @@ int runPropose(const std::string &to, std::string text, bool fromStdin)
                 std::fprintf(stderr, "pvai: not proposed: %s\n", message.value("reason", "").c_str());
                 return 1;
             }
+        }
+        if (!alive)
+            return 1;
+    }
+}
+
+// The sessions an agent can write to: this host's, then the other hosts'
+// as the app last told the daemon. Each line starts with the target for
+// `pvai propose`.
+int runPeers()
+{
+    const int fd = openDaemon(false);
+    if (fd < 0) {
+        std::fprintf(stderr, "pvai: no daemon\n");
+        return 1;
+    }
+    const char *me = std::getenv(kEnvId);
+    Conn conn(fd);
+    conn.send({{"type", "hello"}, {"client", "pvai"}, {"version", kVersion}});
+    conn.send({{"type", "listPeers"}});
+    auto line = [&](const std::string &host, const json &s) {
+        const std::string id = s.value("session", "");
+        std::string text = "  " + host + "/" + id;
+        for (const char *key : {"assistant", "state", "label", "cwd"})
+            if (const std::string value = s.value(key, ""); !value.empty())
+                text += std::string("  ") + (std::string(key) == "label" ? "\"" + value + "\"" : value);
+        if (me && id == me)
+            text += "  (this session)";
+        std::printf("%s\n", text.c_str());
+    };
+    for (;;) {
+        pollfd p{conn.fd(), static_cast<short>(POLLIN | (conn.wantsWrite() ? POLLOUT : 0)), 0};
+        if (::poll(&p, 1, 3000) <= 0)
+            return 1;
+        std::vector<json> messages;
+        const bool alive = conn.readMessages(messages) && conn.flush();
+        for (const auto &message : messages) {
+            if (!message.is_object() || message.value("type", "") != "peerList")
+                continue;
+            const std::string self = message.value("self", "");
+            std::printf("this host (%s):\n", self.c_str());
+            if (message["local"].empty())
+                std::printf("  no sessions\n");
+            for (const auto &s : message["local"])
+                line(self, s);
+            if (message["at"].is_null()) {
+                std::printf("other hosts: not known here (no app has sent them since the daemon started)\n");
+                return 0;
+            }
+            const long long age = static_cast<long long>(std::time(nullptr)) - message["at"].get<long long>();
+            std::printf("other hosts (from the app, %lld min ago):\n", age / 60);
+            if (message["peers"].empty())
+                std::printf("  none\n");
+            for (const auto &s : message["peers"])
+                line(s.value("host", ""), s);
+            std::printf("write to one with: pvai propose HOST/SESSION \"TEXT\" (a label works instead of the id)\n");
+            return 0;
         }
         if (!alive)
             return 1;
@@ -731,6 +789,8 @@ int main(int argc, char **argv)
         }
         if (verb == "propose" && (args.size() == 2 || args.size() == 3))
             return runPropose(args[1], args.size() == 3 ? args[2] : "", args.size() == 2);
+        if (verb == "peers" && args.size() == 1)
+            return runPeers();
         if (verb == "watch")
             return localClient(nullptr, true);
         if (verb == "--version" || verb == "version") {

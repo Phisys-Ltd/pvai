@@ -200,6 +200,24 @@ int main(int argc, char **argv)
     r = run("propose taifun text", "PVAI_ID=wlast");
     check(r.out.find("too-many") != std::string::npos, "too-many when full: " + r.out);
 
+    // Peers: before any list only this host; then the app's list, cleaned.
+    r = run("peers", "PVAI_ID=wsender");
+    check(r.status == 0 && r.out.find("/wsender  claude") != std::string::npos
+              && r.out.find("(this session)") != std::string::npos && r.out.find("not known here") != std::string::npos,
+          "peers without a list: " + r.out);
+    app.send({{"type", "peers"}, {"self", "tf"},
+              {"peers", {{{"host", "M4"}, {"session", "w97dde1bd"}, {"label", "Projekte"}, {"assistant", "claude"},
+                          {"state", "idle"}, {"cwd", "/Users/m/p"}},
+                         {{"host", "bad host"}, {"session", "x"}},
+                         {{"host", "pi5"}, {"session", "t1"}, {"label", 7}}}}});
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    r = run("peers");
+    check(r.out.find("this host (tf):\n  tf/wsender") != std::string::npos
+              && r.out.find("  M4/w97dde1bd  claude  idle  \"Projekte\"  /Users/m/p") != std::string::npos
+              && r.out.find("  pi5/t1\n") != std::string::npos && r.out.find("bad host") == std::string::npos
+              && r.out.find("(this session)") == std::string::npos,
+          "peers with the app's list: " + r.out);
+
     // A released message: the first line tells who wrote and how to answer.
     while (!app.next().is_null()) {
     }

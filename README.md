@@ -60,6 +60,7 @@ pvai sessions                        # what runs on this host
 pvai watch                           # what an app would see, for checks
 pvai send --voice <session> "text"   # a prompt without the app
 pvai propose <host>/<session> "text" # a message to another session, released by the owner in the app
+pvai peers                           # the sessions it can go to, also on other hosts (from the app)
 ```
 
 ## Licence

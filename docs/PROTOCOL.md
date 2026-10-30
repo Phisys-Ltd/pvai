@@ -242,13 +242,14 @@ App to daemon:
 | `unsubscribe` | `session` | stop following it |
 | `dismiss` | `ref`, `proposal` | the owner sent or dropped that agent message; the daemon forgets it |
 | `propose` | `ref`, `to`, `text`, `from` | from `pvai propose` only, on loopback (ignored over TLS): an agent message for the owner to release (see "Agent messages"); answered with `proposed` (`ref`, `id`, `apps`) or `rejected` |
+| `peers` | `self`, `peers: [Peer]` | the sessions on other hosts that agents here may write to, as the app knows them; the whole list each time, sent after `welcome` and after every change (see "Peers") |
 | `ping` | | keepalive |
 
 Daemon to app:
 
 | type | fields | meaning |
 |---|---|---|
-| `welcome` | `host`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume` |
+| `welcome` | `host`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers` |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued` |
 | `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server is not reachable, yet), `bad-start` (Codex refused), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
@@ -336,6 +337,48 @@ here waits or blocks: a proposal the owner never releases simply expires.
 `pvai propose` is no lock: any process of the same user can read the
 token and talk to the daemon. The rule is that pvai offers no path from
 an agent to a prompt; it is not a sandbox around the agent.
+
+## Peers
+
+An agent can only propose to a session it knows of, and a daemon knows
+only its own host. So the app tells each daemon the sessions on the other
+hosts:
+
+```json
+{"type": "peers", "self": "taifun", "peers": [
+  {"host": "M4", "session": "w97dde1bd", "label": "Projekte", "assistant": "claude",
+   "state": "idle", "cwd": "/Users/m/Projekte"}]}
+```
+
+`self` is the app's name for the receiving host (optional; else the
+daemon's `welcome.host`). `host` is the name an agent puts into `pvai
+propose`, so the app must resolve it later; `session` the id (may be
+empty: the host as a whole). `label`, `assistant`, `state` and `cwd` are
+optional. The receiving host's own sessions belong not in the list (the
+daemon knows them). Each `peers` replaces the last; the daemon keeps it in
+memory only, after the app disconnects too, and gives it to no other app.
+At most 256 entries; an entry whose `host` is no good target host (see
+"Agent messages") is dropped, strings are cut (`label` 64, `assistant`
+and `state` 16, `cwd` 512 bytes).
+
+What to share is the app's choice: a host the owner does not trust with
+the list of the others gets none, or only host names without `cwd`.
+
+`pvai peers` (loopback only, `{"type": "listPeers"}`, answered with
+`peerList`: `self`, `local`, `peers`, `at`) prints this host's sessions and
+then the list, each line starting with the target for `pvai propose`:
+
+```
+this host (taifun):
+  taifun/wb4c7dc28  claude  busy  "phi-claude-voice"  /root/projects  (this session)
+other hosts (from the app, 2 min ago):
+  M4/w97dde1bd  claude  idle  "Projekte"  /Users/m/Projekte
+write to one with: pvai propose HOST/SESSION "TEXT" (a label works instead of the id)
+```
+
+The context every session gets (the SessionStart hook, Codex's developer
+instructions) mentions `pvai peers` and `pvai propose`, so an agent told
+"ask M4" knows what to do.
 
 ## Codex sessions
 

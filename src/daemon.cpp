@@ -103,6 +103,7 @@ struct Proposal {
 constexpr std::size_t kMaxProposals = 16;
 constexpr std::size_t kProposalsPerMinute = 10;
 constexpr auto kProposalLife = std::chrono::hours(24);
+constexpr std::size_t kMaxPeers = 256;
 
 struct DirectListener {
     int fd = -1;
@@ -425,7 +426,8 @@ private:
                 installed[backend->name()] = backend->installed();
         }
         return {{"type", "welcome"}, {"host", hostName()},       {"version", kVersion},
-                {"assistants", assistants}, {"installed", installed}, {"conversations", true}};
+                {"assistants", assistants}, {"installed", installed}, {"conversations", true},
+                {"peers", true}};
     }
 
     void handle(Peer *peer, const json &message)
@@ -542,6 +544,10 @@ private:
             onDismiss(peer, message);
         else if (type == "propose" && !peer->ssl)
             onPropose(peer, message);
+        else if (type == "peers")
+            onPeers(message);
+        else if (type == "listPeers" && !peer->ssl)
+            peer->conn->send(peerListMessage());
     }
 
     void registerWrapper(Peer *peer, const json &message)
@@ -833,6 +839,41 @@ private:
         logLine("proposal " + proposal.id + " from " + (from.empty() ? "?" : from) + " to " + to);
         peer->conn->send({{"type", "proposed"}, {"ref", ref}, {"id", proposal.id}, {"apps", apps}});
         broadcast(proposalsMessage());
+    }
+
+    // ---- Peers: the sessions on other hosts, as the app knows them ----
+
+    // The app's whole list, replacing the last one; kept in memory only.
+    void onPeers(const json &message)
+    {
+        otherHosts_ = json::array();
+        const std::string self = oneLine(message.value("self", ""), 64);
+        peersSelf_ = goodTarget(self) && self.find('/') == std::string::npos ? self : "";
+        if (message.contains("peers") && message["peers"].is_array())
+            for (const auto &entry : message["peers"]) {
+                if (!entry.is_object() || otherHosts_.size() >= kMaxPeers)
+                    continue;
+                const std::string host = oneLine(entry.value("host", ""), 64);
+                const std::string id = oneLine(entry.value("session", ""), 128);
+                if (host.find('/') != std::string::npos || !goodTarget(host + "/" + (id.empty() ? "-" : id)))
+                    continue;
+                json other = {{"host", host}, {"session", id}};
+                for (const auto &[key, max] : {std::pair{"label", 64}, {"assistant", 16}, {"state", 16}, {"cwd", 512}})
+                    if (entry.contains(key) && entry[key].is_string())
+                        other[key] = oneLine(entry[key].get<std::string>(), max);
+                otherHosts_.push_back(other);
+            }
+        peersAt_ = static_cast<long long>(std::time(nullptr));
+    }
+
+    json peerListMessage()
+    {
+        json local = json::array();
+        for (const Session *session : sessions())
+            local.push_back({{"session", session->id()}, {"label", session->label()}, {"assistant", session->assistant()},
+                             {"state", session->state()}, {"cwd", session->cwd()}});
+        return {{"type", "peerList"}, {"self", peersSelf_.empty() ? hostName() : peersSelf_}, {"local", local},
+                {"peers", otherHosts_}, {"at", peersAt_ ? json(peersAt_) : json()}};
     }
 
     void onDismiss(Peer *peer, const json &message)
@@ -1265,6 +1306,9 @@ private:
 
     // Agent messages
     std::vector<Proposal> proposals_;
+    json otherHosts_ = json::array(); // sessions on other hosts, from the app's last `peers`
+    std::string peersSelf_;      // the app's name for this host
+    long long peersAt_ = 0;      // when it came, Unix time
     std::map<std::string, std::vector<Clock::time_point>> proposalTimes_; // per sender, the last minute
 
 };

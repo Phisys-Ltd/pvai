@@ -144,7 +144,10 @@ const char *const kVoiceContext =
     "with \xF0\x9F\x8E\x99, end your final answer with one line that starts with \xF0\x9F\x94\x8A and "
     "holds one or two plain sentences for the ear in the conversation's language: what you did or "
     "found, or what you need. No code, paths, markdown or lists in that line; the owner may be away "
-    "from the screen.";
+    "from the screen. To write to another session, also on another host (the owner may say \"ask M4\" or "
+    "\"tell the taifun session\"), list them with `pvai peers` and send with `pvai propose HOST/SESSION "
+    "\"TEXT\"`; the owner releases each message in the app, so it arrives later, and the answer comes back "
+    "as a new prompt.";
 
 std::string findBinary(const std::string &name)
 {
