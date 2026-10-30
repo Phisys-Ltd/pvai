@@ -78,4 +78,4 @@ pvai propose <host>/<session> "text" # a message to another session, released by
 
 Apache License 2.0, see `LICENSE`. `third_party/qrcodegen` is Nayuki's QR
 Code generator under the MIT licence (its own `LICENSE` there). The
-PhiVoice AI app for macOS is a separate, proprietary product of Phisys Ltd..
+PhiVoice AI app for macOS is a separate, proprietary product of Phisys Ltd.
