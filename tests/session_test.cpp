@@ -367,7 +367,7 @@ int main(int argc, char **argv)
         return 2;
     }
     ::signal(SIGPIPE, SIG_IGN);
-    g_pvai = fs::absolute(argv[1]).string();
+    g_pvai = fs::canonical(argv[1]).string();
     char homeBuf[] = "/tmp/pvai-test-XXXXXX";
     if (!::mkdtemp(homeBuf))
         return 2;
@@ -571,6 +571,30 @@ int main(int argc, char **argv)
     check(a.next("rejected").value("reason", "") == "unknown-assistant", "an unknown assistant is refused");
     a.send({{"type", "conversations"}, {"assistant", "kimi"}, {"cwd", project}});
     check(a.next("conversations").value("conversations", json()) == json::array(), "and has no conversations");
+
+    // ---- Hooks: pvai run puts them in place, once.
+    auto shell = [](const std::string &command) {
+        std::string out;
+        if (FILE *pipe = ::popen((command + " 2>&1 </dev/null").c_str(), "r")) {
+            char buffer[4096];
+            while (std::fgets(buffer, sizeof buffer, pipe))
+                out += buffer;
+            ::pclose(pipe);
+        }
+        return out;
+    };
+    const std::string settings = home + "/.claude/settings.json";
+    writeFile(settings, R"({"model": "opus", "statusLine": {"type": "command", "command": "my-line"}})");
+    std::string out = shell(g_pvai + " run -- claude --version");
+    check(out.find("hooks and status line") != std::string::npos && out.find("(Claude Code)") != std::string::npos,
+          "pvai run writes missing hooks, then runs claude: " + out);
+    const json written = json::parse(readFile(settings), nullptr, false);
+    check(written.is_object() && written.value("model", "") == "opus" && sub(written, "hooks").size() == 4
+              && sub(written, "statusLine").value("command", "") == g_pvai + " statusline --chain 'my-line'",
+          "the rest of the file stays, the own status line is chained: " + written.dump());
+    out = shell(g_pvai + " run -- claude --version");
+    check(out.find("hooks and status line") == std::string::npos, "a second run leaves the file alone: " + out);
+    check(shell(g_pvai + " install-hooks").find("in place") != std::string::npos, "install-hooks says they are in place");
 
     ::kill(daemon, SIGTERM);
     ::waitpid(daemon, nullptr, 0);

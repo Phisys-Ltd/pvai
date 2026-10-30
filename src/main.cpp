@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -45,6 +46,7 @@ const char *kUsage =
     "       pvai hook                                  called by Claude Code's hooks\n"
     "       pvai statusline [--chain COMMAND]          called as Claude Code's status line\n"
     "       pvai install-hooks                         add the hooks and the status line to ~/.claude/settings.json\n"
+    "                                                  (pvai run does that itself when they are missing)\n"
     "       pvai token                                 print the token the app needs\n"
     "       pvai start [--name LABEL] [DIR] [-- ARGS...] start Claude Code without a terminal\n"
     "       pvai attach SESSION                        a terminal onto such a session (Ctrl+\\ leaves it)\n"
@@ -89,21 +91,10 @@ bool isPvaiHook(const json &hook)
         && command.compare(command.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-// Adds `<this binary> hook` to every event pvai needs and replaces an older
-// pvai entry, leaving everything else in the file as it is.
-int installHooks()
+// `settings` with `<this binary> hook` on every event pvai needs and its
+// status line, older pvai entries replaced, everything else left as it is.
+json withHooks(json settings)
 {
-    const char *home = std::getenv("HOME");
-    const std::string path = std::string(home ? home : "") + "/.claude/settings.json";
-    json settings = json::object();
-    if (std::ifstream in(path); in) {
-        settings = json::parse(in, nullptr, false);
-        if (settings.is_discarded() || !settings.is_object()) {
-            std::fprintf(stderr, "pvai: %s is not a JSON object, not touching it\n", path.c_str());
-            return 1;
-        }
-        std::ofstream(path + ".pvai-bak") << settings.dump(2) << "\n";
-    }
     const std::string command = selfExe() + " hook";
     json &hooks = settings["hooks"];
     if (!hooks.is_object())
@@ -130,13 +121,57 @@ int installHooks()
         own = chain == std::string::npos ? "" : unquote(own.substr(chain + 9));
     }
     statusLine = {{"type", "command"}, {"command", own.empty() ? statusCommand : statusCommand + " --chain " + shellQuote(own)}};
-    std::ofstream out(path);
-    out << settings.dump(2) << "\n";
-    if (!out) {
-        std::fprintf(stderr, "pvai: cannot write %s\n", path.c_str());
+    return settings;
+}
+
+// Puts the hooks and the status line into ~/.claude/settings.json when they
+// are missing or name another pvai binary; a file that is already right is
+// not touched. `quiet`: say only what changed or failed, on stderr (for
+// `pvai run`, which checks on every start). 0 when they are in place.
+int installHooks(bool quiet)
+{
+    const char *home = std::getenv("HOME");
+    const std::string dir = std::string(home ? home : "") + "/.claude";
+    const std::string path = dir + "/settings.json";
+    json settings = json::object();
+    struct stat st;
+    const bool exists = ::stat(path.c_str(), &st) == 0;
+    if (exists) {
+        std::ifstream in(path);
+        settings = json::parse(in, nullptr, false);
+        if (settings.is_discarded() || !settings.is_object()) {
+            std::fprintf(stderr, "pvai: %s is not a JSON object, not touching it\n", path.c_str());
+            return 1;
+        }
+    }
+    const json wanted = withHooks(settings);
+    if (exists && wanted == settings) {
+        if (!quiet)
+            std::printf("hooks and status line for %s are in place in %s\n", selfExe().c_str(), path.c_str());
+        return 0;
+    }
+    // Written beside it and renamed, so that Claude Code never reads half a
+    // file; the old one stays as .pvai-bak.
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (exists)
+        std::ofstream(path + ".pvai-bak") << settings.dump(2) << "\n";
+    const std::string temp = path + ".pvai-new";
+    {
+        std::ofstream out(temp);
+        out << wanted.dump(2) << "\n";
+        if (!out) {
+            std::fprintf(stderr, "pvai: cannot write %s\n", temp.c_str());
+            return 1;
+        }
+    }
+    if (exists)
+        ::chmod(temp.c_str(), st.st_mode & 07777);
+    if (::rename(temp.c_str(), path.c_str()) != 0) {
+        std::fprintf(stderr, "pvai: cannot replace %s: %s\n", path.c_str(), std::strerror(errno));
         return 1;
     }
-    std::printf("hooks and status line for %s written to %s\n", selfExe().c_str(), path.c_str());
+    std::fprintf(quiet ? stderr : stdout, "pvai: hooks and status line for %s written to %s\n", selfExe().c_str(), path.c_str());
     return 0;
 }
 
@@ -496,8 +531,13 @@ int main(int argc, char **argv)
             }
             if (options.command.empty())
                 options.command = {"claude"};
-            if (std::filesystem::path(options.command[0]).filename() == "codex" && !options.detached)
+            const auto program = std::filesystem::path(options.command[0]).filename();
+            if (program == "codex" && !options.detached)
                 return runCodex({options.command.begin() + 1, options.command.end()});
+            // Claude Code reports through the hooks and the status line; a
+            // missing or stale entry (another pvai binary) is fixed here.
+            if (program == "claude")
+                installHooks(true);
             return runWrapper(options);
         }
         if (verb == "listen" && args.size() <= 2)
@@ -552,7 +592,7 @@ int main(int argc, char **argv)
         if (verb == "statusline")
             return runStatusline(args.size() == 3 && args[1] == "--chain" ? args[2] : "");
         if (verb == "install-hooks")
-            return installHooks();
+            return installHooks(false);
         if (verb == "token") {
             std::printf("%s\n", token().c_str());
             return 0;

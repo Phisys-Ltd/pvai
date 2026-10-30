@@ -16,10 +16,12 @@ without Qt; the app talks to it over the JSON protocol in
   Return) only while its prompt is free.
 - `pvai hook` is what Claude Code's hooks call (`SessionStart`,
   `UserPromptSubmit`, `Stop`, `Notification`); it tells the wrapper where
-  the turn stands. `pvai install-hooks` writes them into
-  `~/.claude/settings.json`, and sets the status line to `pvai statusline`
-  (context window and rate limits for the app; an existing status line
-  command keeps printing through `--chain`).
+  the turn stands. `pvai run` puts them into `~/.claude/settings.json`
+  when they are missing or name another pvai binary, and sets the status
+  line to `pvai statusline` (context window and rate limits for the app; an
+  existing status line command keeps printing through `--chain`); the rest
+  of the file stays as it is, the old one is kept as `settings.json.pvai-bak`.
+  `pvai install-hooks` does the same on its own.
 - `pvai codex …` starts the Codex TUI on Codex's shared app server
   (`--remote unix://`), where the daemon follows its threads; Codex needs
   no wrapper and no hooks.
@@ -46,11 +48,11 @@ curl -fsSL http://apt.phisys.com/repo-signing-key.asc \
 echo "deb [signed-by=/etc/apt/keyrings/phisys-archive-keyring.gpg] http://apt.phisys.com/testing trixie main" \
   | sudo tee /etc/apt/sources.list.d/phisys-testing.list
 sudo apt update && sudo apt install pvai   # /usr/bin/pvai
-pvai install-hooks                         # then as below, per user
 ```
 
 The package installs the binary only: no service (the daemon starts on
-demand) and no hooks (`pvai install-hooks` stays a step per user). The
+demand) and nothing in anyone's home; the first `pvai run` of each user
+writes the hooks. The
 packaging is `debian/`; it is built with phi-packaging's `build-local.sh`
 (sbuild, `config/targets-pvai.env`) and published to `testing`.
 
@@ -59,8 +61,7 @@ From source:
 ```
 cmake -S . -B build -G Ninja && cmake --build build
 sudo cmake --install build          # /usr/local/bin/pvai
-pvai install-hooks                   # hooks + status line, once per user and host
-pvai run -- claude                   # instead of plain `claude`
+pvai run -- claude                   # instead of plain `claude` (writes the hooks when needed)
 pvai codex                           # instead of plain `codex`
 pvai start [--name L] DIR            # Claude Code without a terminal (as the app's +)
 pvai attach <session>                # look at / type into it; Ctrl+\ leaves it running
