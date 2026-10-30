@@ -699,6 +699,10 @@ int main(int argc, char **argv)
     const std::string fresh2 = a.next("started").value("session", "");
     check(!waitSession(a, fresh2, [](const json &s) { return !s.value("restartable", true); }, 5000).empty(),
           "not restartable before Claude Code's session id is known");
+    // The fake claude must have written its arguments before the restart
+    // ends it (macOS starts it slower than the hook below arrives).
+    for (int i = 0; i < 50 && readFile(bin + "/claude.args").empty(); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     hook(fresh2, {{"hook_event_name", "SessionStart"}, {"session_id", "sess-1"}, {"source", "startup"}});
     check(!waitSession(a, fresh2, [](const json &s) { return s.value("restartable", false) && s.value("state", "") == "idle"; }).empty(),
           "restartable once it is");
