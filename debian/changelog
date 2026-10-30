@@ -1,3 +1,11 @@
+pvai (0.5.0-1) trixie; urgency=medium
+
+  * restart: a Claude Code session starts again in place and goes on with
+    the same conversation (restartable, restart, restarting), so that a
+    newer installed version takes over.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 30 Oct 2026 11:13:21 +0100
+
 pvai (0.4.3-1) trixie; urgency=medium
 
   * pvai run puts Claude Code's hooks and status line in place itself when

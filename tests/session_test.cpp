@@ -383,7 +383,7 @@ int main(int argc, char **argv)
               "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n"
               "--version) echo \"$(cat \"$d/claude.version\") (Claude Code)\";;\n"
               "update) echo 2.0.0 > \"$d/claude.version\"; echo updated;;\n"
-              "*) echo \"$@\" > \"$d/claude.args\"; sleep 30;;\nesac\n",
+              "*) echo \"$@\" >> \"$d/claude.args\"; exec sleep 30;;\nesac\n",
               true);
     writeFile(bin + "/codex",
               "#!/bin/sh\ncase \"$1\" in\n--version) echo codex-cli 5.5.5;;\n"
@@ -559,6 +559,36 @@ int main(int argc, char **argv)
     a.send({{"type", "stop"}, {"ref", 17}, {"session", resumed}});
     check(!a.next("stopping").empty(), "a detached session stops");
     check(!a.next("sessions", [&](const json &m) { return sessionIn(m, resumed).empty(); }, 5000).empty(), "and leaves the list");
+
+    // Restart in place: the wrapper ends claude and starts it again with
+    // --resume, the session keeps its id.
+    a.send({{"type", "restart"}, {"ref", 18}, {"session", "t-arch"}});
+    check(a.next("rejected").value("reason", "") == "not-restartable", "a Codex thread is not restartable");
+    fs::remove(bin + "/claude.args");
+    a.send({{"type", "start"}, {"ref", 19}, {"assistant", "claude"}, {"cwd", project}, {"args", {"--model", "opus", "--continue"}}});
+    const std::string fresh2 = a.next("started").value("session", "");
+    check(!waitSession(a, fresh2, [](const json &s) { return !s.value("restartable", true); }, 5000).empty(),
+          "not restartable before Claude Code's session id is known");
+    hook(fresh2, {{"hook_event_name", "SessionStart"}, {"session_id", "sess-1"}, {"source", "startup"}});
+    check(!waitSession(a, fresh2, [](const json &s) { return s.value("restartable", false) && s.value("state", "") == "idle"; }).empty(),
+          "restartable once it is");
+    hook(fresh2, {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "x"}});
+    a.send({{"type", "restart"}, {"ref", 20}, {"session", fresh2}});
+    check(a.next("rejected").value("reason", "") == "busy", "not during a turn");
+    hook(fresh2, {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok"}});
+    a.send({{"type", "restart"}, {"ref", 21}, {"session", fresh2}});
+    check(a.next("restarting").value("session", "") == fresh2, "restarting");
+    check(!waitSession(a, fresh2, [](const json &s) { return s.value("state", "") == "starting"; }).empty(), "starting again");
+    std::string args;
+    for (int i = 0; i < 50 && args.find("--resume sess-1") == std::string::npos; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        args = readFile(bin + "/claude.args");
+    }
+    check(args == "--model opus --continue\n--model opus --resume sess-1\n", "the same arguments, --continue gives way to --resume: " + args);
+    hook(fresh2, {{"hook_event_name", "SessionStart"}, {"session_id", "sess-1"}, {"source", "resume"}});
+    check(!waitSession(a, fresh2, [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle again with the same id");
+    a.send({{"type", "stop"}, {"ref", 22}, {"session", fresh2}});
+    check(!a.next("sessions", [&](const json &m) { return sessionIn(m, fresh2).empty(); }, 5000).empty(), "and it still stops");
 
     // ---- Versions and updates.
     a.send({{"type", "update"}, {"ref", 20}});

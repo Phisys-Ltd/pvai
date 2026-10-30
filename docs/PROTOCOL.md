@@ -105,7 +105,7 @@ daemon knows every live one on its host.
 
 ```json
 {"id": "w1a2b3c4d", "assistant": "claude", "label": "phi-core", "cwd": "/root/projects/phi-core",
- "state": "idle", "queued": 0, "draft": false, "detached": false,
+ "state": "idle", "queued": 0, "draft": false, "detached": false, "restartable": true,
  "dialog": null, "usage": null, "claudeSession": "4f3b744c-..."}
 ```
 
@@ -136,6 +136,11 @@ daemon knows every live one on its host.
   Ctrl+U or deleting the text), so they never land in the middle of the
   owner's words. Worked out from the keys; it errs towards `true`.
 - `detached`: started by the daemon; only these can be `stop`ped.
+- `restartable`: `restart` can start this session again in place, going on
+  with the same conversation: Claude Code sessions (in a terminal or
+  detached) once Claude Code's own session id is known (`claudeSession`,
+  from its first hook); never Codex threads, whose `usage.version` is the
+  app server's.
 - `dialog`: while `waiting`, `permission` (Claude asks to use a tool),
   `question` (any other notification that waits on the owner) or `trust`
   (a new session asks whether to trust its folder; state `waiting` before
@@ -173,6 +178,7 @@ App to daemon:
 | `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits) |
 | `interrupt` | `ref`, `session` | stop the running turn, like Esc in the terminal (into a dialog: deny); nothing happens while `idle`, `starting` or on the trust dialog |
 | `stop` | `ref`, `session` | end a detached session |
+| `restart` | `ref`, `session` | end the session's process and start it again, going on with the same conversation (see "Restart") |
 | `projects` | | the directories Claude Code has run in on this host |
 | `browse` | `path` | the subdirectories of `path` |
 | `subscribe` | `session`, `limit` | follow that session's conversation: `history` with up to `limit` (default 200) of the last entries, then `entry` for each new one |
@@ -188,10 +194,11 @@ Daemon to app:
 | `welcome` | `host`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume` |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued` |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server is not reachable, yet), `bad-start` (Codex refused), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached`; to `interrupt`: `unknown-session`; to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server is not reachable, yet), `bad-start` (Codex refused), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached`; to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `interrupting` | `ref`, `session` | the Esc went in; the session turns `idle` when the transcript shows the interrupt, or after about 4 s anyway, then with its queue dropped (a hung session, such as one without a login) |
+| `restarting` | `ref`, `session` | the session is ending for a restart; it goes `starting`, then `idle` again with the same `id` |
 | `stopping` | `ref`, `session` | the session is told to end; it leaves `sessions` when it has |
 | `projects` | `dirs: [path]` | most recently used first |
 | `browse` | `path`, `dirs: [name]`, `ok` | sorted, hidden ones left out; `ok: false` when `path` cannot be read |
@@ -398,6 +405,27 @@ closed, the host restarted):
   10 minutes, or "not installed". Running sessions are never stopped or
   restarted for an update: they keep the version they started with until
   they end, and new sessions get the new one.
+
+## Restart
+
+A session whose `usage.version` is older than `welcome.installed` gets the
+new version by starting again; `restart` does that without losing the
+conversation or the tab:
+
+- Only a `restartable` session in `idle` without a `draft`; a running turn,
+  an open dialog or the owner's unsent words are refused with `busy`.
+- The wrapper ends Claude Code (SIGHUP, after 5 s SIGKILL) and starts it
+  again in a fresh pseudo-terminal of the same `pvai run`, with the same
+  arguments except that `--continue` and `--resume [id]` give way to
+  `--resume <claudeSession>`. In a terminal the owner sees Claude Code
+  start again; `pvai attach` viewers stay attached.
+- The session keeps its `id`, label and queue. It is `starting` until
+  Claude Code's `SessionStart` (then `idle`, and what was queued goes in);
+  if Claude Code writes the resumed conversation into a new transcript,
+  subscribers get `history` again. `usage.version` follows with the first
+  status line.
+- An initial prompt given as an argument of `pvai run -- claude "..."`
+  would be sent again; sessions the app starts never have one.
 
 ## Conversation entries
 

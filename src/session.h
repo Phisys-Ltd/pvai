@@ -71,6 +71,11 @@ public:
     virtual std::string answer(const std::string &choice) = 0;
     virtual std::string stop() = 0;
     virtual void interrupt() = 0;
+    // Ends the session's process and starts it again, going on with the
+    // same conversation (a newer installed version takes over); the session
+    // keeps its id.
+    virtual bool restartable() const { return false; }
+    virtual std::string restart() { return "not-restartable"; }
     // Up to `limit` of the last conversation entries, oldest first.
     virtual json history(int limit) = 0;
 

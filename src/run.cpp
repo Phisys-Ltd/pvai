@@ -299,6 +299,28 @@ struct Viewer {
     std::string out;
 };
 
+// The same command, going on with conversation `id`: an earlier
+// --continue or --resume (with its id, if it had one) gives way to
+// `--resume <id>`.
+std::vector<std::string> resumeCommand(const std::vector<std::string> &command, const std::string &id)
+{
+    std::vector<std::string> out;
+    for (std::size_t i = 0; i < command.size(); ++i) {
+        const std::string &arg = command[i];
+        if (i > 0 && (arg == "--continue" || arg == "-c" || arg.rfind("--resume=", 0) == 0))
+            continue;
+        if (i > 0 && (arg == "--resume" || arg == "-r")) {
+            if (i + 1 < command.size() && command[i + 1].rfind("-", 0) != 0)
+                ++i;
+            continue;
+        }
+        out.push_back(arg);
+    }
+    out.push_back("--resume");
+    out.push_back(id);
+    return out;
+}
+
 } // namespace
 
 int runWrapper(const WrapperOptions &options)
@@ -328,25 +350,35 @@ int runWrapper(const WrapperOptions &options)
     if (detached && viewerListen < 0)
         return 1;
 
+    // The command runs in a pseudo-terminal; a `restart` from the daemon
+    // runs it again in a new one, going on with the same conversation.
+    std::vector<std::string> command = options.command;
     int master = -1;
-    g_child = ::forkpty(&master, nullptr, tty ? &g_savedTermios : nullptr, &size);
-    if (g_child < 0) {
-        std::perror("pvai: forkpty");
+    auto spawn = [&]() -> bool {
+        g_child = ::forkpty(&master, nullptr, tty ? &g_savedTermios : nullptr, &size);
+        if (g_child < 0) {
+            std::perror("pvai: forkpty");
+            return false;
+        }
+        if (g_child == 0) {
+            ::setenv(kEnvId, id.c_str(), 1);
+            ::setenv(kEnvSocket, daemonSocket().c_str(), 1);
+            std::vector<char *> argv;
+            for (const auto &arg : command)
+                argv.push_back(const_cast<char *>(arg.c_str()));
+            argv.push_back(nullptr);
+            ::execvp(argv[0], argv.data());
+            std::fprintf(stderr, "pvai: cannot run %s: %s\n", argv[0], std::strerror(errno));
+            ::_exit(127);
+        }
+        setNonBlocking(master);
+        setCloseOnExec(master);
+        return true;
+    };
+    if (!spawn())
         return 1;
-    }
-    if (g_child == 0) {
-        ::setenv(kEnvId, id.c_str(), 1);
-        ::setenv(kEnvSocket, daemonSocket().c_str(), 1);
-        std::vector<char *> argv;
-        for (const auto &arg : options.command)
-            argv.push_back(const_cast<char *>(arg.c_str()));
-        argv.push_back(nullptr);
-        ::execvp(argv[0], argv.data());
-        std::fprintf(stderr, "pvai: cannot run %s: %s\n", argv[0], std::strerror(errno));
-        ::_exit(127);
-    }
-    setNonBlocking(master);
-    setCloseOnExec(master);
+    std::string restartWith; // the conversation to go on with once the child has ended
+    std::optional<Clock::time_point> restartKillAt;
 
     if (tty) {
         termios raw = g_savedTermios;
@@ -425,6 +457,27 @@ int runWrapper(const WrapperOptions &options)
         }
     };
 
+    // After a restart's child has ended: the same conversation in a fresh
+    // pseudo-terminal, with the screen state of a new start.
+    auto relaunch = [&]() -> bool {
+        ::close(master);
+        command = resumeCommand(command, restartWith);
+        restartWith.clear();
+        restartKillAt.reset();
+        if (!spawn())
+            return false;
+        const bool wasDirty = draft.dirty();
+        draft = Draft();
+        modes = ModeTracker();
+        trust = TrustSpotter();
+        trustAsked = false;
+        toMaster.clear();
+        returnAt.reset();
+        if (daemon && wasDirty)
+            daemon->send({{"type", "draft"}, {"dirty", false}});
+        return true;
+    };
+
     for (;;) {
         std::vector<pollfd> fds;
         fds.push_back({master, static_cast<short>(POLLIN | (toMaster.empty() ? 0 : POLLOUT)), 0});
@@ -443,6 +496,8 @@ int runWrapper(const WrapperOptions &options)
             soonest(msUntil(*resizeBackAt));
         if (!daemon)
             soonest(msUntil(nextReconnect));
+        if (!restartWith.empty())
+            soonest(100);
         if (::poll(fds.data(), fds.size(), static_cast<int>(timeout)) < 0 && errno != EINTR)
             break;
 
@@ -463,7 +518,12 @@ int runWrapper(const WrapperOptions &options)
                         daemon->send({{"type", "dialog"}, {"kind", "trust"}});
                 }
             } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
-                break; // Claude Code is gone
+                if (restartWith.empty())
+                    break; // Claude Code is gone
+                ::waitpid(g_child, nullptr, 0);
+                if (!relaunch())
+                    break;
+                continue;
             }
         }
         if ((fds[0].revents & POLLOUT) && !toMaster.empty()) {
@@ -507,7 +567,14 @@ int runWrapper(const WrapperOptions &options)
                 } else if (type == "keys") {
                     toMaster += message.value("data", "");
                 } else if (type == "terminate") {
+                    restartWith.clear();
                     forwardSignal(SIGHUP);
+                } else if (type == "restart") {
+                    restartWith = message.value("resume", "");
+                    if (!restartWith.empty()) {
+                        forwardSignal(SIGHUP);
+                        restartKillAt = Clock::now() + std::chrono::seconds(5);
+                    }
                 }
             }
             if (!alive) {
@@ -558,6 +625,19 @@ int runWrapper(const WrapperOptions &options)
         }
         std::erase_if(viewers, [](const auto &v) { return !v->conn; });
 
+        // A child that has ended while something it started still holds
+        // the terminal open gives no end of file: look for it directly.
+        if (!restartWith.empty()) {
+            if (::waitpid(g_child, nullptr, WNOHANG) == g_child) {
+                if (!relaunch())
+                    break;
+                continue;
+            }
+            if (restartKillAt && Clock::now() >= *restartKillAt) {
+                ::kill(g_child, SIGKILL);
+                restartKillAt.reset();
+            }
+        }
         if (resizeBackAt && Clock::now() >= *resizeBackAt) {
             ::ioctl(master, TIOCSWINSZ, &size);
             resizeBackAt.reset();

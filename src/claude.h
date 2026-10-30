@@ -21,6 +21,9 @@ public:
 
     std::string answer(const std::string &choice) override;
     void interrupt() override;
+    // Once Claude Code's own session id is known: `--resume` needs it.
+    bool restartable() const override { return !claudeSession_.empty(); }
+    std::string restart() override;
     json history(int limit) override;
     void tick(Clock::time_point now) override;
     std::optional<Clock::time_point> deadline() const override;

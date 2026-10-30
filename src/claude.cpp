@@ -145,6 +145,25 @@ void ClaudeSession::interrupt()
     changed();
 }
 
+// Only at a free prompt: a running turn or an open dialog would be cut
+// off, a draft lost. The wrapper ends Claude Code and starts it again with
+// `--resume`; SessionStart (source resume) makes the session idle again,
+// and what was queued goes in then.
+std::string ClaudeSession::restart()
+{
+    if (!restartable())
+        return "not-restartable";
+    if (state_ != "idle" || draft_)
+        return "busy";
+    wrapper_.send({{"type", "restart"}, {"resume", claudeSession_}});
+    state_ = "starting";
+    slashPending_ = false;
+    escapeChecks_.clear();
+    submitDeadline_.reset();
+    changed();
+    return {};
+}
+
 void ClaudeSession::terminate()
 {
     wrapper_.send({{"type", "terminate"}});

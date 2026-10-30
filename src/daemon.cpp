@@ -514,6 +514,8 @@ private:
             onStop(peer, message);
         else if (type == "interrupt")
             onInterrupt(peer, message);
+        else if (type == "restart")
+            onRestart(peer, message);
         else if (type == "unsubscribe")
             peer->subscriptions.erase(message.value("session", ""));
         else if (type == "prompt")
@@ -724,6 +726,18 @@ private:
             return reject(peer, ref, id, "unknown-session");
         session->interrupt();
         peer->conn->send({{"type", "interrupting"}, {"ref", ref}, {"session", id}});
+    }
+
+    void onRestart(Peer *peer, const json &message)
+    {
+        const json ref = message.value("ref", json());
+        const std::string id = message.value("session", "");
+        Session *session = this->session(id);
+        if (!session)
+            return reject(peer, ref, id, "unknown-session");
+        if (const std::string reason = session->restart(); !reason.empty())
+            return reject(peer, ref, id, reason);
+        peer->conn->send({{"type", "restarting"}, {"ref", ref}, {"session", id}});
     }
 
     void onSubscribe(Peer *peer, const json &message)
