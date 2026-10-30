@@ -1,3 +1,10 @@
+pvai (0.4.3-1) trixie; urgency=medium
+
+  * pvai run puts Claude Code's hooks and status line in place itself when
+    they are missing or name another pvai binary.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 30 Oct 2026 11:04:29 +0100
+
 pvai (0.4.2-1) trixie; urgency=medium
 
   * Agent messages wait for the owner in the app: pvai propose, proposals,
