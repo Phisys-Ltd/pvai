@@ -173,11 +173,11 @@ daemon knows every live one on its host.
   after an update, until the session restarts.
 - `claudeSession`: Claude Code's own session id once known, else `null`
   (always `null` for Codex).
-- `subagents`: the subagents of a Claude Code session that run now, oldest
-  first; they can outlive the turn that started them (background agents),
-  so a session can be `idle` with subagents running. A finished one drops
-  out, and every change sends a `sessions` update. A missing field (Codex,
-  an older daemon) means none.
+- `subagents`: the subagents of a session that run now, oldest first; they
+  can outlive the turn that started them (background agents), so a session
+  can be `idle` with subagents running. A finished one drops out, and every
+  change sends a `sessions` update. A missing field (an older daemon) means
+  none.
   ```json
   [{"id": "a2b2c3d4e5f6a7b8c", "type": "build-runner",
     "description": "Build PhiVoice AI app", "background": true,
@@ -190,6 +190,15 @@ daemon knows every live one on its host.
   agent runs until its meta file says `finished`. One left unfinished by
   an earlier process (a restart, a crash) is not counted once its own
   transcript has not changed for 10 minutes.
+
+  Codex: the subagent threads of the thread (`parentThreadId`) that are
+  `active` in the app server; a subagent thread is never a session of its
+  own. `id` is the thread id, `type` its `agentRole`, else the kind of
+  Codex's own helper (`review`, `compact`, `memory_consolidation`), else
+  empty; `description` the start of its first prompt (`preview`), else its
+  nickname; `name` its `agentNickname` (Codex only, may be empty);
+  `background` always `true` (Codex does not tell); `startedAt` the
+  thread's `createdAt`.
 
 ## Messages
 

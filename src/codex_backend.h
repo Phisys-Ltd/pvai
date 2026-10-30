@@ -23,6 +23,7 @@ public:
     // whichever client loaded it last.)
     bool detached() const override { return detached_; }
     void setDetached() { detached_ = true; changed(); }
+    json describe() const override;
     // Not while a `pvai codex` TUI has it open: that is the owner's to end.
     bool stoppable() const override;
 
@@ -91,6 +92,8 @@ public:
     void release(const std::string &thread);
     const json &limits() const { return limits_; }
     const std::string &serverVersion() const { return serverVersion_; }
+    // The subagent threads of `thread` that are working now, oldest first.
+    json subagentsOf(const std::string &thread) const;
 
 protected:
     std::string binary() const override { return bin_; }
@@ -103,6 +106,8 @@ private:
     void setLimits(const json &limits);
     std::vector<CodexSession *> sessions();
     void listThreads(const std::string &cwd, bool archived, std::function<void(json)> done);
+    void noteSubagent(const json &thread);
+    bool subagentEvent(const std::string &method, const json &params);
 
     std::string bin_ = codexBinary();
     CodexLink link_;
@@ -116,6 +121,14 @@ private:
     std::string serverVersion_;
     std::set<std::string> stopped_;  // threads stopped here: not adopted again
     std::set<std::string> adopting_; // thread/resume sent
+    // Loaded subagent threads (parentThreadId set) by id: their parent, the
+    // protocol entry and whether they work now.
+    struct Subagent {
+        std::string parent;
+        json entry;
+        bool active = false;
+    };
+    std::map<std::string, Subagent> subagents_;
     // TUIs started by `pvai codex`, and the threads that are theirs: the one
     // `codex resume` named, and those taken on while it was the only TUI in
     // the thread's folder. When a TUI ends, its threads leave.

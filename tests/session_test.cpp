@@ -209,6 +209,13 @@ public:
     }
 
     std::atomic<int> threadListCalls{0};
+    std::atomic<bool> kidActive{true}; // the subagent thread t-kid of t-new
+    json kid() const
+    {
+        return {{"id", "t-kid"}, {"parentThreadId", "t-new"}, {"agentRole", "explorer"}, {"agentNickname", "Hume"},
+                {"preview", "Look around the repo"}, {"createdAt", 1793000000},
+                {"status", {{"type", kidActive ? "active" : "idle"}, {"activeFlags", json::array()}}}};
+    }
 
 private:
     void loop()
@@ -318,11 +325,13 @@ private:
         else if (method == "model/list")
             reply(id, {{"data", {{{"model", "gpt-test"}, {"hidden", false}}, {{"model", "gpt-hidden"}, {"hidden", true}}}}});
         else if (method == "thread/loaded/list")
-            reply(id, {{"data", {"t-tui"}}});
+            reply(id, {{"data", {"t-tui", "t-kid"}}});
         else if (method == "thread/resume") {
             const std::string tid = params.value("threadId", "");
             if (tid == "t-tui" || tid == "t-arch" || tid == "t-tui2" || tid == "t-free")
                 reply(id, {{"thread", thread(tid, "/tmp")}});
+            else if (tid == "t-kid")
+                reply(id, {{"thread", kid()}});
             else
                 frame(json({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32600}, {"message", "no such thread"}}}}).dump());
         } else if (method == "thread/items/list") {
@@ -464,6 +473,21 @@ int main(int argc, char **argv)
     json say = a.next("say", [](const json &m) { return m.value("session", "") == "t-new"; });
     check(say.value("text", "") == "Spoken.", "the turn's 🔊 line is said: " + say.dump());
 
+    // A subagent thread of it: listed while active, gone when idle.
+    codex.kidActive = true;
+    codex.send({{"method", "thread/started"}, {"params", {{"thread", codex.kid()}}}});
+    auto agents = [](const json &s) {
+        return s.contains("subagents") && s["subagents"].is_array() ? s["subagents"] : json(nullptr);
+    };
+    fresh = waitSession(a, "t-new", [&](const json &s) { return agents(s).size() == 1; });
+    check(!fresh.empty() && agents(fresh)[0] == json({{"id", "t-kid"}, {"type", "explorer"}, {"description", "Look around the repo"},
+                                                       {"name", "Hume"}, {"background", true}, {"startedAt", 1793000000}}),
+          "an active subagent thread is listed under its parent: " + fresh.dump());
+    check(waitSession(a, "t-kid", [](const json &) { return true; }, 500).empty(), "and is no session of its own");
+    codex.kidActive = false;
+    codex.send({{"method", "thread/status/changed"}, {"params", {{"threadId", "t-kid"}, {"status", {{"type", "idle"}}}}}});
+    check(!waitSession(a, "t-new", [&](const json &s) { return agents(s) == json::array(); }).empty(), "an idle one drops out");
+
     // An approval, answered from the app; then an interrupt.
     codex.send({{"id", 99}, {"method", "item/commandExecution/requestApproval"}, {"params", {{"threadId", "t-new"}, {"command", "ls"}}}});
     json attention = a.next("attention");
@@ -569,9 +593,6 @@ int main(int argc, char **argv)
 
     // Subagents: running while their meta file has no `finished`; a task
     // notification starts a turn without UserPromptSubmit.
-    auto agents = [](const json &s) {
-        return s.contains("subagents") && s["subagents"].is_array() ? s["subagents"] : json(nullptr);
-    };
     const std::string run2 = home + "/elsewhere/run-2.jsonl";
     writeFile(run2, "");
     hook("wterm", {{"hook_event_name", "Notification"}, {"notification_type", "idle_prompt"}, {"transcript_path", run2}});

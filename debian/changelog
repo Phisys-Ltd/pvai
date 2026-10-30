@@ -1,3 +1,9 @@
+pvai (0.5.6-1) trixie; urgency=medium
+
+  * Codex sessions carry their active subagent threads (subagents).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 30 Oct 2026 20:10:00 +0100
+
 pvai (0.5.5-1) trixie; urgency=medium
 
   * Claude Code sessions carry their running subagents (subagents).

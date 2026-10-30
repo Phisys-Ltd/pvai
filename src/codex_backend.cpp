@@ -204,6 +204,13 @@ bool CodexSession::stoppable() const
 // Codex's history, where `start.resume` finds it (a thread without a turn
 // cannot be archived: it is only left). Another client's thread that no
 // `pvai codex` TUI holds is only let go of: it stays in `codex resume`.
+json CodexSession::describe() const
+{
+    json entry = Session::describe();
+    entry["subagents"] = backend_.subagentsOf(id_);
+    return entry;
+}
+
 std::string CodexSession::stop()
 {
     if (!detached_) {
@@ -563,6 +570,7 @@ void CodexBackend::lost()
     ready_ = false;
     pending_.clear();
     adopting_.clear(); // their answers will not come
+    subagents_.clear();
     for (CodexSession *session : sessions())
         session->end();
     nextTry_ = Clock::now() + std::chrono::seconds(2);
@@ -605,6 +613,9 @@ void CodexBackend::service()
                     const json thread = params.value("thread", json());
                     if (thread.value("parentThreadId", json()).is_null())
                         adopt(str(thread, "id"));
+                    else
+                        noteSubagent(thread);
+                } else if (subagentEvent(method, params)) {
                 } else if (auto *session = dynamic_cast<CodexSession *>(host_.session(str(params, "threadId")))) {
                     session->onNotification(method, params);
                 }
@@ -632,9 +643,84 @@ void CodexBackend::rescan()
             if (id.is_string())
                 loaded.insert(id.get<std::string>());
         std::erase_if(released_, [&](const std::string &id) { return !loaded.count(id); });
+        if (std::erase_if(subagents_, [&](const auto &entry) { return !loaded.count(entry.first); }))
+            host_.sessionsChanged();
         for (const auto &id : loaded)
             adopt(id);
     });
+}
+
+namespace {
+
+bool activeStatus(const json &holder)
+{
+    const json status = holder.value("status", json());
+    return status.is_object() && status.value("type", "") == "active";
+}
+
+} // namespace
+
+// A subagent thread (one with parentThreadId): it shows in its parent's
+// `subagents` while it works. Codex's own helpers (review, compact) are
+// subagents too; their kind stands in for a role.
+void CodexBackend::noteSubagent(const json &thread)
+{
+    const std::string id = str(thread, "id");
+    const std::string parent = str(thread, "parentThreadId");
+    if (id.empty() || parent.empty())
+        return;
+    std::string type = str(thread, "agentRole");
+    const json source = thread.value("source", json());
+    if (type.empty() && source.is_object() && source.contains("subAgent") && source["subAgent"].is_string())
+        type = source["subAgent"].get<std::string>();
+    std::string description = cut(oneLine(str(thread, "preview"), kTitleMax * 4), kTitleMax);
+    if (description.empty())
+        description = str(thread, "agentNickname");
+    Subagent agent{parent,
+                   {{"id", id},
+                    {"type", type},
+                    {"description", description},
+                    {"name", str(thread, "agentNickname")},
+                    {"background", true},
+                    {"startedAt", thread.value("createdAt", 0LL)}},
+                   activeStatus(thread)};
+    auto known = subagents_.find(id);
+    const bool news = known == subagents_.end() || known->second.active != agent.active || known->second.entry != agent.entry;
+    subagents_[id] = std::move(agent);
+    if (news)
+        host_.sessionsChanged();
+}
+
+// A notification about a subagent thread: its status, or that it closed.
+// True when it was one.
+bool CodexBackend::subagentEvent(const std::string &method, const json &params)
+{
+    const auto it = subagents_.find(str(params, "threadId"));
+    if (it == subagents_.end())
+        return false;
+    if (method == "thread/status/changed") {
+        const bool active = activeStatus(params);
+        if (active != it->second.active) {
+            it->second.active = active;
+            host_.sessionsChanged();
+        }
+    } else if (method == "thread/closed" || method == "thread/archived" || method == "thread/deleted") {
+        subagents_.erase(it);
+        host_.sessionsChanged();
+    }
+    return true;
+}
+
+json CodexBackend::subagentsOf(const std::string &thread) const
+{
+    json out = json::array();
+    for (const auto &[id, agent] : subagents_)
+        if (agent.parent == thread && agent.active)
+            out.push_back(agent.entry);
+    std::sort(out.begin(), out.end(), [](const json &a, const json &b) {
+        return a.value("startedAt", 0LL) < b.value("startedAt", 0LL);
+    });
+    return out;
 }
 
 bool CodexBackend::heldByTui(const std::string &thread) const
@@ -682,13 +768,18 @@ void CodexBackend::processEnded(unsigned long long id)
 // start, which can be neither resumed nor archived.)
 void CodexBackend::adopt(const std::string &id)
 {
-    if (id.empty() || host_.session(id) || stopped_.count(id) || adopting_.count(id) || released_.count(id))
+    if (id.empty() || host_.session(id) || stopped_.count(id) || adopting_.count(id) || released_.count(id)
+        || subagents_.count(id))
         return;
     adopting_.insert(id);
     call("thread/resume", {{"threadId", id}, {"excludeTurns", true}}, [this, id](const json &result, const json &) {
         adopting_.erase(id);
-        if (result.contains("thread"))
+        if (!result.contains("thread"))
+            return;
+        if (result["thread"].value("parentThreadId", json()).is_null())
             addSession(result["thread"], false);
+        else
+            noteSubagent(result["thread"]);
     });
 }
 
