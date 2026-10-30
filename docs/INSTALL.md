@@ -35,18 +35,18 @@ Fetch the key, check that it is this one, then add the source:
 
 ```
 sudo install -d /etc/apt/keyrings
-curl -fsSL http://apt.phisys.com/repo-signing-key.asc -o /tmp/phisys.asc
+curl -fsSL https://apt.phisys.com/repo-signing-key.asc -o /tmp/phisys.asc
 gpg --show-keys --with-fingerprint /tmp/phisys.asc   # must show the fingerprint above
 sudo gpg --dearmor -o /etc/apt/keyrings/phisys-archive-keyring.gpg /tmp/phisys.asc
-echo "deb [signed-by=/etc/apt/keyrings/phisys-archive-keyring.gpg] http://apt.phisys.com/stable trixie main" \
+echo "deb [signed-by=/etc/apt/keyrings/phisys-archive-keyring.gpg] https://apt.phisys.com/stable trixie main" \
   | sudo tee /etc/apt/sources.list.d/phisys.list
 sudo apt update && sudo apt install pvai
 pvai --version
 ```
 
-apt checks every package against the key, so plain HTTP cannot slip a
-foreign package in; the fingerprint check above is what makes the key
-itself trustworthy. Newer builds land in `http://apt.phisys.com/testing`
+apt checks every package against the key; the fingerprint check above is
+what makes the key itself trustworthy. (Plain `http://` works as well, for
+older sources.) Newer builds land in `https://apt.phisys.com/testing`
 first (same line with `testing` instead of `stable`).
 
 The package installs `/usr/bin/pvai` only: no service, nothing in anyone's
