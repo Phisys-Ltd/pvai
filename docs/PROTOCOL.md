@@ -139,8 +139,9 @@ daemon knows every live one on its host.
 - `restartable`: `restart` can start this session again in place, going on
   with the same conversation: Claude Code sessions (in a terminal or
   detached) once Claude Code's own session id is known (`claudeSession`,
-  from its first hook); never Codex threads, whose `usage.version` is the
-  app server's.
+  from its first hook) and under a `pvai run` of 0.5.0 or later (older
+  wrappers keep running after an update of pvai and cannot); never Codex
+  threads, whose `usage.version` is the app server's.
 - `dialog`: while `waiting`, `permission` (Claude asks to use a tool),
   `question` (any other notification that waits on the owner) or `trust`
   (a new session asks whether to trust its folder; state `waiting` before

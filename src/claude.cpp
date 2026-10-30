@@ -77,6 +77,7 @@ bool goodConversationId(const std::string &id)
 ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration)
     : Session(host, registration.value("id", ""), registration.value("cwd", ""), registration.value("label", ""))
     , wrapper_(wrapper)
+    , canRestart_(registration.value("restart", false))
 {
     // A wrapper that registers again after a daemon restart has a running
     // Claude Code whose turn we cannot know; take the free prompt as likely.

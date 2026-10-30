@@ -403,7 +403,8 @@ int runWrapper(const WrapperOptions &options)
     bool registered = false;
     auto registerSelf = [&] {
         daemon->send({{"type", "register"}, {"id", id}, {"label", options.label}, {"cwd", cwd},
-                      {"pid", static_cast<int>(::getpid())}, {"running", registered}, {"detached", detached}});
+                      {"pid", static_cast<int>(::getpid())}, {"running", registered}, {"detached", detached},
+                      {"restart", true}});
         if (draft.dirty())
             daemon->send({{"type", "draft"}, {"dirty", true}});
         if (trustAsked)

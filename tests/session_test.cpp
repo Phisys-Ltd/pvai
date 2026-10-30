@@ -504,11 +504,13 @@ int main(int argc, char **argv)
     // ---- Claude in a terminal: a fake wrapper and hooks.
     Client wrapper;
     wrapper.send({{"type", "register"}, {"id", "wterm"}, {"cwd", project}, {"label", "term"}});
+    // (An old wrapper: no `restart` in its registration.)
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "starting"; }).empty(), "a wrapper registers, starting");
     hook("wterm", {{"hook_event_name", "SessionStart"}, {"session_id", "running-1"}, {"source", "startup"}});
     json term = waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; });
     check(term.value("assistant", "") == "claude" && !term.value("detached", true) && term.value("claudeSession", "") == "running-1",
           "SessionStart makes it idle: " + term.dump());
+    check(!term.value("restartable", true), "an old wrapper's session is not restartable");
     a.send({{"type", "prompt"}, {"ref", 10}, {"session", "wterm"}, {"text", "one"}});
     check(wrapper.next("type").value("text", "") == "one", "the first prompt is typed");
     a.send({{"type", "prompt"}, {"ref", 11}, {"session", "wterm"}, {"text", "two"}, {"voice", true}});

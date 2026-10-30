@@ -21,8 +21,9 @@ public:
 
     std::string answer(const std::string &choice) override;
     void interrupt() override;
-    // Once Claude Code's own session id is known: `--resume` needs it.
-    bool restartable() const override { return !claudeSession_.empty(); }
+    // Once Claude Code's own session id is known (`--resume` needs it), and
+    // only under a wrapper that can (pvai 0.5.0 and later).
+    bool restartable() const override { return canRestart_ && !claudeSession_.empty(); }
     std::string restart() override;
     json history(int limit) override;
     void tick(Clock::time_point now) override;
@@ -45,6 +46,7 @@ private:
     void pollTranscript();
 
     Conn &wrapper_;
+    bool canRestart_ = false;
     std::string claudeSession_;
     std::string transcript_;
     TranscriptTail tail_;
