@@ -1,3 +1,11 @@
+pvai (0.5.10-1) trixie; urgency=medium
+
+  * A task notification read before a Stop or UserPromptSubmit belongs to
+    that turn, even when Claude's answer to it reaches the transcript
+    only after the hook: no busy again after Stop.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 30 Oct 2026 23:00:00 +0100
+
 pvai (0.5.9-1) trixie; urgency=medium
 
   * Firewall profiles for direct access (port 7471): ufw application

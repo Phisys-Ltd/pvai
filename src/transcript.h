@@ -41,6 +41,9 @@ public:
     // no UserPromptSubmit; a notification that only waits for the next
     // prompt starts none.
     std::size_t wakeTurns() const { return wakeTurns_; }
+    // A hook ended or started a turn: a task notification read so far
+    // belongs to it, even when Claude's answer to it is not in the file yet.
+    void settleWakes() { wakePending_ = false; }
 
 private:
     void take(const json &line, std::vector<json> &out);

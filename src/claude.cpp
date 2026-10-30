@@ -485,6 +485,7 @@ void ClaudeSession::catchUp()
     if (transcript_.empty())
         return;
     sendEntries(tail_.poll());
+    tail_.settleWakes();
     wakeMark_ = tail_.wakeTurns();
 }
 

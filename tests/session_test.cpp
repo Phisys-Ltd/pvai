@@ -651,6 +651,14 @@ int main(int argc, char **argv)
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after Stop");
     check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 1200).empty(),
           "and stays idle: the notification belonged to the turn");
+    // The same with Claude's answer written only after the Stop arrived.
+    hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "again"}});
+    append(notification);
+    hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok"}});
+    append(answerLine);
+    check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after that Stop");
+    check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 1200).empty(),
+          "an answer that lands after the Stop starts no turn either");
     // An older Claude Code without PermissionRequest: the last tool call in
     // the transcript is what the permission is about.
     {
