@@ -626,18 +626,31 @@ int main(int argc, char **argv)
     check(agent.value("id", "") == "a1b2" && agent.value("type", "") == "build-runner" && agent.value("description", "") == "Build it"
               && agent.value("background", false) && agent.value("startedAt", 0LL) > 1700000000,
           "a running subagent is listed: " + term.dump());
-    {
-        std::ofstream(run2, std::ios::app)
-            << R"({"type":"attachment","isSidechain":false,"attachment":{"type":"queued_command","prompt":"<task-notification>\n<status>completed</status>\n</task-notification>"}})" << "\n";
-    }
+    auto append = [&](const std::string &line) { std::ofstream(run2, std::ios::app) << line << "\n"; };
+    const std::string notification =
+        R"({"type":"attachment","isSidechain":false,"attachment":{"type":"queued_command","prompt":"<task-notification>\n<status>completed</status>\n</task-notification>"}})";
+    const std::string answerLine = R"({"type":"assistant","uuid":"u-a1","message":{"content":[{"type":"text","text":"Noted."}]}})";
+    append(notification);
+    check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 1200).empty(),
+          "a task notification alone starts no turn");
+    append(answerLine);
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 3000).empty(),
-          "a task notification makes the idle session busy");
+          "Claude answering it does: the idle session is busy");
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     writeFile(agentMeta, R"({"agentType":"build-runner","description":"Build it","requestShape":"background","finished":true})");
     check(!waitSession(a, "wterm", [&](const json &s) { return agents(s) == json::array(); }, 4000).empty(),
           "a finished subagent leaves the list");
     hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok"}});
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "Stop ends that turn");
+    // A notification and its answer inside a turn, read only after its Stop:
+    // no turn of its own.
+    hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "go"}});
+    append(notification);
+    append(answerLine);
+    hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok"}});
+    check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after Stop");
+    check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 1200).empty(),
+          "and stays idle: the notification belonged to the turn");
     // An older Claude Code without PermissionRequest: the last tool call in
     // the transcript is what the permission is about.
     {

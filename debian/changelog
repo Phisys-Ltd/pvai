@@ -1,3 +1,12 @@
+pvai (0.5.8-1) trixie; urgency=medium
+
+  * A task notification makes an idle Claude Code session busy only once
+    Claude answers it, and not when it belonged to a turn that ended.
+  * claudeSession and the transcript survive a daemon restart.
+  * The daemon log records every state change of a session.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 30 Oct 2026 21:40:00 +0100
+
 pvai (0.5.7-1) trixie; urgency=medium
 
   * Sessions carry dialogInfo while they wait: the tool, the command or

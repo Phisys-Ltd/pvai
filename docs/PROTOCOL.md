@@ -128,10 +128,12 @@ daemon knows every live one on its host.
     (`/model`, `/usage`) stays `busy` until the picker is closed in the
     terminal.
     A background task or subagent that finishes while the session is
-    `idle` hands Claude Code a task notification, and Claude Code starts a
-    turn of its own without `UserPromptSubmit`: the daemon sees the
-    notification in the transcript (within about half a second) and makes
-    the session `busy`; `Stop` ends that turn as any other.
+    `idle` hands Claude Code a task notification, and Claude Code may start
+    a turn of its own without `UserPromptSubmit`: once Claude answers the
+    notification in the transcript (within about half a second), the
+    session is `busy`; `Stop` ends that turn as any other. A notification
+    that only waits for the next prompt, or one that came and was answered
+    within a turn that has ended since, changes nothing.
   - `waiting`: Claude waits on a dialog (`dialog` says which); prompts are
     queued and are **never** typed into the dialog. The app can `answer`
     it, the owner can answer it in the terminal.
@@ -190,7 +192,8 @@ daemon knows every live one on its host.
   (from the status line input); it can be older than `welcome.installed`
   after an update, until the session restarts.
 - `claudeSession`: Claude Code's own session id once known, else `null`
-  (always `null` for Codex).
+  (always `null` for Codex). It survives a restart of the daemon (kept
+  beside the wrapper's socket) once a hook has named it.
 - `subagents`: the subagents of a session that run now, oldest first; they
   can outlive the turn that started them (background agents), so a session
   can be `idle` with subagents running. A finished one drops out, and every

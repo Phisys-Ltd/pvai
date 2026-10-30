@@ -195,8 +195,17 @@ bool isWake(const json &line)
 void TranscriptTail::take(const json &line, std::vector<json> &out)
 {
     const std::string type = line.value("type", "");
-    if (isWake(line))
-        ++wakes_;
+    if (isWake(line)) {
+        wakePending_ = true;
+    } else if (!line.value("isSidechain", false) && !line.value("isMeta", false)) {
+        if (type == "assistant" && wakePending_) {
+            ++wakeTurns_;
+            wakePending_ = false;
+        } else if (type == "user" && line.contains("message") && line["message"].is_object()
+                   && line["message"].value("content", json()).is_string()) {
+            wakePending_ = false; // the owner's prompt takes the notification along
+        }
+    }
     // Local slash commands and their output: a system line of their own in
     // newer Claude Code versions, a user message in older ones.
     const bool localCommand = type == "system" && line.value("subtype", "") == "local_command";

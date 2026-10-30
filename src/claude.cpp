@@ -109,8 +109,20 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
 {
     // A wrapper that registers again after a daemon restart has a running
     // Claude Code whose turn we cannot know; take the free prompt as likely.
-    if (registration.value("running", false))
+    if (registration.value("running", false)) {
         state_ = "idle";
+        std::ifstream in(runtimeDir() + "/" + id_ + ".claude");
+        const json known = json::parse(in, nullptr, false);
+        if (known.is_object()) {
+            claudeSession_ = known.value("claudeSession", "");
+            transcript_ = known.value("transcript", "");
+            if (!transcript_.empty()) {
+                tail_.follow(transcript_);
+                tail_.poll();
+                wakeMark_ = tail_.wakeTurns();
+            }
+        }
+    }
 }
 
 json ClaudeSession::describe() const
@@ -236,22 +248,30 @@ void ClaudeSession::onHook(const json &event)
     if (fingerprint == lastEvent_)
         return;
     lastEvent_ = fingerprint;
-    if (const std::string id = event.value("session_id", ""); !id.empty())
+    bool known = false;
+    if (const std::string id = event.value("session_id", ""); !id.empty() && id != claudeSession_) {
         claudeSession_ = id;
+        known = true;
+    }
     if (const std::string path = event.value("transcript_path", ""); !path.empty() && path != transcript_) {
+        known = true;
         transcript_ = path;
         tail_.follow(path);
         tail_.poll();
-        wakeMark_ = tail_.wakes();
+        wakeMark_ = tail_.wakeTurns();
         subagents_.clear();
         nextSubagents_ = Clock::now();
         historyReset();
     }
+    if (known)
+        remember();
 
     if (name != "Notification" && name != "PermissionRequest")
         dialog_.clear();
-    if (name == "UserPromptSubmit" || name == "Stop" || name == "SessionStart")
+    if (name == "UserPromptSubmit" || name == "Stop" || name == "SessionStart") {
         submitDeadline_.reset();
+        catchUp();
+    }
     if (name == "SessionStart") {
         const std::string source = event.value("source", "");
         if (state_ == "starting" || source == "clear" || source == "resume")
@@ -458,13 +478,31 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
     changed();
 }
 
+// What the transcript holds up to now belongs to the turn a hook reports
+// on: an answer to a task notification in it started no turn of its own.
+void ClaudeSession::catchUp()
+{
+    if (transcript_.empty())
+        return;
+    sendEntries(tail_.poll());
+    wakeMark_ = tail_.wakeTurns();
+}
+
+// Claude Code's session id and transcript, kept beside the wrapper's socket
+// so that a daemon started again knows them before the next hook.
+void ClaudeSession::remember() const
+{
+    std::ofstream(runtimeDir() + "/" + id_ + ".claude")
+        << json({{"claudeSession", claudeSession_}, {"transcript", transcript_}}).dump() << "\n";
+}
+
 void ClaudeSession::pollTranscript()
 {
     auto fresh = tail_.poll();
     // A background task or agent finished and Claude Code took it up: a
     // turn without UserPromptSubmit, ended by Stop as usual.
-    if (tail_.wakes() != wakeMark_) {
-        wakeMark_ = tail_.wakes();
+    if (tail_.wakeTurns() != wakeMark_) {
+        wakeMark_ = tail_.wakeTurns();
         if (state_ == "idle") {
             state_ = "busy";
             voiceTurn_ = false;

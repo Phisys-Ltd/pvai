@@ -35,6 +35,16 @@ json dialogInfo(const std::string &tool, const std::string &text, const std::str
     return info;
 }
 
+void Session::changed()
+{
+    if (state_ != loggedState_) {
+        host_.log(id_ + ": " + loggedState_ + " -> " + state_ + (dialog_.empty() ? "" : " (" + dialog_ + ")")
+                  + ", queued " + std::to_string(queue_.size()));
+        loggedState_ = state_;
+    }
+    host_.sessionsChanged();
+}
+
 json Session::describe() const
 {
     return {{"id", id_},

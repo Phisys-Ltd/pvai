@@ -35,10 +35,12 @@ public:
     // finished: each ends with an output entry, even an empty one. No hook
     // fires for them.
     std::size_t localOutputs() const { return localOutputs_; }
-    // How many times something other than the owner handed Claude Code
-    // work (a background task or agent that finished): a turn may start
-    // from it without UserPromptSubmit.
-    std::size_t wakes() const { return wakes_; }
+    // How many turns Claude Code started on its own: a task notification
+    // (a background task or agent finished) followed by an answer of
+    // Claude's, with no prompt of the owner's in between. Such a turn has
+    // no UserPromptSubmit; a notification that only waits for the next
+    // prompt starts none.
+    std::size_t wakeTurns() const { return wakeTurns_; }
 
 private:
     void take(const json &line, std::vector<json> &out);
@@ -50,7 +52,8 @@ private:
     std::deque<json> recent_;
     std::map<std::string, std::string> toolNames_; // tool_use id -> name
     std::size_t localOutputs_ = 0;
-    std::size_t wakes_ = 0;
+    std::size_t wakeTurns_ = 0;
+    bool wakePending_ = false; // a task notification, no answer yet
 };
 
 } // namespace pvai

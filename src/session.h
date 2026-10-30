@@ -102,7 +102,8 @@ protected:
     // The whole history again to every subscriber (the conversation moved).
     void historyReset();
     void sendEntries(std::vector<json> entries);
-    void changed() { host_.sessionsChanged(); }
+    // The session list moved; a new state goes into the daemon's log.
+    void changed();
 
     Host &host_;
     std::string id_;
@@ -118,6 +119,7 @@ protected:
 
 private:
     bool ended_ = false;
+    std::string loggedState_ = "starting";
 };
 
 // An ended conversation that `start` can resume.

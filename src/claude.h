@@ -48,6 +48,8 @@ private:
     void runEscapeChecks(Clock::time_point now);
     void pollTranscript();
     void scanSubagents(Clock::time_point now);
+    void catchUp();
+    void remember() const;
 
     Conn &wrapper_;
     bool canRestart_ = false;
@@ -70,7 +72,7 @@ private:
     // A prompt went in; UserPromptSubmit should confirm it by then. Claude
     // Code without a login answers "Not logged in" and fires no hook.
     std::optional<Clock::time_point> submitDeadline_;
-    // Task notifications seen in the transcript so far (see wakes()).
+    // Turns Claude Code started on its own, seen so far (see wakeTurns()).
     std::size_t wakeMark_ = 0;
     // Subagents, from <transcript without .jsonl>/subagents/agent-<id>.meta.json:
     // by id, the meta file's mtime when last read and the protocol entry
