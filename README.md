@@ -15,7 +15,7 @@ without Qt; the app talks to it over the JSON protocol in
   always; prompts from the app are typed into it (bracketed paste, then
   Return) only while its prompt is free.
 - `pvai hook` is what Claude Code's hooks call (`SessionStart`,
-  `UserPromptSubmit`, `Stop`, `Notification`); it tells the wrapper where
+  `UserPromptSubmit`, `Stop`, `Notification`, `PermissionRequest`); it tells the wrapper where
   the turn stands. `pvai run` puts them into `~/.claude/settings.json`
   when they are missing or name another pvai binary, and sets the status
   line to `pvai statusline` (context window and rate limits for the app; an

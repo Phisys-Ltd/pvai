@@ -76,6 +76,41 @@ std::string dialogOf(const std::string &method)
     return {};
 }
 
+// `dialogInfo` for an approval or a question: the command, the files of a
+// patch, the permissions asked for, the questions.
+json infoOf(const std::string &method, const json &params)
+{
+    const std::string reason = str(params, "reason");
+    if (method == "item/commandExecution/requestApproval")
+        return dialogInfo("shell", str(params, "command"), reason);
+    if (method == "execCommandApproval") {
+        std::string command;
+        if (params.contains("command") && params["command"].is_array())
+            for (const auto &part : params["command"])
+                if (part.is_string())
+                    command += (command.empty() ? "" : " ") + part.get<std::string>();
+        return dialogInfo("shell", command, reason);
+    }
+    if (method == "applyPatchApproval") {
+        std::string paths;
+        if (params.contains("fileChanges") && params["fileChanges"].is_object())
+            for (const auto &[path, change] : params["fileChanges"].items())
+                paths += (paths.empty() ? "" : "\n") + path;
+        return dialogInfo("edit", paths, reason);
+    }
+    if (method == "item/permissions/requestApproval")
+        return dialogInfo("permissions", params.value("permissions", json()).dump(), reason);
+    if (method == "item/tool/requestUserInput") {
+        std::string questions;
+        if (params.contains("questions") && params["questions"].is_array())
+            for (const auto &question : params["questions"])
+                if (const std::string q = str(question, "question"); !q.empty())
+                    questions += (questions.empty() ? "" : "\n") + q;
+        return dialogInfo("", questions, "");
+    }
+    return dialogInfo("", "", str(params, "message"));
+}
+
 // What answers an approval: allow is its first choice, deny refuses it and
 // ends the turn. Null when deny is an error reply instead.
 json decision(const std::string &method, const json &params, bool allow)
@@ -388,6 +423,8 @@ void CodexSession::onNotification(const std::string &method, const json &params)
             return;
         state_ = state;
         dialog_ = dialog;
+        if (request_.is_null())
+            dialogInfo_ = nullptr;
         deliver();
         changed();
     } else if (method == "turn/started") {
@@ -403,6 +440,7 @@ void CodexSession::onNotification(const std::string &method, const json &params)
         turnId_.clear();
         request_ = nullptr;
         outputs_.clear();
+        files_.clear();
         if (str(turn, "status") == "interrupted") {
             const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
             pushEntries({{{"kind", "interrupted"}, {"id", str(turn, "id") + ":interrupted"}, {"time", isoTime(now.count())}}});
@@ -429,6 +467,15 @@ void CodexSession::onNotification(const std::string &method, const json &params)
             for (const auto &e : entries(item, 0))
                 voiceTurn_ = str(e, "text").rfind(kMicMark, 0) == 0;
         pushEntries(entries(item, params.value("completedAtMs", 0LL)));
+    } else if (method == "item/started") {
+        // A file change's approval names only the item: its paths are here.
+        const json item = params.value("item", json());
+        if (str(item, "type") == "fileChange" && item.contains("changes") && item["changes"].is_array()) {
+            std::string paths;
+            for (const auto &change : item["changes"])
+                paths += (paths.empty() ? "" : "\n") + str(change, "path");
+            files_[str(item, "id")] = paths;
+        }
     } else if (method == "item/commandExecution/outputDelta") {
         std::string &output = outputs_[str(params, "itemId")];
         if (output.size() < kMaxResult + 16)
@@ -469,6 +516,11 @@ void CodexSession::onRequest(const json &requestId, const std::string &method, c
         text = str(params, "message");
     if (text.empty() && params.contains("questions") && params["questions"].is_array() && !params["questions"].empty())
         text = str(params["questions"][0], "question");
+    dialogInfo_ = infoOf(method, params);
+    if (method == "item/fileChange/requestApproval") {
+        const auto it = files_.find(str(params, "itemId"));
+        dialogInfo_ = dialogInfo("edit", it == files_.end() ? "" : it->second, str(params, "reason"));
+    }
     attention(dialog, text);
     changed();
 }

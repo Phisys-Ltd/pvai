@@ -110,6 +110,7 @@ protected:
     std::string label_;
     std::string state_ = "starting";
     std::string dialog_; // while waiting: "permission", "question" or "trust"
+    json dialogInfo_;    // what the dialog is about (dialogInfo()); shown while dialog_ is set
     std::deque<Prompt> queue_;
     bool draft_ = false;     // the owner has typed into the prompt and not sent it
     bool voiceTurn_ = false; // the running turn's prompt was spoken
@@ -204,5 +205,12 @@ constexpr std::size_t kMaxResult = 4 * 1024;
 constexpr std::size_t kMaxText = 64 * 1024;
 constexpr std::size_t kMaxConversations = 20;
 constexpr std::size_t kTitleMax = 80;
+constexpr std::size_t kDialogTextMax = 2000;
+
+// `dialogInfo`: the tool a dialog is about (empty: none), what it would do
+// (a command, a path, a URL, a question), the assistant's own words about
+// it, and for a shell command its description; each cut to kDialogTextMax.
+json dialogInfo(const std::string &tool, const std::string &text, const std::string &message,
+                const std::string &description = {});
 
 } // namespace pvai

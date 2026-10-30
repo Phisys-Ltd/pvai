@@ -107,7 +107,7 @@ daemon knows every live one on its host.
 ```json
 {"id": "w1a2b3c4d", "assistant": "claude", "label": "phi-core", "cwd": "/root/projects/phi-core",
  "state": "idle", "queued": 0, "draft": false, "detached": false, "stoppable": false, "restartable": true,
- "dialog": null, "usage": null, "claudeSession": "4f3b744c-...", "subagents": []}
+ "dialog": null, "dialogInfo": null, "usage": null, "claudeSession": "4f3b744c-...", "subagents": []}
 ```
 
 - `id`: opaque, stable while it lives: chosen by the wrapper (`w` + 8 hex
@@ -155,6 +155,24 @@ daemon knows every live one on its host.
   `question` (any other notification that waits on the owner) or `trust`
   (a new session asks whether to trust its folder; state `waiting` before
   Claude Code has started), else `null`.
+- `dialogInfo`: while `dialog` is set, what it is about, else `null`:
+  ```json
+  {"tool": "Bash", "text": "git push origin main", "description": "Push the branch",
+   "message": "Claude needs your permission to use Bash"}
+  ```
+  `tool` the tool that asks (`null` for a question); `text` what it would
+  do: the command, the file path, the URL or pattern, the questions (one
+  per line), the folder for `trust`, else the tool's input as JSON;
+  `description` only for a shell command that has one; `message` the
+  assistant's own words (Claude Code's notification, Codex's `reason`).
+  Each is cut to 2000 bytes, any may be `null`. Claude Code: from its
+  `PermissionRequest` hook (tool name and input; `AskUserQuestion` makes a
+  `question`), the words from the `Notification` that follows or comes
+  first; an older Claude Code without that hook gets the last tool call
+  in the transcript (its short summary) instead. Codex: from the approval
+  request; `tool` is `shell` for a command, `edit` for a patch (`text` its
+  files, one per line), `permissions` for more permissions (`text` the
+  profile as JSON), `null` for a question.
 - `usage`: what `/context` and `/usage` would show, in short, from Claude
   Code's status line input (so `pvai install-hooks` sets the status line to
   `pvai statusline`); `null` until the first status line:

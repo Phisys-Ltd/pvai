@@ -59,7 +59,7 @@ const char *kUsage =
     "       pvai watch                                 print what the daemon tells apps\n"
     "       pvai --version | version                   print the version\n";
 
-const char *kHookEvents[] = {"SessionStart", "UserPromptSubmit", "Stop", "Notification"};
+const char *kHookEvents[] = {"SessionStart", "UserPromptSubmit", "Stop", "Notification", "PermissionRequest"};
 
 std::string shellQuote(const std::string &text)
 {

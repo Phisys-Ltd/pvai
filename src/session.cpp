@@ -25,6 +25,16 @@ void Session::setLabel(const std::string &label)
     changed();
 }
 
+json dialogInfo(const std::string &tool, const std::string &text, const std::string &message,
+                const std::string &description)
+{
+    auto field = [](const std::string &value) { return value.empty() ? json() : json(cut(value, kDialogTextMax)); };
+    json info = {{"tool", field(tool)}, {"text", field(text)}, {"message", field(message)}};
+    if (!description.empty())
+        info["description"] = cut(description, kDialogTextMax);
+    return info;
+}
+
 json Session::describe() const
 {
     return {{"id", id_},
@@ -38,6 +48,7 @@ json Session::describe() const
             {"stoppable", stoppable()},
             {"restartable", restartable()},
             {"dialog", dialog_.empty() ? json() : json(dialog_)},
+            {"dialogInfo", dialog_.empty() || !dialogInfo_.is_object() ? json() : dialogInfo_},
             {"usage", usage_},
             {"claudeSession", nullptr}};
 }

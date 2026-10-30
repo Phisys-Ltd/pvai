@@ -492,10 +492,22 @@ int main(int argc, char **argv)
     codex.send({{"id", 99}, {"method", "item/commandExecution/requestApproval"}, {"params", {{"threadId", "t-new"}, {"command", "ls"}}}});
     json attention = a.next("attention");
     check(attention.value("kind", "") == "permission" && attention.value("text", "") == "ls", "an approval asks the owner");
+    check(!waitSession(a, "t-new", [](const json &s) {
+              return s.value("dialogInfo", json()) == json({{"tool", "shell"}, {"text", "ls"}, {"message", nullptr}});
+          }).empty(), "dialogInfo names the command");
     a.send({{"type", "answer"}, {"ref", 4}, {"session", "t-new"}, {"choice", "allow"}});
     check(!a.next("answered").empty(), "answered");
     check(!codex.received([](const json &m) { return m.value("id", json()) == 99 && m.value("result", json()).value("decision", "") == "accept"; }).is_null(),
           "allow is accept");
+    codex.send({{"method", "item/started"},
+                {"params", {{"threadId", "t-new"}, {"item", {{"type", "fileChange"}, {"id", "f1"}, {"changes", {{{"path", "/tmp/a.txt"}}, {{"path", "/tmp/b.txt"}}}}}}}}});
+    codex.send({{"id", 98}, {"method", "item/fileChange/requestApproval"},
+                {"params", {{"threadId", "t-new"}, {"itemId", "f1"}, {"reason", "needs write access"}}}});
+    check(!waitSession(a, "t-new", [](const json &s) {
+              return s.value("dialogInfo", json()) == json({{"tool", "edit"}, {"text", "/tmp/a.txt\n/tmp/b.txt"}, {"message", "needs write access"}});
+          }).empty(), "a patch's dialogInfo names its files");
+    a.send({{"type", "answer"}, {"ref", 41}, {"session", "t-new"}, {"choice", "allow"}});
+    check(!a.next("answered").empty(), "answered too");
     codex.send({{"method", "turn/started"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u2"}}}}}});
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     a.send({{"type", "interrupt"}, {"ref", 5}, {"session", "t-new"}});
@@ -574,8 +586,18 @@ int main(int argc, char **argv)
     check(say.value("text", "") == "Fertig." && !say.value("voice", true), "Stop says the 🔊 line");
     check(wrapper.next("type").value("text", "") == "\xF0\x9F\x8E\x99 two", "then the queued, spoken prompt goes in with 🎙");
     hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "\xF0\x9F\x8E\x99 two"}});
+    hook("wterm", {{"hook_event_name", "PermissionRequest"}, {"tool_name", "Bash"},
+                   {"tool_input", {{"command", "git push"}, {"description", "Push the branch"}}}});
+    json asked = a.next("attention");
+    check(asked.value("kind", "") == "permission" && asked.value("text", "") == "Bash: git push",
+          "PermissionRequest asks the owner: " + asked.dump());
     hook("wterm", {{"hook_event_name", "Notification"}, {"notification_type", "permission_prompt"}, {"message", "Claude needs your permission"}});
-    check(a.next("attention").value("kind", "") == "permission", "a permission dialog asks the owner");
+    check(!waitSession(a, "wterm", [](const json &s) {
+              return s.value("dialog", "") == "permission"
+                  && s.value("dialogInfo", json()) == json({{"tool", "Bash"}, {"text", "git push"}, {"description", "Push the branch"},
+                                                             {"message", "Claude needs your permission"}});
+          }).empty(), "the Notification after it adds its words to dialogInfo");
+    check(a.next("attention", {}, 500).empty(), "and asks no second time");
     a.send({{"type", "answer"}, {"ref", 12}, {"session", "wterm"}, {"choice", "allow"}});
     check(wrapper.next("keys").value("data", "") == "\r", "allow is Return");
     a.send({{"type", "stop"}, {"ref", 13}, {"session", "wterm"}});
@@ -616,6 +638,20 @@ int main(int argc, char **argv)
           "a finished subagent leaves the list");
     hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok"}});
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "Stop ends that turn");
+    // An older Claude Code without PermissionRequest: the last tool call in
+    // the transcript is what the permission is about.
+    {
+        std::ofstream(run2, std::ios::app)
+            << R"({"type":"assistant","uuid":"u-t1","message":{"content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"make"}}]}})" << "\n";
+    }
+    hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "build"}});
+    hook("wterm", {{"hook_event_name", "Notification"}, {"notification_type", "permission_prompt"}, {"message", "Claude needs your permission to use Bash"}});
+    check(!waitSession(a, "wterm", [](const json &s) {
+              return s.value("dialogInfo", json()) == json({{"tool", "Bash"}, {"text", "make"}, {"message", "Claude needs your permission to use Bash"}});
+          }).empty(), "without PermissionRequest, dialogInfo comes from the transcript");
+    hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok"}});
+    check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle" && s.value("dialogInfo", json()).is_null(); }).empty(),
+          "dialogInfo goes with the dialog");
 
     // Ended Claude conversations: titles, no command-only ones, not the
     // running one.
@@ -700,7 +736,7 @@ int main(int argc, char **argv)
     check(out.find("hooks and status line") != std::string::npos && out.find("(Claude Code)") != std::string::npos,
           "pvai run writes missing hooks, then runs claude: " + out);
     const json written = json::parse(readFile(settings), nullptr, false);
-    check(written.is_object() && written.value("model", "") == "opus" && sub(written, "hooks").size() == 4
+    check(written.is_object() && written.value("model", "") == "opus" && sub(written, "hooks").size() == 5
               && sub(written, "statusLine").value("command", "") == g_pvai + " statusline --chain 'my-line'",
           "the rest of the file stays, the own status line is chained: " + written.dump());
     out = shell(g_pvai + " run -- claude --version");

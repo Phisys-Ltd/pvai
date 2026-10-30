@@ -56,6 +56,7 @@ private:
     bool turnPending_ = false; // turn/start sent, turn/started not seen yet
     json request_;             // the approval the thread waits on: id, method, params
     std::map<std::string, std::string> outputs_; // command output by item id, while it runs
+    std::map<std::string, std::string> files_;   // a file change's paths by item id, while it runs
     std::string answer_;       // the turn's last agent message so far
 };
 

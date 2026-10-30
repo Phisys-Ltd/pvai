@@ -103,8 +103,8 @@ pvai install-hooks
 
 or just start the first session with `pvai run -- claude`, which does the
 same when something is missing. That adds an entry `<path>/pvai hook` to
-the hook events `SessionStart`, `UserPromptSubmit`, `Stop` and
-`Notification`, and sets `statusLine` to `<path>/pvai statusline`. A status
+the hook events `SessionStart`, `UserPromptSubmit`, `Stop`,
+`Notification` and `PermissionRequest`, and sets `statusLine` to `<path>/pvai statusline`. A status
 line you already had keeps printing: pvai calls it through
 `pvai statusline --chain '<your command>'`. Nothing else in the file
 changes. Before each change the previous file is kept as

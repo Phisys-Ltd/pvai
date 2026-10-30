@@ -24,6 +24,29 @@ constexpr auto kSubagentQuiet = std::chrono::minutes(10);
 // Where a conversation's title is looked for.
 constexpr std::size_t kTitleScan = 2 * 1024 * 1024;
 
+// What a tool call would do, for the owner deciding on it: the command,
+// the file, the URL... else its whole input.
+std::string toolText(const json &input)
+{
+    if (!input.is_object())
+        return {};
+    for (const char *key : {"command", "file_path", "notebook_path", "url", "pattern", "path", "query", "skill", "prompt"})
+        if (input.contains(key) && input[key].is_string())
+            return input[key].get<std::string>();
+    return input.dump();
+}
+
+// AskUserQuestion's questions, one per line.
+std::string questionOf(const json &input)
+{
+    std::string text;
+    if (input.is_object() && input.contains("questions") && input["questions"].is_array())
+        for (const auto &question : input["questions"])
+            if (const std::string q = str(question, "question"); !q.empty())
+                text += (text.empty() ? "" : "\n") + q;
+    return text;
+}
+
 off_t fileSize(const std::string &path)
 {
     struct stat st;
@@ -225,7 +248,7 @@ void ClaudeSession::onHook(const json &event)
         historyReset();
     }
 
-    if (name != "Notification")
+    if (name != "Notification" && name != "PermissionRequest")
         dialog_.clear();
     if (name == "UserPromptSubmit" || name == "Stop" || name == "SessionStart")
         submitDeadline_.reset();
@@ -243,14 +266,49 @@ void ClaudeSession::onHook(const json &event)
         forceIdle_ = false;
         slashPending_ = false;
         say(event.value("last_assistant_message", ""));
+    } else if (name == "PermissionRequest") {
+        // Claude Code shows a permission dialog for this tool call; its
+        // Notification may come before or after.
+        const std::string tool = event.value("tool_name", "");
+        const json input = event.value("tool_input", json());
+        const bool asks = tool == "AskUserQuestion";
+        std::string text = asks ? questionOf(input) : toolText(input);
+        const std::string description = tool == "Bash" && input.is_object() ? input.value("description", "") : "";
+        const json message = dialogInfo_.is_object() && !dialog_.empty() ? dialogInfo_.value("message", json()) : json();
+        dialogInfo_ = dialogInfo(asks ? "" : tool, text, message.is_string() ? message.get<std::string>() : "", description);
+        if (state_ == "waiting" && !dialog_.empty()) {
+            changed();
+            return;
+        }
+        state_ = "waiting";
+        dialog_ = asks ? "question" : "permission";
+        attention(dialog_, asks ? text : tool + ": " + text);
     } else if (name == "Notification") {
         const std::string kind = event.value("notification_type", "");
         const std::string text = event.value("message", "");
         const bool idleNudge = kind == "idle_prompt" || (kind.empty() && text.find("waiting for your input") != std::string::npos);
         if (idleNudge || state_ == "idle")
             return;
+        // PermissionRequest came first: only its words are new.
+        if (state_ == "waiting" && !dialog_.empty() && dialogInfo_.is_object()) {
+            dialogInfo_["message"] = text.empty() ? json() : json(cut(text, kDialogTextMax));
+            changed();
+            return;
+        }
         state_ = "waiting";
         dialog_ = kind == "permission_prompt" || text.find("permission") != std::string::npos ? "permission" : "question";
+        // Without PermissionRequest (an older Claude Code): the last tool
+        // call in the transcript is the one that waits.
+        dialogInfo_ = dialogInfo("", "", text);
+        if (dialog_ == "permission") {
+            tail_.poll();
+            const auto &recent = tail_.recent();
+            for (auto it = recent.rbegin(); it != recent.rend(); ++it)
+                if (str(*it, "kind") == "tool") {
+                    dialogInfo_ = dialogInfo(str(*it, "tool"), str(*it, "text"), text);
+                    break;
+                }
+        }
         attention(dialog_, text);
     } else {
         return;
@@ -328,6 +386,7 @@ void ClaudeSession::onDialog(const std::string &kind)
         return;
     state_ = "waiting";
     dialog_ = "trust";
+    dialogInfo_ = dialogInfo("", cwd_, "");
     attention("trust", cwd_);
     changed();
 }
