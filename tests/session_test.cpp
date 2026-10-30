@@ -656,6 +656,12 @@ int main(int argc, char **argv)
     out = shell(g_pvai + " run -- claude --version");
     check(out.find("hooks and status line") == std::string::npos, "a second run leaves the file alone: " + out);
     check(shell(g_pvai + " install-hooks").find("in place") != std::string::npos, "install-hooks says they are in place");
+    out = shell(g_pvai + " uninstall-hooks");
+    const json removed = json::parse(readFile(settings), nullptr, false);
+    check(removed == json::parse(R"({"model": "opus", "statusLine": {"type": "command", "command": "my-line"}})"),
+          "uninstall-hooks removes them and restores the chained status line: " + out + removed.dump());
+    check(shell(g_pvai + " uninstall-hooks").find("no pvai hooks") != std::string::npos,
+          "a second uninstall-hooks leaves the file alone");
 
     ::kill(daemon, SIGTERM);
     ::waitpid(daemon, nullptr, 0);

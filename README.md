@@ -21,14 +21,16 @@ without Qt; the app talks to it over the JSON protocol in
   line to `pvai statusline` (context window and rate limits for the app; an
   existing status line command keeps printing through `--chain`); the rest
   of the file stays as it is, the old one is kept as `settings.json.pvai-bak`.
-  `pvai install-hooks` does the same on its own.
+  `pvai install-hooks` does the same on its own, `pvai uninstall-hooks`
+  takes them out again.
 - `pvai codex …` starts the Codex TUI on Codex's shared app server
   (`--remote unix://`), where the daemon follows its threads; Codex needs
   no wrapper and no hooks.
 - `pvai daemon` (started on demand by the first `pvai run`) knows the live
   sessions of the host (Claude Code under `pvai run`, Codex threads in the
   app server) and speaks `docs/PROTOCOL.md` on 127.0.0.1:7470.
-- `pvai token` prints the host's token for the app.
+- `pvai token` prints the host's token for the app and starts the daemon
+  when none runs.
 
 Claude Code tells pvai where a turn stands through its hooks: `Stop` carries
 the final answer (`last_assistant_message`). A spoken prompt starts with
@@ -39,29 +41,14 @@ looks for Claude Code's interrupt note in the session transcript.
 
 ## Build and use
 
-On Debian trixie (amd64, arm64) from phi's apt repository:
+Installation (apt, Homebrew, source), setting up a user, connecting the
+app, updating and removing: see [`docs/INSTALL.md`](docs/INSTALL.md).
+
+The commands:
 
 ```
-sudo install -d /etc/apt/keyrings
-curl -fsSL http://apt.phisys.com/repo-signing-key.asc \
-  | sudo gpg --dearmor -o /etc/apt/keyrings/phisys-archive-keyring.gpg
-echo "deb [signed-by=/etc/apt/keyrings/phisys-archive-keyring.gpg] http://apt.phisys.com/testing trixie main" \
-  | sudo tee /etc/apt/sources.list.d/phisys-testing.list
-sudo apt update && sudo apt install pvai   # /usr/bin/pvai
-```
-
-The package installs the binary only: no service (the daemon starts on
-demand) and nothing in anyone's home; the first `pvai run` of each user
-writes the hooks. The
-packaging is `debian/`; it is built with phi-packaging's `build-local.sh`
-(sbuild, `config/targets-pvai.env`) and published to `testing`.
-
-From source:
-
-```
-cmake -S . -B build -G Ninja && cmake --build build
-sudo cmake --install build          # /usr/local/bin/pvai
 pvai run -- claude                   # instead of plain `claude` (writes the hooks when needed)
+pvai install-hooks / uninstall-hooks # the hooks and status line in ~/.claude/settings.json
 pvai codex                           # instead of plain `codex`
 pvai start [--name L] DIR            # Claude Code without a terminal (as the app's +)
 pvai attach <session>                # look at / type into it; Ctrl+\ leaves it running

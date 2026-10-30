@@ -14,7 +14,8 @@ this file; a change lands here first, then in both implementations.
 - Framing: one JSON object per line, UTF-8, ended by `\n`. Every object has
   a `type`. Unknown types and unknown fields are ignored, on both sides.
 - Token: the daemon creates `~/.config/pvai/token` (32 random hex chars, mode
-  0600) on its first start; `pvai token` prints it. The app reads it with
+  0600) on its first start; `pvai token` prints it (and starts the daemon
+  when none runs). The app reads it with
   `ssh <dest> pvai token` (locally: runs `pvai token`) before it connects. It
   keeps other local users of a host out; ssh does the rest.
 - Keepalive: the app sends `ping` every 15 s, the daemon answers `pong`. No

@@ -47,7 +47,8 @@ const char *kUsage =
     "       pvai statusline [--chain COMMAND]          called as Claude Code's status line\n"
     "       pvai install-hooks                         add the hooks and the status line to ~/.claude/settings.json\n"
     "                                                  (pvai run does that itself when they are missing)\n"
-    "       pvai token                                 print the token the app needs\n"
+    "       pvai uninstall-hooks                       remove them again (a chained status line comes back)\n"
+    "       pvai token                                 print the token the app needs (and start the daemon)\n"
     "       pvai start [--name LABEL] [DIR] [-- ARGS...] start Claude Code without a terminal\n"
     "       pvai attach SESSION                        a terminal onto such a session (Ctrl+\\ leaves it)\n"
     "       pvai sessions                              list this host's sessions\n"
@@ -124,11 +125,51 @@ json withHooks(json settings)
     return settings;
 }
 
-// Puts the hooks and the status line into ~/.claude/settings.json when they
-// are missing or name another pvai binary; a file that is already right is
-// not touched. `quiet`: say only what changed or failed, on stderr (for
-// `pvai run`, which checks on every start). 0 when they are in place.
-int installHooks(bool quiet)
+// `settings` without what withHooks() put in: pvai's hook entries (groups
+// and events they leave empty go too) and its status line, a chained one
+// restored. Everything else stays as it is.
+json withoutHooks(json settings)
+{
+    if (settings.contains("hooks") && settings["hooks"].is_object()) {
+        json &hooks = settings["hooks"];
+        for (auto it = hooks.begin(); it != hooks.end();) {
+            json &groups = it.value();
+            bool removed = false;
+            if (groups.is_array()) {
+                for (auto &group : groups)
+                    if (group.is_object() && group.contains("hooks") && group["hooks"].is_array())
+                        removed |= std::erase_if(group["hooks"].get_ref<json::array_t &>(), isPvaiHook) > 0;
+                std::erase_if(groups.get_ref<json::array_t &>(), [](const json &group) {
+                    return group.is_object() && group.contains("hooks") && group["hooks"].empty();
+                });
+            }
+            if (removed && groups.empty())
+                it = hooks.erase(it);
+            else
+                ++it;
+        }
+        if (hooks.empty())
+            settings.erase("hooks");
+    }
+    if (settings.contains("statusLine") && settings["statusLine"].is_object()) {
+        const std::string own = settings["statusLine"].value("command", "");
+        if (own.find("pvai statusline") != std::string::npos) {
+            const auto chain = own.find(" --chain ");
+            if (chain == std::string::npos)
+                settings.erase("statusLine");
+            else
+                settings["statusLine"] = {{"type", "command"}, {"command", unquote(own.substr(chain + 9))}};
+        }
+    }
+    return settings;
+}
+
+// Rewrites ~/.claude/settings.json with `change` applied; a file the change
+// leaves as it is is not touched. `quiet`: say only what changed or failed,
+// on stderr (for `pvai run`, which checks on every start). 0 when the file
+// is as wanted.
+int changeSettings(const std::function<json(json)> &change, bool create, bool quiet,
+                   const char *unchanged, const char *written)
 {
     const char *home = std::getenv("HOME");
     const std::string dir = std::string(home ? home : "") + "/.claude";
@@ -144,10 +185,10 @@ int installHooks(bool quiet)
             return 1;
         }
     }
-    const json wanted = withHooks(settings);
-    if (exists && wanted == settings) {
+    const json wanted = change(settings);
+    if ((exists || !create) && wanted == settings) {
         if (!quiet)
-            std::printf("hooks and status line for %s are in place in %s\n", selfExe().c_str(), path.c_str());
+            std::printf("%s %s\n", unchanged, path.c_str());
         return 0;
     }
     // Written beside it and renamed, so that Claude Code never reads half a
@@ -171,8 +212,23 @@ int installHooks(bool quiet)
         std::fprintf(stderr, "pvai: cannot replace %s: %s\n", path.c_str(), std::strerror(errno));
         return 1;
     }
-    std::fprintf(quiet ? stderr : stdout, "pvai: hooks and status line for %s written to %s\n", selfExe().c_str(), path.c_str());
+    std::fprintf(quiet ? stderr : stdout, "pvai: %s %s (the old file is %s.pvai-bak)\n", written, path.c_str(), path.c_str());
     return 0;
+}
+
+// Puts the hooks and the status line into ~/.claude/settings.json when they
+// are missing or name another pvai binary.
+int installHooks(bool quiet)
+{
+    const std::string unchanged = "hooks and status line for " + selfExe() + " are in place in";
+    const std::string written = "hooks and status line for " + selfExe() + " written to";
+    return changeSettings(withHooks, true, quiet, unchanged.c_str(), written.c_str());
+}
+
+int uninstallHooks()
+{
+    return changeSettings(withoutHooks, false, false, "no pvai hooks or status line in",
+                          "pvai's hooks and status line removed from");
 }
 
 int localClient(const json &first, bool follow, bool startDaemon = false)
@@ -651,8 +707,15 @@ int main(int argc, char **argv)
             return runStatusline(args.size() == 3 && args[1] == "--chain" ? args[2] : "");
         if (verb == "install-hooks")
             return installHooks(false);
+        if (verb == "uninstall-hooks")
+            return uninstallHooks();
         if (verb == "token") {
             std::printf("%s\n", token().c_str());
+            std::fflush(stdout);
+            // The app asks for the token before it connects; on a host
+            // where nothing has started the daemon yet, this does.
+            if (const int fd = openDaemon(true); fd >= 0)
+                ::close(fd);
             return 0;
         }
         if (verb == "send" && args.size() >= 3) {
