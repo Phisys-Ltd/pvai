@@ -35,6 +35,7 @@ json Session::describe() const
             {"queued", queue_.size()},
             {"draft", draft_},
             {"detached", detached()},
+            {"stoppable", stoppable()},
             {"restartable", restartable()},
             {"dialog", dialog_.empty() ? json() : json(dialog_)},
             {"usage", usage_},

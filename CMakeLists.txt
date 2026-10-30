@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(phi-voice-assistant
-    VERSION 0.5.1
+    VERSION 0.5.2
     DESCRIPTION "pvai: Claude Code sessions reachable by voice from the phi-voice-assistant app"
     LANGUAGES CXX
 )

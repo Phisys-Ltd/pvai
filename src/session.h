@@ -61,6 +61,8 @@ public:
     // Started by the daemon (stop ends it), not in a terminal or TUI of the
     // owner's.
     virtual bool detached() const = 0;
+    // `stop` can end it: what the daemon started, and what nobody else holds.
+    virtual bool stoppable() const { return detached(); }
     // The entry in `sessions`.
     virtual json describe() const;
 

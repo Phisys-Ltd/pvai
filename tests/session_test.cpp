@@ -203,9 +203,9 @@ public:
         }
         return nullptr;
     }
-    json call(const std::string &method, const std::function<bool(const json &)> &params = {})
+    json call(const std::string &method, const std::function<bool(const json &)> &params = {}, int ms = 3000)
     {
-        return received([&](const json &m) { return m.value("method", "") == method && (!params || params(m.value("params", json()))); });
+        return received([&](const json &m) { return m.value("method", "") == method && (!params || params(m.value("params", json()))); }, ms);
     }
 
     std::atomic<int> threadListCalls{0};
@@ -321,7 +321,7 @@ private:
             reply(id, {{"data", {"t-tui"}}});
         else if (method == "thread/resume") {
             const std::string tid = params.value("threadId", "");
-            if (tid == "t-tui" || tid == "t-arch" || tid == "t-tui2")
+            if (tid == "t-tui" || tid == "t-arch" || tid == "t-tui2" || tid == "t-free")
                 reply(id, {{"thread", thread(tid, "/tmp")}});
             else
                 frame(json({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32600}, {"message", "no such thread"}}}}).dump());
@@ -445,8 +445,7 @@ int main(int argc, char **argv)
     const json entries = history.value("entries", json::array());
     check(entries.size() == 1 && entries[0].value("text", "") == "earlier answer",
           "its history comes from thread/items/list");
-    a.send({{"type", "stop"}, {"ref", 1}, {"session", "t-tui"}});
-    check(a.next("rejected").value("reason", "") == "not-detached", "a TUI's thread cannot be stopped");
+    check(tui.value("stoppable", false), "a thread no pvai codex holds can be stopped");
 
     // A new thread: prompt, turn, spoken answer.
     a.send({{"type", "start"}, {"ref", 2}, {"assistant", "codex"}, {"cwd", project}, {"label", "neu"}, {"args", {"-m", "gpt-test"}}});
@@ -507,7 +506,10 @@ int main(int argc, char **argv)
         tui.send({{"type", "attach"}, {"assistant", "codex"}, {"cwd", "/tmp"}, {"resume", "t-tui"}, {"pid", 1}});
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         codex.send({{"method", "thread/started"}, {"params", {{"thread", {{"id", "t-tui2"}, {"parentThreadId", nullptr}}}}}});
-        check(!waitSession(a, "t-tui2", [](const json &s) { return !s.value("detached", true); }).empty(), "a new thread in the TUI's folder");
+        check(!waitSession(a, "t-tui2", [](const json &s) { return !s.value("detached", true) && !s.value("stoppable", true); }).empty(),
+              "a new thread in the TUI's folder is the TUI's");
+        a.send({{"type", "stop"}, {"ref", 1}, {"session", "t-tui"}});
+        check(a.next("rejected").value("reason", "") == "not-detached", "a thread a TUI holds cannot be stopped");
     }
     json gone = a.next("sessions", [](const json &m) { return sessionIn(m, "t-tui").empty() && sessionIn(m, "t-tui2").empty(); });
     check(!gone.empty(), "the TUI ended: its resumed and its new thread leave the list");
@@ -517,6 +519,16 @@ int main(int argc, char **argv)
           "both are unsubscribed");
     check(a.next("sessions", [](const json &m) { return !sessionIn(m, "t-tui").empty(); }, 17000).empty(),
           "and not taken on again while still loaded (one rescan later)");
+
+    // Another client's thread that no TUI holds: stop lets go of it.
+    codex.send({{"method", "thread/started"}, {"params", {{"thread", {{"id", "t-free"}, {"parentThreadId", nullptr}}}}}});
+    check(!waitSession(a, "t-free", [](const json &s) { return s.value("stoppable", false) && !s.value("detached", true); }).empty(),
+          "a thread no TUI holds is stoppable");
+    a.send({{"type", "stop"}, {"ref", 9}, {"session", "t-free"}});
+    check(!a.next("stopping").empty(), "and stops");
+    check(!codex.call("thread/unsubscribe", [](const json &p) { return p.value("threadId", "") == "t-free"; }).is_null(), "by unsubscribing");
+    check(codex.call("thread/archive", [](const json &p) { return p.value("threadId", "") == "t-free"; }, 300).is_null(),
+          "not by archiving");
 
     // ---- Claude in a terminal: a fake wrapper and hooks.
     Client wrapper;

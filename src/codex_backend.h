@@ -23,6 +23,8 @@ public:
     // whichever client loaded it last.)
     bool detached() const override { return detached_; }
     void setDetached() { detached_ = true; changed(); }
+    // Not while a `pvai codex` TUI has it open: that is the owner's to end.
+    bool stoppable() const override;
 
     std::string answer(const std::string &choice) override;
     std::string stop() override;
@@ -83,6 +85,10 @@ public:
     void respond(const json &id, const json &result) { link_.respond(id, result); }
     void respondError(const json &id, int code, const std::string &message) { link_.respondError(id, code, message); }
     void forget(const std::string &thread) { stopped_.insert(thread); }
+    bool heldByTui(const std::string &thread) const;
+    // Lets go of a thread that is not ours (unsubscribes; not taken on again
+    // while it stays loaded).
+    void release(const std::string &thread);
     const json &limits() const { return limits_; }
     const std::string &serverVersion() const { return serverVersion_; }
 

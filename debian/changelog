@@ -1,3 +1,10 @@
+pvai (0.5.2-1) trixie; urgency=medium
+
+  * stop lets go of a Codex thread that no pvai codex TUI holds; sessions
+    carry stoppable.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 30 Oct 2026 12:41:24 +0100
+
 pvai (0.5.1-1) trixie; urgency=medium
 
   * When a Codex TUI started with pvai codex ends, its threads leave the

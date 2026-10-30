@@ -105,7 +105,7 @@ daemon knows every live one on its host.
 
 ```json
 {"id": "w1a2b3c4d", "assistant": "claude", "label": "phi-core", "cwd": "/root/projects/phi-core",
- "state": "idle", "queued": 0, "draft": false, "detached": false, "restartable": true,
+ "state": "idle", "queued": 0, "draft": false, "detached": false, "stoppable": false, "restartable": true,
  "dialog": null, "usage": null, "claudeSession": "4f3b744c-..."}
 ```
 
@@ -135,7 +135,10 @@ daemon knows every live one on its host.
   not sent it. Prompts wait until the prompt is empty again (Return, Ctrl+C,
   Ctrl+U or deleting the text), so they never land in the middle of the
   owner's words. Worked out from the keys; it errs towards `true`.
-- `detached`: started by the daemon; only these can be `stop`ped.
+- `detached`: started by the daemon.
+- `stoppable`: `stop` can end it: detached sessions, and Codex threads that
+  no `pvai codex` TUI holds (see "Codex sessions"). A Claude Code session
+  in a terminal is the owner's to end there.
 - `restartable`: `restart` can start this session again in place, going on
   with the same conversation: Claude Code sessions (in a terminal or
   detached) once Claude Code's own session id is known (`claudeSession`,
@@ -178,7 +181,7 @@ App to daemon:
 | `update` | `ref` | update every assistant on this host to its latest version (see "Versions and updates") |
 | `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits) |
 | `interrupt` | `ref`, `session` | stop the running turn, like Esc in the terminal (into a dialog: deny); nothing happens while `idle`, `starting` or on the trust dialog |
-| `stop` | `ref`, `session` | end a detached session |
+| `stop` | `ref`, `session` | end a `stoppable` session |
 | `restart` | `ref`, `session` | end the session's process and start it again, going on with the same conversation (see "Restart") |
 | `projects` | | the directories Claude Code has run in on this host |
 | `browse` | `path` | the subdirectories of `path` |
@@ -195,7 +198,7 @@ Daemon to app:
 | `welcome` | `host`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume` |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued` |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server is not reachable, yet), `bad-start` (Codex refused), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached`; to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server is not reachable, yet), `bad-start` (Codex refused), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `interrupting` | `ref`, `session` | the Esc went in; the session turns `idle` when the transcript shows the interrupt, or after about 4 s anyway, then with its queue dropped (a hung session, such as one without a login) |
@@ -301,10 +304,18 @@ for Claude Code; the differences:
   first).
 - `answer`: `allow` accepts the approval (for a question: the first option
   of each); `deny` refuses it and ends the turn.
-- `stop` works on threads this daemon started (`detached: true`): it
-  archives the thread, which unloads it from the app server; `codex resume`
-  no longer lists it, but it is kept: `conversations` lists it and
-  `start.resume` unarchives it. TUI threads and threads from before a
+- `stop` on a thread this daemon started (`detached: true`) archives it,
+  which unloads it from the app server; `codex resume` no longer lists it,
+  but it is kept: `conversations` lists it and `start.resume` unarchives
+  it. On another client's thread that no `pvai codex` TUI holds
+  (`stoppable: true`, `detached: false`) it only lets go: the daemon
+  unsubscribes, the thread leaves `sessions` and is not taken on again
+  while it stays loaded (a TUI without pvai or the Codex app may still
+  have it open and goes on); it stays in `codex resume`. On a thread a
+  `pvai codex` TUI holds it is `rejected` with `not-detached`.
+- After the app server restarts, the daemon takes on what it reports as
+  loaded (`thread/loaded/list`); a thread that another client loads again
+  shows up again. TUI threads and threads from before a
   daemon restart are not `detached`.
 - When a TUI started with `pvai codex` ends, its threads leave `sessions`:
   the daemon unsubscribes them (which unloads them unless another client

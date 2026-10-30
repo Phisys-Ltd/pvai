@@ -194,13 +194,25 @@ void CodexSession::reply(bool allow)
     }
 }
 
-// Unsubscribing would leave it loaded in the app server for good; archived,
-// it is unloaded and kept in Codex's history, where `start.resume` finds it.
-// A thread without a turn cannot be archived: it is only left.
+bool CodexSession::stoppable() const
+{
+    return detached_ || !backend_.heldByTui(id_);
+}
+
+// A thread the daemon started is archived: unsubscribing would leave it
+// loaded in the app server for good; archived, it is unloaded and kept in
+// Codex's history, where `start.resume` finds it (a thread without a turn
+// cannot be archived: it is only left). Another client's thread that no
+// `pvai codex` TUI holds is only let go of: it stays in `codex resume`.
 std::string CodexSession::stop()
 {
-    if (!detached_)
-        return "not-detached";
+    if (!detached_) {
+        if (backend_.heldByTui(id_))
+            return "not-detached";
+        backend_.release(id_);
+        end();
+        return {};
+    }
     CodexBackend &backend = backend_;
     const std::string id = id_;
     backend.call("thread/archive", {{"threadId", id}}, [&backend, id](const json &, const json &error) {
@@ -550,6 +562,7 @@ void CodexBackend::lost()
     link_.close();
     ready_ = false;
     pending_.clear();
+    adopting_.clear(); // their answers will not come
     for (CodexSession *session : sessions())
         session->end();
     nextTry_ = Clock::now() + std::chrono::seconds(2);
@@ -624,6 +637,17 @@ void CodexBackend::rescan()
     });
 }
 
+bool CodexBackend::heldByTui(const std::string &thread) const
+{
+    return std::any_of(tuis_.begin(), tuis_.end(), [&](const Tui &tui) { return tui.threads.count(thread) > 0; });
+}
+
+void CodexBackend::release(const std::string &thread)
+{
+    call("thread/unsubscribe", {{"threadId", thread}});
+    released_.insert(thread);
+}
+
 void CodexBackend::processStarted(unsigned long long id, const json &hello)
 {
     Tui tui{id, str(hello, "cwd"), {}};
@@ -632,6 +656,7 @@ void CodexBackend::processStarted(unsigned long long id, const json &hello)
         released_.erase(resume);
     }
     tuis_.push_back(std::move(tui));
+    host_.sessionsChanged(); // a resumed thread is no longer stoppable
 }
 
 // The TUI is gone: its threads that are not the daemon's own (detached) are
@@ -646,8 +671,7 @@ void CodexBackend::processEnded(unsigned long long id)
         auto *session = dynamic_cast<CodexSession *>(host_.session(thread));
         if (!session || session->detached())
             continue;
-        call("thread/unsubscribe", {{"threadId", thread}});
-        released_.insert(thread);
+        release(thread);
         session->end();
     }
     tuis_.erase(it);
