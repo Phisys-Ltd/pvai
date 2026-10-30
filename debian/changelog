@@ -1,3 +1,11 @@
+pvai (0.5.9-1) trixie; urgency=medium
+
+  * Firewall profiles for direct access (port 7471): ufw application
+    profile "pvai" and firewalld service "pvai"; they open nothing.
+  * INSTALL.md: firewalld and iptables.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 30 Oct 2026 22:30:00 +0100
+
 pvai (0.5.8-1) trixie; urgency=medium
 
   * A task notification makes an idle Claude Code session busy only once

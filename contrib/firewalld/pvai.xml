@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<service>
+  <short>pvai</short>
+  <description>pvai listen: the PhiVoice AI app reaching this host without ssh (TLS, paired devices only).</description>
+  <port protocol="tcp" port="7471"/>
+</service>

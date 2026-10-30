@@ -1,0 +1,4 @@
+[pvai]
+title=PhiVoice AI direct access
+description=pvai listen: the PhiVoice AI app reaching this host without ssh (TLS, paired devices only)
+ports=7471/tcp

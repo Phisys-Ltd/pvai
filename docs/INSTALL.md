@@ -49,8 +49,9 @@ what makes the key itself trustworthy. (Plain `http://` works as well, for
 older sources.) Newer builds land in `https://apt.phisys.com/testing`
 first (same line with `testing` instead of `stable`).
 
-The package installs `/usr/bin/pvai` only: no service, nothing in anyone's
-home directory. The daemon starts on demand, and each user sets pvai up
+The package installs `/usr/bin/pvai` and two firewall profiles for direct
+access (ufw and firewalld, see "Connect the app"; they open nothing): no
+service, nothing in anyone's home directory. The daemon starts on demand, and each user sets pvai up
 once (see "Set up per user").
 
 ### macOS with Homebrew
@@ -178,11 +179,23 @@ Let port 7471 through the host's firewall, ideally only from your own
 network:
 
 ```
-# ufw
-sudo ufw allow from 192.168.1.0/24 to any port 7471 proto tcp
-# nftables (with an inet filter table and an input chain)
+# ufw (the Debian package brings the profile "pvai")
+sudo ufw allow from 192.168.1.0/24 to any app pvai
+# without the package: ... to any port 7471 proto tcp
+
+# firewalld (the Debian package brings the service "pvai")
+sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=192.168.1.0/24 service name=pvai accept'
+sudo firewall-cmd --reload
+
+# nftables (with an inet filter table and an input chain; add it to
+# /etc/nftables.conf to keep it after a reboot)
 sudo nft add rule inet filter input ip saddr 192.168.1.0/24 tcp dport 7471 accept
+
+# iptables (keep it with: sudo apt install iptables-persistent; sudo netfilter-persistent save)
+sudo iptables -A INPUT -p tcp -s 192.168.1.0/24 --dport 7471 -j ACCEPT
 ```
+
+The package only describes the port; it opens nothing by itself.
 
 On macOS with the firewall on (System Settings → Network → Firewall),
 allow incoming connections for pvai when macOS asks, or beforehand:
