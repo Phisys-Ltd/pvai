@@ -499,9 +499,67 @@ int runCodex(const std::vector<std::string> &args)
         raw.push_back(arg.data());
     raw.push_back(nullptr);
     dropClaudeEnvironment();
-    ::execv(codex.c_str(), raw.data());
-    std::perror("pvai: codex");
-    return 127;
+    if (!tui) {
+        ::execv(codex.c_str(), raw.data());
+        std::perror("pvai: codex");
+        return 127;
+    }
+
+    // A TUI: it runs as our child while we stay registered with the daemon,
+    // so that its threads leave the session list when it ends.
+    std::string cwd;
+    for (std::size_t i = 0; i + 1 < argv.size(); ++i)
+        if (argv[i] == "-C" || argv[i] == "--cd")
+            cwd = argv[i + 1];
+    for (const auto &arg : argv)
+        if (arg.rfind("--cd=", 0) == 0)
+            cwd = arg.substr(5);
+    char resolved[PATH_MAX];
+    if (::realpath(cwd.c_str(), resolved))
+        cwd = resolved;
+    std::string resume; // codex resume <id or name>
+    if (!args.empty() && args[0] == "resume")
+        for (std::size_t i = 1; i < args.size() && resume.empty(); ++i) {
+            if (args[i].rfind("-", 0) != 0)
+                resume = args[i];
+            else if ((args[i] == "-C" || args[i] == "--cd" || args[i] == "-m" || args[i] == "--model" || args[i] == "-c"
+                      || args[i] == "--config" || args[i] == "-p" || args[i] == "--profile")
+                     && i + 1 < args.size())
+                ++i;
+        }
+    const pid_t child = ::fork();
+    if (child < 0) {
+        std::perror("pvai: fork");
+        return 1;
+    }
+    if (child == 0) {
+        ::execv(codex.c_str(), raw.data());
+        std::perror("pvai: codex");
+        ::_exit(127);
+    }
+    // The terminal's keys and signals are the TUI's.
+    ::signal(SIGINT, SIG_IGN);
+    ::signal(SIGQUIT, SIG_IGN);
+    ::signal(SIGTSTP, SIG_IGN);
+    static pid_t s_child;
+    s_child = child;
+    for (int sig : {SIGTERM, SIGHUP})
+        ::signal(sig, [](int signal) { ::kill(s_child, signal); });
+    // The connection is the registration: it ends when we do.
+    const int daemon = openDaemon(true);
+    if (daemon >= 0) {
+        setCloseOnExec(daemon);
+        sendLine(daemon, {{"type", "attach"}, {"assistant", "codex"}, {"cwd", cwd}, {"resume", resume},
+                          {"pid", static_cast<int>(child)}});
+    }
+    int status = 0;
+    while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {
+    }
+    if (daemon >= 0)
+        ::close(daemon);
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status);
+    return 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
 }
 
 } // namespace

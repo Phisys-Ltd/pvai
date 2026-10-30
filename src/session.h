@@ -159,6 +159,11 @@ public:
     virtual void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) = 0;
     virtual void start(const StartRequest &request, Started done) = 0;
 
+    // A process of this assistant that pvai started in the owner's terminal
+    // (`pvai codex`) said hello; `id` stands for it until processEnded.
+    virtual void processStarted(unsigned long long, const json &) {}
+    virtual void processEnded(unsigned long long) {}
+
     // The daemon's loop: an fd to watch, its events, time-driven work.
     virtual int fd() const { return -1; }
     virtual short events() const { return 0; }

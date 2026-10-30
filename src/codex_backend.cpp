@@ -614,10 +614,43 @@ void CodexBackend::rescan()
     call("thread/loaded/list", json::object(), [this](const json &result, const json &) {
         if (!result.contains("data") || !result["data"].is_array())
             return;
+        std::set<std::string> loaded;
         for (const auto &id : result["data"])
             if (id.is_string())
-                adopt(id.get<std::string>());
+                loaded.insert(id.get<std::string>());
+        std::erase_if(released_, [&](const std::string &id) { return !loaded.count(id); });
+        for (const auto &id : loaded)
+            adopt(id);
     });
+}
+
+void CodexBackend::processStarted(unsigned long long id, const json &hello)
+{
+    Tui tui{id, str(hello, "cwd"), {}};
+    if (const std::string resume = str(hello, "resume"); !resume.empty()) {
+        tui.threads.insert(resume);
+        released_.erase(resume);
+    }
+    tuis_.push_back(std::move(tui));
+}
+
+// The TUI is gone: its threads that are not the daemon's own (detached) are
+// unsubscribed, which unloads them unless another client holds them, and
+// leave the list.
+void CodexBackend::processEnded(unsigned long long id)
+{
+    const auto it = std::find_if(tuis_.begin(), tuis_.end(), [&](const Tui &tui) { return tui.id == id; });
+    if (it == tuis_.end())
+        return;
+    for (const auto &thread : it->threads) {
+        auto *session = dynamic_cast<CodexSession *>(host_.session(thread));
+        if (!session || session->detached())
+            continue;
+        call("thread/unsubscribe", {{"threadId", thread}});
+        released_.insert(thread);
+        session->end();
+    }
+    tuis_.erase(it);
 }
 
 // A thread without a turn yet has nothing to resume; it is taken on a later
@@ -625,7 +658,7 @@ void CodexBackend::rescan()
 // start, which can be neither resumed nor archived.)
 void CodexBackend::adopt(const std::string &id)
 {
-    if (id.empty() || host_.session(id) || stopped_.count(id) || adopting_.count(id))
+    if (id.empty() || host_.session(id) || stopped_.count(id) || adopting_.count(id) || released_.count(id))
         return;
     adopting_.insert(id);
     call("thread/resume", {{"threadId", id}, {"excludeTurns", true}}, [this, id](const json &result, const json &) {
@@ -648,6 +681,18 @@ CodexSession *CodexBackend::addSession(const json &thread, bool detached)
     }
     auto owned = std::make_unique<CodexSession>(host_, *this, thread, detached);
     CodexSession *session = owned.get();
+    // A TUI's thread: the only `pvai codex` running in its folder.
+    if (!detached) {
+        Tui *only = nullptr;
+        int count = 0;
+        for (auto &tui : tuis_)
+            if (tui.cwd == session->cwd()) {
+                only = &tui;
+                ++count;
+            }
+        if (count == 1)
+            only->threads.insert(id);
+    }
     host_.addSession(std::move(owned));
     Host &host = host_;
     call("thread/items/list", {{"threadId", id}, {"limit", 200}, {"sortDirection", "desc"}}, [&host, id](const json &result, const json &) {

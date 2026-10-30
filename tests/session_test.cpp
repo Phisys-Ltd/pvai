@@ -321,7 +321,7 @@ private:
             reply(id, {{"data", {"t-tui"}}});
         else if (method == "thread/resume") {
             const std::string tid = params.value("threadId", "");
-            if (tid == "t-tui" || tid == "t-arch")
+            if (tid == "t-tui" || tid == "t-arch" || tid == "t-tui2")
                 reply(id, {{"thread", thread(tid, "/tmp")}});
             else
                 frame(json({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32600}, {"message", "no such thread"}}}}).dump());
@@ -500,6 +500,23 @@ int main(int argc, char **argv)
     check(!a.next("stopping").empty(), "stopping a started thread");
     check(!codex.call("thread/archive", [](const json &p) { return p.value("threadId", "") == "t-new"; }).is_null(), "archives it");
     check(!waitSession(a, "t-arch", [](const json &) { return true; }).empty(), "the others stay");
+
+    // ---- A TUI started by pvai codex: its threads leave when it ends.
+    {
+        Client tui;
+        tui.send({{"type", "attach"}, {"assistant", "codex"}, {"cwd", "/tmp"}, {"resume", "t-tui"}, {"pid", 1}});
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        codex.send({{"method", "thread/started"}, {"params", {{"thread", {{"id", "t-tui2"}, {"parentThreadId", nullptr}}}}}});
+        check(!waitSession(a, "t-tui2", [](const json &s) { return !s.value("detached", true); }).empty(), "a new thread in the TUI's folder");
+    }
+    json gone = a.next("sessions", [](const json &m) { return sessionIn(m, "t-tui").empty() && sessionIn(m, "t-tui2").empty(); });
+    check(!gone.empty(), "the TUI ended: its resumed and its new thread leave the list");
+    check(!sessionIn(gone, "t-arch").empty(), "a detached thread in the same folder stays");
+    check(!codex.call("thread/unsubscribe", [](const json &p) { return p.value("threadId", "") == "t-tui"; }).empty()
+              && !codex.call("thread/unsubscribe", [](const json &p) { return p.value("threadId", "") == "t-tui2"; }).is_null(),
+          "both are unsubscribed");
+    check(a.next("sessions", [](const json &m) { return !sessionIn(m, "t-tui").empty(); }, 17000).empty(),
+          "and not taken on again while still loaded (one rescan later)");
 
     // ---- Claude in a terminal: a fake wrapper and hooks.
     Client wrapper;

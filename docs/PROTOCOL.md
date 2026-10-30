@@ -304,10 +304,17 @@ for Claude Code; the differences:
 - `stop` works on threads this daemon started (`detached: true`): it
   archives the thread, which unloads it from the app server; `codex resume`
   no longer lists it, but it is kept: `conversations` lists it and
-  `start.resume` unarchives it. Threads stay
-  loaded in the app server until then, also after their TUI quit, so they
-  stay sessions. TUI threads and threads from before a daemon restart are
-  not `detached`.
+  `start.resume` unarchives it. TUI threads and threads from before a
+  daemon restart are not `detached`.
+- When a TUI started with `pvai codex` ends, its threads leave `sessions`:
+  the daemon unsubscribes them (which unloads them unless another client
+  holds them) and does not take them on again while they stay loaded. A
+  TUI's threads are the one `codex resume <id>` named and every thread the
+  daemon takes on while that TUI is the only `pvai codex` running in the
+  thread's folder; with two TUIs in one folder, new threads belong to
+  neither. Detached threads never leave this way. Threads of a plain
+  `codex` (without pvai), and all threads after a daemon restart, stay
+  loaded and stay sessions until `stop` or the app server unloads them.
 - `usage`: `model`, `context` from Codex's token count of the last request
   (`tokens` its total, `size` the model's context window; for a thread that
   ran before the daemon saw it, the last count in its rollout file; `0` and
@@ -333,6 +340,9 @@ for Claude Code; the differences:
   `pvai codex [ARGS...]` (or `pvai run -- codex ...`) starts the TUI as
   `codex --remote unix:// -C "$PWD" ...`, which always uses the shared
   server, and starts the server and the daemon first when they do not run.
+  It runs the TUI as its child and stays connected to the daemon with
+  `{"type": "attach", "assistant": "codex", "cwd", "resume", "pid"}`
+  (local only, nothing is answered) until the TUI ends.
   A TUI thread shows up with its first prompt (within about 15 s); prompts
   from the app go into it like the owner's.
 

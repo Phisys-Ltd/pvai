@@ -67,6 +67,8 @@ public:
 
     void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) override;
     void start(const StartRequest &request, Started done) override;
+    void processStarted(unsigned long long id, const json &hello) override;
+    void processEnded(unsigned long long id) override;
 
     int fd() const override { return link_.fd(); }
     short events() const override;
@@ -108,6 +110,18 @@ private:
     std::string serverVersion_;
     std::set<std::string> stopped_;  // threads stopped here: not adopted again
     std::set<std::string> adopting_; // thread/resume sent
+    // TUIs started by `pvai codex`, and the threads that are theirs: the one
+    // `codex resume` named, and those taken on while it was the only TUI in
+    // the thread's folder. When a TUI ends, its threads leave.
+    struct Tui {
+        unsigned long long id = 0;
+        std::string cwd;
+        std::set<std::string> threads;
+    };
+    std::vector<Tui> tuis_;
+    // Threads left when their TUI ended: not taken on again while they stay
+    // loaded (another client may hold them); once unloaded, forgotten.
+    std::set<std::string> released_;
 };
 
 } // namespace pvai

@@ -48,7 +48,9 @@ namespace pvai {
 
 namespace {
 
-enum class Kind { Unknown, Wrapper, App };
+// Process: an assistant's own process that pvai started in a terminal
+// (`pvai codex`); its connection lasts as long as the process.
+enum class Kind { Unknown, Wrapper, App, Process };
 
 struct Peer {
     std::unique_ptr<Conn> conn;
@@ -65,6 +67,7 @@ struct Peer {
     std::optional<std::chrono::steady_clock::time_point> deadline; // before login
     std::string client;                 // apps: `hello.client`
     std::string sessionId;              // wrappers
+    std::string assistant;              // processes: whose
     std::set<std::string> subscriptions; // apps: sessions whose transcript they follow
 };
 
@@ -339,6 +342,9 @@ private:
             // The session holds the wrapper's connection: it goes first.
             if (peer->kind == Kind::Wrapper && sessions_.erase(peer->sessionId))
                 sessionsDirty_ = true;
+            if (peer->kind == Kind::Process)
+                if (Backend *owner = backend(peer->assistant))
+                    owner->processEnded(peer->serial);
         }
         std::erase_if(peers_, [&](const auto &p) { return std::find(dead_.begin(), dead_.end(), p.get()) != dead_.end(); });
         dead_.clear();
@@ -451,6 +457,16 @@ private:
                 registerWrapper(peer, message);
                 return;
             }
+            if (!peer->tcp && type == "attach") {
+                if (Backend *owner = backend(message.value("assistant", ""))) {
+                    peer->kind = Kind::Process;
+                    peer->assistant = owner->name();
+                    owner->processStarted(peer->serial, message);
+                } else {
+                    peer->conn->closeAfterFlush();
+                }
+                return;
+            }
             if (!peer->tcp && (type == "hook" || type == "status")) {
                 const char *key = type == "hook" ? "event" : "status";
                 if (auto *session = claudeSession(message.value("id", "")); session && message.contains(key) && message[key].is_object()) {
@@ -482,6 +498,8 @@ private:
             peer->conn->closeAfterFlush();
             return;
         }
+        if (peer->kind == Kind::Process)
+            return; // it only has to stay connected
         if (peer->kind == Kind::Wrapper) {
             ClaudeSession *session = claudeSession(peer->sessionId);
             if (!session)
