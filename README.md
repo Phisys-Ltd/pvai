@@ -1,0 +1,81 @@
+# pvai
+
+The daemon behind PhiVoice AI: it makes Claude Code and Codex sessions on a
+host reachable for an app, so prompts can be spoken instead of typed and the
+end of each turn can be read aloud. One C++20 binary for Linux and macOS,
+without Qt; the app talks to it over the JSON protocol in
+`docs/PROTOCOL.md`.
+
+## Shape
+
+`pvai` is one binary with these parts:
+
+- `pvai run [--name N] -- claude …` starts Claude Code in a pseudo-terminal
+  and passes the real terminal through, so the session looks and works as
+  always; prompts from the app are typed into it (bracketed paste, then
+  Return) only while its prompt is free.
+- `pvai hook` is what Claude Code's hooks call (`SessionStart`,
+  `UserPromptSubmit`, `Stop`, `Notification`); it tells the wrapper where
+  the turn stands. `pvai install-hooks` writes them into
+  `~/.claude/settings.json`, and sets the status line to `pvai statusline`
+  (context window and rate limits for the app; an existing status line
+  command keeps printing through `--chain`).
+- `pvai codex …` starts the Codex TUI on Codex's shared app server
+  (`--remote unix://`), where the daemon follows its threads; Codex needs
+  no wrapper and no hooks.
+- `pvai daemon` (started on demand by the first `pvai run`) knows the live
+  sessions of the host (Claude Code under `pvai run`, Codex threads in the
+  app server) and speaks `docs/PROTOCOL.md` on 127.0.0.1:7470.
+- `pvai token` prints the host's token for the app.
+
+Claude Code tells pvai where a turn stands through its hooks: `Stop` carries
+the final answer (`last_assistant_message`). A spoken prompt starts with
+`🎙 `; the `SessionStart` hook gives every pvai session the convention, so
+Claude ends such a turn with a `🔊 ` line meant for the ear. An Esc that
+interrupts a turn fires no hook: the wrapper reports the key and the daemon
+looks for Claude Code's interrupt note in the session transcript.
+
+## Build and use
+
+On Debian trixie (amd64, arm64) from phi's apt repository:
+
+```
+sudo install -d /etc/apt/keyrings
+curl -fsSL http://apt.phisys.com/repo-signing-key.asc \
+  | sudo gpg --dearmor -o /etc/apt/keyrings/phisys-archive-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/phisys-archive-keyring.gpg] http://apt.phisys.com/testing trixie main" \
+  | sudo tee /etc/apt/sources.list.d/phisys-testing.list
+sudo apt update && sudo apt install pvai   # /usr/bin/pvai
+pvai install-hooks                         # then as below, per user
+```
+
+The package installs the binary only: no service (the daemon starts on
+demand) and no hooks (`pvai install-hooks` stays a step per user). The
+packaging is `debian/`; it is built with phi-packaging's `build-local.sh`
+(sbuild, `config/targets-pvai.env`) and published to `testing`.
+
+From source:
+
+```
+cmake -S . -B build -G Ninja && cmake --build build
+sudo cmake --install build          # /usr/local/bin/pvai
+pvai install-hooks                   # hooks + status line, once per user and host
+pvai run -- claude                   # instead of plain `claude`
+pvai codex                           # instead of plain `codex`
+pvai start [--name L] DIR            # Claude Code without a terminal (as the app's +)
+pvai attach <session>                # look at / type into it; Ctrl+\ leaves it running
+pvai listen 192.168.1.10            # direct access without ssh (TLS, port 7471)
+pvai pair                           # a link and QR code for one device, 10 minutes
+pvai devices / pvai revoke <name>   # paired devices
+pvai answer <session> allow|deny     # the dialog it waits on
+pvai sessions                        # what runs on this host
+pvai watch                           # what an app would see, for checks
+pvai send --voice <session> "text"   # a prompt without the app
+pvai propose <host>/<session> "text" # a message to another session, released by the owner in the app
+```
+
+## Licence
+
+Apache License 2.0, see `LICENSE`. `third_party/qrcodegen` is Nayuki's QR
+Code generator under the MIT licence (its own `LICENSE` there). The
+PhiVoice AI app for macOS is a separate, proprietary product of Phisys AG.

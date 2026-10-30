@@ -1,0 +1,30 @@
+Source: pvai
+Section: devel
+Priority: optional
+Maintainer: Marius Schumacher <marius.schumacher@phisys.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cmake,
+ ninja-build,
+ nlohmann-json3-dev,
+ libssl-dev (>= 3)
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://phisys.com
+
+Package: pvai
+Architecture: any
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends}
+Suggests: openssh-server
+Description: PhiVoice AI: Claude Code and Codex sessions reachable by voice
+ The host side of PhiVoice AI. `pvai run -- claude` runs Claude Code in a
+ pseudo-terminal, `pvai codex` runs the Codex TUI on Codex's shared app
+ server; the daemon (started on demand) knows the host's live sessions and
+ lets the PhiVoice AI app on the Mac send prompts, answer dialogs, follow
+ the conversation and hear the end of each turn, over an ssh port forward
+ to 127.0.0.1:7470.
+ .
+ Per user, once: `pvai install-hooks` adds the hooks and the status line to
+ ~/.claude/settings.json.
