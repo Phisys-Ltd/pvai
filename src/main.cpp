@@ -56,7 +56,8 @@ const char *kUsage =
     "       pvai stop SESSION                          end a session started with start\n"
     "       pvai send [--voice] SESSION TEXT           type TEXT into a session (for tests)\n"
     "       pvai propose HOST[/SESSION] [TEXT]         suggest a message to another session; the owner releases it\n"
-    "       pvai watch                                 print what the daemon tells apps\n";
+    "       pvai watch                                 print what the daemon tells apps\n"
+    "       pvai --version | version                   print the version\n";
 
 const char *kHookEvents[] = {"SessionStart", "UserPromptSubmit", "Stop", "Notification"};
 
@@ -732,8 +733,8 @@ int main(int argc, char **argv)
             return runPropose(args[1], args.size() == 3 ? args[2] : "", args.size() == 2);
         if (verb == "watch")
             return localClient(nullptr, true);
-        if (verb == "--version") {
-            std::printf("pvai %s\n", kVersion);
+        if (verb == "--version" || verb == "version") {
+            std::printf("%s\n", kVersion);
             return 0;
         }
     } catch (const std::exception &e) {

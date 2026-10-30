@@ -1,3 +1,10 @@
+pvai (0.5.4-1) trixie; urgency=medium
+
+  * pvai --version and pvai version print the bare version.
+  * CMake project renamed to pvai.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 30 Oct 2026 18:45:00 +0100
+
 pvai (0.5.3-1) trixie; urgency=medium
 
   * pvai uninstall-hooks takes pvai's hooks and status line out of
