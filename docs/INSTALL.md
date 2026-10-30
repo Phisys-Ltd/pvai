@@ -6,10 +6,9 @@ app itself runs on the Mac.
 
 ## Requirements
 
-- **Systems**: Debian 13 (trixie) on amd64 or arm64, from the apt
-  repository below; Ubuntu 24.04 (noble) and other Linux systems from
-  source for now; macOS (Apple silicon or Intel) through Homebrew or from
-  source.
+- **Systems**: Debian 13 (trixie) and Ubuntu 24.04 (noble) on amd64 or
+  arm64, from the apt repository below; other Linux systems from source;
+  macOS (Apple silicon or Intel) through Homebrew or from source.
 - **Claude Code** (`claude` on the PATH) and/or **Codex** (`codex` on the
   PATH or in `~/.local/bin`). pvai is tested with Claude Code 2.1.314 and
   Codex 0.166.0. It reads hook payloads, status line fields and app server
@@ -21,7 +20,7 @@ app itself runs on the Mac.
 
 ## Install
 
-### Debian over apt
+### Debian and Ubuntu over apt
 
 The repository is signed with this key:
 
@@ -31,14 +30,17 @@ pub   rsa4096 2026-02-08 [SC]
 uid   Aptly Repo Signing <aptly@phisys.com>
 ```
 
-Fetch the key, check that it is this one, then add the source:
+Fetch the key, check that it is this one, then add the source for your
+release (`trixie` on Debian 13, `noble` on Ubuntu 24.04; the line below
+picks it from `/etc/os-release`):
 
 ```
 sudo install -d /etc/apt/keyrings
 curl -fsSL https://apt.phisys.com/repo-signing-key.asc -o /tmp/phisys.asc
 gpg --show-keys --with-fingerprint /tmp/phisys.asc   # must show the fingerprint above
 sudo gpg --dearmor -o /etc/apt/keyrings/phisys-archive-keyring.gpg /tmp/phisys.asc
-echo "deb [signed-by=/etc/apt/keyrings/phisys-archive-keyring.gpg] https://apt.phisys.com/stable trixie main" \
+. /etc/os-release
+echo "deb [signed-by=/etc/apt/keyrings/phisys-archive-keyring.gpg] https://apt.phisys.com/testing $VERSION_CODENAME main" \
   | sudo tee /etc/apt/sources.list.d/phisys.list
 sudo apt update && sudo apt install pvai
 pvai --version
@@ -46,8 +48,9 @@ pvai --version
 
 apt checks every package against the key; the fingerprint check above is
 what makes the key itself trustworthy. (Plain `http://` works as well, for
-older sources.) Newer builds land in `https://apt.phisys.com/testing`
-first (same line with `testing` instead of `stable`).
+older sources.) pvai is in `testing` for now; once it moves on to
+`stable`, the same line with `stable` instead of `testing` follows only
+released versions.
 
 The package installs `/usr/bin/pvai` and two firewall profiles for direct
 access (ufw and firewalld, see "Connect the app"; they open nothing): no
