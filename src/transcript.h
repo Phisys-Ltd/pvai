@@ -35,6 +35,10 @@ public:
     // finished: each ends with an output entry, even an empty one. No hook
     // fires for them.
     std::size_t localOutputs() const { return localOutputs_; }
+    // How many times something other than the owner handed Claude Code
+    // work (a background task or agent that finished): a turn may start
+    // from it without UserPromptSubmit.
+    std::size_t wakes() const { return wakes_; }
 
 private:
     void take(const json &line, std::vector<json> &out);
@@ -46,6 +50,7 @@ private:
     std::deque<json> recent_;
     std::map<std::string, std::string> toolNames_; // tool_use id -> name
     std::size_t localOutputs_ = 0;
+    std::size_t wakes_ = 0;
 };
 
 } // namespace pvai

@@ -1,3 +1,11 @@
+pvai (0.5.5-1) trixie; urgency=medium
+
+  * Claude Code sessions carry their running subagents (subagents).
+  * A task notification that starts a turn without UserPromptSubmit makes
+    an idle session busy.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 30 Oct 2026 19:30:00 +0100
+
 pvai (0.5.4-1) trixie; urgency=medium
 
   * pvai --version and pvai version print the bare version.

@@ -16,6 +16,11 @@ namespace {
 const char *kInterruptMark = "[Request interrupted by user";
 constexpr auto kSubmitTimeout = std::chrono::seconds(15);
 constexpr auto kTailEvery = std::chrono::milliseconds(300);
+constexpr auto kSubagentsEvery = std::chrono::seconds(1);
+// An unfinished subagent from before this session object (a daemon restart,
+// an earlier run of a resumed conversation) counts only while its
+// transcript still moves: one Claude Code killed never gets `finished`.
+constexpr auto kSubagentQuiet = std::chrono::minutes(10);
 // Where a conversation's title is looked for.
 constexpr std::size_t kTitleScan = 2 * 1024 * 1024;
 
@@ -89,6 +94,14 @@ json ClaudeSession::describe() const
 {
     json entry = Session::describe();
     entry["claudeSession"] = claudeSession_.empty() ? json() : json(claudeSession_);
+    json running = json::array();
+    for (const auto &[id, agent] : subagents_)
+        if (!agent.entry.is_null())
+            running.push_back(agent.entry);
+    std::sort(running.begin(), running.end(), [](const json &a, const json &b) {
+        return a.value("startedAt", 0LL) < b.value("startedAt", 0LL);
+    });
+    entry["subagents"] = std::move(running);
     return entry;
 }
 
@@ -158,6 +171,10 @@ std::string ClaudeSession::restart()
         return "busy";
     wrapper_.send({{"type", "restart"}, {"resume", claudeSession_}});
     state_ = "starting";
+    // The old process takes its subagents with it.
+    created_ = std::filesystem::file_time_type::clock::now();
+    for (auto &[id, agent] : subagents_)
+        agent.entry = nullptr;
     slashPending_ = false;
     escapeChecks_.clear();
     submitDeadline_.reset();
@@ -202,6 +219,9 @@ void ClaudeSession::onHook(const json &event)
         transcript_ = path;
         tail_.follow(path);
         tail_.poll();
+        wakeMark_ = tail_.wakes();
+        subagents_.clear();
+        nextSubagents_ = Clock::now();
         historyReset();
     }
 
@@ -329,11 +349,15 @@ void ClaudeSession::tick(Clock::time_point now)
         pollTranscript();
         nextTail_ = now + kTailEvery;
     }
+    if (now >= nextSubagents_) {
+        scanSubagents(now);
+        nextSubagents_ = now + kSubagentsEvery;
+    }
 }
 
 std::optional<Clock::time_point> ClaudeSession::deadline() const
 {
-    Clock::time_point next = nextTail_;
+    Clock::time_point next = std::min(nextTail_, nextSubagents_);
     for (const auto &at : escapeChecks_)
         next = std::min(next, at);
     if (submitDeadline_)
@@ -378,6 +402,16 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
 void ClaudeSession::pollTranscript()
 {
     auto fresh = tail_.poll();
+    // A background task or agent finished and Claude Code took it up: a
+    // turn without UserPromptSubmit, ended by Stop as usual.
+    if (tail_.wakes() != wakeMark_) {
+        wakeMark_ = tail_.wakes();
+        if (state_ == "idle") {
+            state_ = "busy";
+            voiceTurn_ = false;
+            changed();
+        }
+    }
     if (slashPending_ && tail_.localOutputs() > slashMark_) {
         slashPending_ = false;
         if (state_ == "busy") {
@@ -387,6 +421,58 @@ void ClaudeSession::pollTranscript()
         }
     }
     sendEntries(std::move(fresh));
+}
+
+void ClaudeSession::scanSubagents(Clock::time_point)
+{
+    namespace fs = std::filesystem;
+    const std::string suffix = ".jsonl";
+    if (transcript_.size() <= suffix.size())
+        return;
+    const fs::path dir = transcript_.substr(0, transcript_.size() - suffix.size()) + "/subagents";
+    const auto fileNow = fs::file_time_type::clock::now();
+    bool news = false;
+    std::error_code ec;
+    for (const auto &file : fs::directory_iterator(dir, ec)) {
+        const std::string name = file.path().filename().string();
+        const std::string prefix = "agent-", metaSuffix = ".meta.json";
+        if (name.size() <= prefix.size() + metaSuffix.size() || name.rfind(prefix, 0) != 0
+            || name.compare(name.size() - metaSuffix.size(), metaSuffix.size(), metaSuffix) != 0)
+            continue;
+        const std::string id = name.substr(prefix.size(), name.size() - prefix.size() - metaSuffix.size());
+        std::error_code timeError;
+        const auto mtime = fs::last_write_time(file.path(), timeError);
+        if (timeError)
+            continue;
+        auto known = subagents_.find(id);
+        json entry;
+        if (known != subagents_.end() && known->second.mtime == mtime) {
+            entry = known->second.entry;
+        } else {
+            std::ifstream in(file.path());
+            const json meta = json::parse(in, nullptr, false);
+            if (meta.is_object() && !meta.value("finished", false)) {
+                const auto started = std::chrono::system_clock::now()
+                    - std::chrono::duration_cast<std::chrono::system_clock::duration>(fileNow - mtime);
+                entry = {{"id", id},
+                         {"type", meta.value("agentType", "")},
+                         {"description", meta.value("description", "")},
+                         {"background", meta.value("requestShape", "") == "background"},
+                         {"startedAt", std::chrono::duration_cast<std::chrono::seconds>(started.time_since_epoch()).count()}};
+            }
+        }
+        if (!entry.is_null() && mtime < created_) {
+            std::error_code logError;
+            const auto moved = fs::last_write_time(dir / (prefix + id + suffix), logError);
+            if (logError || fileNow - moved > kSubagentQuiet)
+                entry = nullptr;
+        }
+        if (known == subagents_.end() ? !entry.is_null() : known->second.entry != entry)
+            news = true;
+        subagents_[id] = {mtime, entry};
+    }
+    if (news)
+        changed();
 }
 
 std::string ClaudeBackend::projectDir(const std::string &cwd)

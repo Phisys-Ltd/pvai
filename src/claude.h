@@ -8,6 +8,9 @@
 
 #include <sys/types.h>
 
+#include <filesystem>
+#include <map>
+
 namespace pvai {
 
 class ClaudeSession : public Session {
@@ -44,6 +47,7 @@ private:
     void armEscapeCheck(bool forceIdle = false);
     void runEscapeChecks(Clock::time_point now);
     void pollTranscript();
+    void scanSubagents(Clock::time_point now);
 
     Conn &wrapper_;
     bool canRestart_ = false;
@@ -66,6 +70,18 @@ private:
     // A prompt went in; UserPromptSubmit should confirm it by then. Claude
     // Code without a login answers "Not logged in" and fires no hook.
     std::optional<Clock::time_point> submitDeadline_;
+    // Task notifications seen in the transcript so far (see wakes()).
+    std::size_t wakeMark_ = 0;
+    // Subagents, from <transcript without .jsonl>/subagents/agent-<id>.meta.json:
+    // by id, the meta file's mtime when last read and the protocol entry
+    // (null once finished or given up).
+    struct Subagent {
+        std::filesystem::file_time_type mtime;
+        json entry;
+    };
+    std::map<std::string, Subagent> subagents_;
+    std::filesystem::file_time_type created_ = std::filesystem::file_time_type::clock::now();
+    Clock::time_point nextSubagents_ = Clock::now();
 };
 
 // `pvai run` in the owner's terminal: theirs to end.

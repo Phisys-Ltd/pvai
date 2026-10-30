@@ -168,9 +168,35 @@ std::vector<json> TranscriptTail::poll()
     return out;
 }
 
+namespace {
+
+// A task notification Claude Code queues for itself: an attachment in
+// newer versions, a user message in older ones.
+bool isWake(const json &line)
+{
+    if (line.value("isSidechain", false))
+        return false;
+    const std::string mark = "<task-notification>";
+    const std::string type = line.value("type", "");
+    if (type == "attachment" && line.contains("attachment") && line["attachment"].is_object()) {
+        const json &attachment = line["attachment"];
+        return attachment.value("type", "") == "queued_command" && attachment.contains("prompt")
+            && attachment["prompt"].is_string() && attachment["prompt"].get<std::string>().rfind(mark, 0) == 0;
+    }
+    if (type == "user" && line.contains("message") && line["message"].is_object()) {
+        const json &content = line["message"].value("content", json());
+        return content.is_string() && content.get<std::string>().rfind(mark, 0) == 0;
+    }
+    return false;
+}
+
+} // namespace
+
 void TranscriptTail::take(const json &line, std::vector<json> &out)
 {
     const std::string type = line.value("type", "");
+    if (isWake(line))
+        ++wakes_;
     // Local slash commands and their output: a system line of their own in
     // newer Claude Code versions, a user message in older ones.
     const bool localCommand = type == "system" && line.value("subtype", "") == "local_command";

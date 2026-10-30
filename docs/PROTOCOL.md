@@ -107,7 +107,7 @@ daemon knows every live one on its host.
 ```json
 {"id": "w1a2b3c4d", "assistant": "claude", "label": "phi-core", "cwd": "/root/projects/phi-core",
  "state": "idle", "queued": 0, "draft": false, "detached": false, "stoppable": false, "restartable": true,
- "dialog": null, "usage": null, "claudeSession": "4f3b744c-..."}
+ "dialog": null, "usage": null, "claudeSession": "4f3b744c-...", "subagents": []}
 ```
 
 - `id`: opaque, stable while it lives: chosen by the wrapper (`w` + 8 hex
@@ -127,6 +127,11 @@ daemon knows every live one on its host.
     its output appears in the transcript. One that opens a picker
     (`/model`, `/usage`) stays `busy` until the picker is closed in the
     terminal.
+    A background task or subagent that finishes while the session is
+    `idle` hands Claude Code a task notification, and Claude Code starts a
+    turn of its own without `UserPromptSubmit`: the daemon sees the
+    notification in the transcript (within about half a second) and makes
+    the session `busy`; `Stop` ends that turn as any other.
   - `waiting`: Claude waits on a dialog (`dialog` says which); prompts are
     queued and are **never** typed into the dialog. The app can `answer`
     it, the owner can answer it in the terminal.
@@ -168,6 +173,23 @@ daemon knows every live one on its host.
   after an update, until the session restarts.
 - `claudeSession`: Claude Code's own session id once known, else `null`
   (always `null` for Codex).
+- `subagents`: the subagents of a Claude Code session that run now, oldest
+  first; they can outlive the turn that started them (background agents),
+  so a session can be `idle` with subagents running. A finished one drops
+  out, and every change sends a `sessions` update. A missing field (Codex,
+  an older daemon) means none.
+  ```json
+  [{"id": "a2b2c3d4e5f6a7b8c", "type": "build-runner",
+    "description": "Build PhiVoice AI app", "background": true,
+    "startedAt": 1793381087}]
+  ```
+  `id` is Claude Code's agent id, `type` its agent type, `description` the
+  task's short description, `background` whether it was started in the
+  background, `startedAt` Unix time. Read from Claude Code's
+  `<session>/subagents/agent-<id>.meta.json` next to the transcript: an
+  agent runs until its meta file says `finished`. One left unfinished by
+  an earlier process (a restart, a crash) is not counted once its own
+  transcript has not changed for 10 minutes.
 
 ## Messages
 

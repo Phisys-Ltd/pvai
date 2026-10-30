@@ -567,6 +567,35 @@ int main(int argc, char **argv)
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }, 6000).empty(),
           "without an interrupt in the transcript it is idle after about 4 s");
 
+    // Subagents: running while their meta file has no `finished`; a task
+    // notification starts a turn without UserPromptSubmit.
+    auto agents = [](const json &s) {
+        return s.contains("subagents") && s["subagents"].is_array() ? s["subagents"] : json(nullptr);
+    };
+    const std::string run2 = home + "/elsewhere/run-2.jsonl";
+    writeFile(run2, "");
+    hook("wterm", {{"hook_event_name", "Notification"}, {"notification_type", "idle_prompt"}, {"transcript_path", run2}});
+    const std::string agentMeta = home + "/elsewhere/run-2/subagents/agent-a1b2.meta.json";
+    writeFile(home + "/elsewhere/run-2/subagents/agent-a1b2.jsonl", "{}\n");
+    writeFile(agentMeta, R"({"agentType":"build-runner","description":"Build it","requestShape":"background","spawnDepth":1})");
+    term = waitSession(a, "wterm", [&](const json &s) { return agents(s).size() == 1; }, 4000);
+    const json agent = term.empty() ? json::object() : agents(term)[0];
+    check(agent.value("id", "") == "a1b2" && agent.value("type", "") == "build-runner" && agent.value("description", "") == "Build it"
+              && agent.value("background", false) && agent.value("startedAt", 0LL) > 1700000000,
+          "a running subagent is listed: " + term.dump());
+    {
+        std::ofstream(run2, std::ios::app)
+            << R"({"type":"attachment","isSidechain":false,"attachment":{"type":"queued_command","prompt":"<task-notification>\n<status>completed</status>\n</task-notification>"}})" << "\n";
+    }
+    check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 3000).empty(),
+          "a task notification makes the idle session busy");
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    writeFile(agentMeta, R"({"agentType":"build-runner","description":"Build it","requestShape":"background","finished":true})");
+    check(!waitSession(a, "wterm", [&](const json &s) { return agents(s) == json::array(); }, 4000).empty(),
+          "a finished subagent leaves the list");
+    hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok"}});
+    check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "Stop ends that turn");
+
     // Ended Claude conversations: titles, no command-only ones, not the
     // running one.
     a.send({{"type", "conversations"}, {"assistant", "claude"}, {"cwd", project}});
