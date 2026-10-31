@@ -130,6 +130,7 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
                     state_ = "busy";
             }
         }
+        host_.log(id_ + ": taken on while running, " + (transcript_.empty() ? "no transcript known" : transcript_ + ": " + state_));
     }
 }
 

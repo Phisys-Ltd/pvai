@@ -1,3 +1,10 @@
+pvai (0.5.23-1) trixie; urgency=medium
+
+  * The daemon logs when it takes on a running Claude Code session after a
+    restart, with the transcript it knows and the state that gave.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 31 Oct 2026 19:40:00 +0100
+
 pvai (0.5.22-1) trixie; urgency=medium
 
   * After a daemon restart during a turn the session showed idle until its
