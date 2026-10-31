@@ -1,3 +1,16 @@
+pvai (0.5.15-1) trixie; urgency=medium
+
+  * Confirmed delivery: pvai run pastes a prompt only into a free prompt
+    box and presses Return only once the box shows it. A prompt that did
+    not go in, or got no UserPromptSubmit in time, goes back to the front
+    of the queue, and the session waits on a "screen" dialog showing the
+    screen. accepted says queued, the new delivered message follows once
+    Claude Code has the prompt. answer send types without the check.
+  * A slash command's picker that closes after its output is in the
+    transcript leaves the session idle, not busy.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 31 Oct 2026 11:20:00 +0100
+
 pvai (0.5.14-1) trixie; urgency=medium
 
   * A Claude Code started from a shell command of a session inherits

@@ -620,7 +620,7 @@ int main(int argc, char **argv)
     const json asks = a.next("attention");
     check(asks.value("kind", "") == "screen" && asks.value("text", "") == "Teach auto mode about your environment?",
           "a screen dialog asks the owner with its first line: " + asks.dump());
-    term = waitSession(a, "wterm", [](const json &s) { return s.value("dialog", "") == "screen"; });
+    term = waitSession(a, "wterm", [](const json &s) { return s.value("dialog", json()) == "screen"; });
     check(term.value("state", "") == "waiting" && sub(term, "dialogInfo").value("text", "") == teach,
           "a screen dialog at the prompt: waiting, its text in dialogInfo: " + term.dump());
     a.send({{"type", "prompt"}, {"ref", 15}, {"session", "wterm"}, {"text", "three"}});
@@ -634,7 +634,7 @@ int main(int argc, char **argv)
     check(a.next("rejected").value("reason", "") == "bad-choice", "an unknown key is a bad choice");
     a.send({{"type", "answer"}, {"ref", 19}, {"session", "wterm"}, {"choice", "allow"}});
     check(wrapper.next("keys").value("data", "") == "\r", "allow is Return");
-    check(waitSession(a, "wterm", [](const json &s) { return s.value("dialog", "") != "screen"; }, 600).empty(),
+    check(waitSession(a, "wterm", [](const json &s) { return s.value("dialog", json()) != "screen"; }, 600).empty(),
           "and the dialog stays until the screen says it is gone");
     wrapper.send({{"type", "screen"}, {"dialog", nullptr}});
     check(wrapper.next("type").value("text", "") == "three", "then it is idle and the queued prompt goes in");
@@ -654,6 +654,60 @@ int main(int argc, char **argv)
               return s.value("state", "") != "idle" || s.value("claudeSession", "") != "running-1"
                   || sub(s, "usage").value("version", "") == "9.9.9";
           }, 800).empty(), "a nested Claude Code's hooks and status line change nothing");
+
+    // A wrapper that verifies (0.5.15): a prompt counts once Claude Code
+    // confirms it; one that did not go in waits in front of the queue.
+    {
+        Client ver;
+        ver.send({{"type", "register"}, {"id", "wver"}, {"cwd", project}, {"label", "ver"}, {"restart", true}, {"verify", true}});
+        hook("wver", {{"hook_event_name", "SessionStart"}, {"session_id", "v-1"}, {"source", "startup"}});
+        check(!waitSession(a, "wver", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a verifying wrapper's session");
+        a.send({{"type", "prompt"}, {"ref", 30}, {"session", "wver"}, {"text", "eins"}});
+        check(a.next("accepted", [](const json &m) { return m.value("ref", 0) == 30; }).value("delivery", "") == "queued",
+              "accepted says queued until Claude Code confirms");
+        json typing = ver.next("type");
+        check(typing.value("text", "") == "eins" && typing.value("verify", false), "it is typed with verify");
+        ver.send({{"type", "typed"}, {"ok", false}, {"screen", "Something new\n\xE2\x9D\xAF 1. Yes"}});
+        check(a.next("attention").value("text", "") == "Something new", "the owner is asked with the first line");
+        json blocked = waitSession(a, "wver", [](const json &s) { return s.value("dialog", json()) == "screen"; });
+        check(blocked.value("state", "") == "waiting" && sub(blocked, "dialogInfo").value("text", "") == "Something new\n\xE2\x9D\xAF 1. Yes"
+                  && blocked.value("queued", 0) == 1,
+              "not typed: waiting on the screen, the prompt queued: " + blocked.dump());
+        ver.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
+        typing = ver.next("type");
+        check(typing.value("text", "") == "eins" && typing.value("verify", false), "a free prompt box: it is typed again");
+        ver.send({{"type", "typed"}, {"ok", true}});
+        check(a.next("delivered", {}, 500).empty(), "typed is not delivered yet");
+        hook("wver", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "v-1"}, {"prompt", "eins"}});
+        const json delivered = a.next("delivered");
+        check(delivered.value("session", "") == "wver" && delivered.value("ref", 0) == 30, "UserPromptSubmit delivers it: " + delivered.dump());
+        hook("wver", {{"hook_event_name", "Stop"}, {"session_id", "v-1"}, {"last_assistant_message", "Eins."}});
+        check(!waitSession(a, "wver", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "the turn ends");
+
+        // Typed, but no turn (no login, an unknown dialog took the Return).
+        a.send({{"type", "prompt"}, {"ref", 31}, {"session", "wver"}, {"text", "zwei"}});
+        check(ver.next("type").value("text", "") == "zwei", "the next prompt is typed");
+        ver.send({{"type", "typed"}, {"ok", true}});
+        check(!ver.next("snapshot", {}, 17000).empty(), "no UserPromptSubmit in time: the daemon asks for the screen");
+        ver.send({{"type", "snapshot"}, {"screen", "zwei\nNot logged in"}});
+        blocked = waitSession(a, "wver", [](const json &s) { return s.value("dialog", json()) == "screen"; });
+        check(sub(blocked, "dialogInfo").value("text", "") == "zwei\nNot logged in" && blocked.value("queued", 0) == 1,
+              "the owner sees the screen, the prompt waits: " + blocked.dump());
+        ver.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
+        check(ver.next("type", {}, 800).empty(), "a free prompt alone does not type it again");
+        a.send({{"type", "answer"}, {"ref", 32}, {"session", "wver"}, {"choice", "key:esc"}});
+        check(ver.next("keys").value("data", "") == "\x1b", "the owner answers");
+        typing = ver.next("type");
+        check(typing.value("text", "") == "zwei" && typing.value("verify", false), "then it goes in again");
+        ver.send({{"type", "typed"}, {"ok", false}, {"screen", "?"}});
+        check(!waitSession(a, "wver", [](const json &s) { return s.value("dialog", json()) == "screen"; }).empty(), "blocked once more");
+        a.send({{"type", "answer"}, {"ref", 33}, {"session", "wver"}, {"choice", "send"}});
+        typing = ver.next("type");
+        check(typing.value("text", "") == "zwei" && !typing.value("verify", true), "answer send types it without the check");
+        hook("wver", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "v-1"}, {"prompt", "zwei"}});
+        check(a.next("delivered").value("ref", 0) == 31, "and UserPromptSubmit delivers it");
+        hook("wver", {{"hook_event_name", "Stop"}, {"session_id", "v-1"}, {"last_assistant_message", "Zwei."}});
+    }
 
     // Subagents: running while their meta file has no `finished`; a task
     // notification starts a turn without UserPromptSubmit.

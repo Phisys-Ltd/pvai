@@ -405,15 +405,28 @@ int runWrapper(const WrapperOptions &options)
     // the screen once the output has paused.
     Screen screen(size.ws_row, size.ws_col);
     std::string screenShown;
+    bool promptShown = false; // the prompt box is on the screen, no dialog over it
     std::optional<Clock::time_point> screenCheckAt;
     auto sendScreen = [&] {
-        daemon->send({{"type", "screen"}, {"dialog", screenShown.empty() ? json() : json(screenShown)}});
+        daemon->send({{"type", "screen"}, {"dialog", screenShown.empty() ? json() : json(screenShown)}, {"prompt", promptShown}});
+    };
+    auto promptFree = [&](std::string &box) { return promptBox(screen, box) && screenDialog(screen).empty(); };
+    // A prompt typed with `verify`: pasted only into a free prompt box, and
+    // Return only once the box shows it; else it did not go in.
+    struct Typing {
+        std::string before; // the box before the paste
+        Clock::time_point until;
+    };
+    std::optional<Typing> typing;
+    auto typed = [&](bool ok) {
+        if (daemon)
+            daemon->send({{"type", "typed"}, {"ok", ok}, {"screen", ok ? json() : json(screenSnapshot(screen))}});
     };
     bool registered = false;
     auto registerSelf = [&] {
         daemon->send({{"type", "register"}, {"id", id}, {"label", options.label}, {"cwd", cwd},
                       {"pid", static_cast<int>(::getpid())}, {"running", registered}, {"detached", detached},
-                      {"restart", true}});
+                      {"restart", true}, {"verify", true}});
         if (draft.dirty())
             daemon->send({{"type", "draft"}, {"dirty", true}});
         if (trustAsked)
@@ -491,6 +504,11 @@ int runWrapper(const WrapperOptions &options)
             sendScreen();
         }
         screenShown.clear();
+        promptShown = false;
+        if (typing) {
+            typing.reset();
+            typed(false);
+        }
         toMaster.clear();
         returnAt.reset();
         if (daemon && wasDirty)
@@ -516,6 +534,8 @@ int runWrapper(const WrapperOptions &options)
             soonest(msUntil(*resizeBackAt));
         if (screenCheckAt)
             soonest(msUntil(*screenCheckAt));
+        if (typing)
+            soonest(std::min(msUntil(typing->until), 50LL));
         if (!daemon)
             soonest(msUntil(nextReconnect));
         if (!restartWith.empty())
@@ -578,6 +598,11 @@ int runWrapper(const WrapperOptions &options)
                 const std::string type = message.is_object() ? message.value("type", "") : "";
                 if (type == "type") {
                     std::string text = message.value("text", "");
+                    std::string box;
+                    if (message.value("verify", false) && (typing || !promptFree(box))) {
+                        typed(false);
+                        continue;
+                    }
                     if (modes.on("2004")) {
                         toMaster += "\x1b[200~" + text + "\x1b[201~";
                     } else {
@@ -586,10 +611,16 @@ int runWrapper(const WrapperOptions &options)
                                 c = ' ';
                         toMaster += text;
                     }
-                    // Return as a separate keystroke, after the paste has landed.
-                    returnAt = Clock::now() + std::chrono::milliseconds(150);
+                    // Return as a separate keystroke, after the paste has landed
+                    // (with `verify`: once the prompt box shows it).
+                    if (message.value("verify", false))
+                        typing = Typing{box, Clock::now() + std::chrono::milliseconds(2000)};
+                    else
+                        returnAt = Clock::now() + std::chrono::milliseconds(150);
                 } else if (type == "keys") {
                     toMaster += message.value("data", "");
+                } else if (type == "snapshot") {
+                    daemon->send({{"type", "snapshot"}, {"screen", screenSnapshot(screen)}});
                 } else if (type == "terminate") {
                     restartWith.clear();
                     forwardSignal(SIGHUP);
@@ -666,10 +697,24 @@ int runWrapper(const WrapperOptions &options)
             ::ioctl(master, TIOCSWINSZ, &size);
             resizeBackAt.reset();
         }
+        if (typing) {
+            std::string box;
+            const bool shown = promptBox(screen, box) && box != typing->before && screenDialog(screen).empty();
+            if (shown || Clock::now() >= typing->until) {
+                typing.reset();
+                if (shown)
+                    returnAt = Clock::now() + std::chrono::milliseconds(100);
+                typed(shown);
+            }
+        }
         if (screenCheckAt && Clock::now() >= *screenCheckAt) {
             screenCheckAt.reset();
-            if (std::string shown = screenDialog(screen); shown != screenShown) {
+            std::string box;
+            std::string shown = screenDialog(screen);
+            const bool prompt = shown.empty() && promptBox(screen, box);
+            if (shown != screenShown || prompt != promptShown) {
                 screenShown = std::move(shown);
+                promptShown = prompt;
                 if (daemon)
                     sendScreen();
             }

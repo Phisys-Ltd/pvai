@@ -27,11 +27,14 @@ int main()
     feed(screen, "\x1b[2J\x1b[HSay: Enter to confirm\r\n\r\n" + rule + "\r\n\xE2\x9D\xAF \r\n" + rule + "\r\n  ? for shortcuts");
     check(screen.row(0) == "Say: Enter to confirm", "text lands in its row: " + screen.row(0));
     check(pvai::screenDialog(screen).empty(), "a footer in the conversation is no dialog");
+    std::string box;
+    check(pvai::promptBox(screen, box) && box == "\xE2\x9D\xAF", "the prompt box between its rules: [" + box + "]");
 
     // The prompt redrawn as a dialog: up, erase, draw, with colours.
     feed(screen, "\x1b[3A\r\x1b[J" + rule + "\r\n\x1b[1m Pick one\x1b[0m\r\n \xE2\x9D\xAF 1. Yes\r\n   2. No\r\n\r\n Enter to confirm \xC2\xB7 Esc to cancel");
     const std::string dialog = pvai::screenDialog(screen);
     check(dialog == "Pick one\n\xE2\x9D\xAF 1. Yes\n  2. No\n\nEnter to confirm \xC2\xB7 Esc to cancel", "the dialog: [" + dialog + "]");
+    check(!pvai::promptBox(screen, box), "no prompt box under the dialog");
 
     // The selection moves: one cell rewritten in place.
     feed(screen, "\x1b[3A\x1b[2G \x1b[1B\x1b[2G\xE2\x9D\xAF");
@@ -39,8 +42,10 @@ int main()
           "a moved selection: [" + pvai::screenDialog(screen) + "]");
 
     // Closed: the prompt again.
-    feed(screen, "\x1b[5A\r\x1b[J\xE2\x9D\xAF \r\n" + rule + "\r\n  ? for shortcuts");
+    feed(screen, "\x1b[3A\r\x1b[J" + rule + "\r\n\xE2\x9D\xAF \r\n" + rule + "\r\n  ? for shortcuts");
     check(pvai::screenDialog(screen).empty(), "the closed dialog is gone");
+    feed(screen, "\x1b[2A\x1b[3Ghi");
+    check(pvai::promptBox(screen, box) && box == "\xE2\x9D\xAF hi", "typing into the box changes it: [" + box + "]");
 
     // Scrolling at the bottom and the alternate screen.
     pvai::Screen small(3, 12);

@@ -513,7 +513,12 @@ private:
             else if (type == "dialog")
                 session->onDialog(message.value("kind", ""));
             else if (type == "screen")
-                session->onScreen(message.value("dialog", json()).is_string() ? message["dialog"].get<std::string>() : "");
+                session->onScreen(message.value("dialog", json()).is_string() ? message["dialog"].get<std::string>() : "",
+                                  message.value("prompt", false));
+            else if (type == "typed")
+                session->onTyped(message.value("ok", false), message.value("screen", json()).is_string() ? message["screen"].get<std::string>() : "");
+            else if (type == "snapshot")
+                session->onSnapshot(message.value("screen", json()).is_string() ? message["screen"].get<std::string>() : "");
             return;
         }
         if (type == "ping")
@@ -790,8 +795,9 @@ private:
             return reject(peer, ref, id, "empty");
         if (text.size() > kMaxPrompt)
             return reject(peer, ref, id, "too-long");
-        const bool typed = session->prompt({fromLine(message) + text, message.value("voice", false)});
-        peer->conn->send({{"type", "accepted"}, {"ref", ref}, {"session", id}, {"delivery", typed ? "typed" : "queued"}});
+        const bool typed = session->prompt({fromLine(message) + text, message.value("voice", false), ref});
+        peer->conn->send({{"type", "accepted"}, {"ref", ref}, {"session", id},
+                          {"delivery", typed && !session->confirmsDelivery() ? "typed" : "queued"}});
     }
 
     // An agent message the owner released: who wrote and how to answer, as

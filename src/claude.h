@@ -38,7 +38,10 @@ public:
     void onInput(bool escape);
     void onDraft(bool dirty);
     void onDialog(const std::string &kind);
-    void onScreen(const std::string &text);
+    void onScreen(const std::string &text, bool prompt);
+    void onTyped(bool ok, const std::string &screen);
+    void onSnapshot(const std::string &screen);
+    bool confirmsDelivery() const override { return verify_; }
 
 protected:
     void submit(const Prompt &prompt) override;
@@ -53,6 +56,9 @@ private:
     void remember() const;
     void openScreenDialog();
     bool ours(const std::string &claudeSession, const std::string &source) const;
+    void delivered();
+    void notDelivered(const std::string &screen, bool retry);
+    void unblock();
 
     Conn &wrapper_;
     bool canRestart_ = false;
@@ -82,6 +88,22 @@ private:
     std::string screenText_;
     std::optional<Clock::time_point> screenAt_;
     std::string screenFrom_ = "idle";
+    // Delivery under a wrapper that verifies (pvai 0.5.15 and later): the
+    // prompt typed now, until UserPromptSubmit (or for a slash command the
+    // wrapper's `typed`) confirms it; the wrapper's answer is due by
+    // typedDeadline_. A prompt that did not go in is queued again in front
+    // and the session blocked: waiting on a "screen" dialog showing the
+    // screen, until the prompt box is free again (retryOnPrompt_: at once,
+    // else only after the owner answered from the app).
+    bool verify_ = false;
+    std::optional<Prompt> inFlight_;
+    std::optional<Clock::time_point> typedDeadline_;
+    bool snapshotPending_ = false;
+    bool blocked_ = false;
+    bool retryOnPrompt_ = false;
+    bool promptFree_ = false;
+    bool sendUnchecked_ = false; // answer `send`: the next prompt without the check
+    std::optional<Clock::time_point> retryAt_;
     // Subagents, from <transcript without .jsonl>/subagents/agent-<id>.meta.json:
     // by id, the meta file's mtime when last read and the protocol entry
     // (null once finished or given up).

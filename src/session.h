@@ -23,6 +23,7 @@ using Clock = std::chrono::steady_clock;
 struct Prompt {
     std::string text;
     bool voice = false;
+    json ref; // the app's `ref`, for `delivered`
 };
 
 class Session;
@@ -70,6 +71,8 @@ public:
     // A prompt is queued and goes in when the session's prompt is free;
     // true when it went in at once.
     bool prompt(const Prompt &prompt);
+    // A typed prompt counts only once the assistant confirms it (`delivered`).
+    virtual bool confirmsDelivery() const { return false; }
     virtual std::string answer(const std::string &choice) = 0;
     virtual std::string stop() = 0;
     virtual void interrupt() = 0;

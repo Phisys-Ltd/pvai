@@ -58,4 +58,12 @@ private:
 // footer ("Enter to confirm", "Esc to cancel", ...), else empty.
 std::string screenDialog(const Screen &screen);
 
+// Claude Code's prompt box: the lines between the last two rules on the
+// screen, the first starting with "❯". False when the screen shows none.
+bool promptBox(const Screen &screen, std::string &text);
+
+// The lower part of the screen as text (the last 20 lines with text, up to
+// 2000 bytes): what an unknown dialog shows.
+std::string screenSnapshot(const Screen &screen);
+
 } // namespace pvai

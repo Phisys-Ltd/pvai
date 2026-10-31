@@ -138,7 +138,23 @@ daemon knows every live one on its host.
     queued and are **never** typed into the dialog. The app can `answer`
     it, the owner can answer it in the terminal.
 - `queued`: prompts waiting for `idle`. They go in one at a time, oldest first,
-  each when the previous turn has ended.
+  each when the previous turn has ended. A prompt that is being typed
+  counts until it is `delivered`.
+- Delivery under a `pvai run` of 0.5.15 or later: the wrapper pastes a
+  prompt only into Claude Code's prompt box when the screen shows it free
+  (the lines between two rules, starting with `❯`, no dialog's footer
+  below), and presses Return only once the box shows the text. If it
+  cannot, nothing more is typed, the prompt goes back to the front of
+  `queued`, and the session is `waiting` with `dialog` `screen` and the
+  lower part of the screen as `dialogInfo.text`; it goes on by itself
+  once the prompt box is free. A prompt that went in with Return but got
+  no `UserPromptSubmit` within 15 s (no login, an unknown dialog took
+  it) goes back to the front as well and shows the screen the same way;
+  that one goes on only after an `answer` from the app (any key) once the
+  box is free, so a session without a login does not type it again and
+  again. `answer` `send` types the first queued prompt without the check
+  (the owner sees that the prompt is free and the box was not
+  recognised). Older wrappers type as before.
 - `draft`: the owner has typed into the session's prompt in the terminal and
   not sent it. Prompts wait until the prompt is empty again (Return, Ctrl+C,
   Ctrl+U or deleting the text), so they never land in the middle of the
@@ -251,7 +267,7 @@ App to daemon:
 | `start` | `ref`, `cwd`, `label`, `args`, `assistant`, `resume` | start a session in `cwd` (absolute) without a terminal; `label` optional; `assistant` one of `welcome.assistants` (default `claude`); `args` optional strings: extra arguments for `claude`; for Codex only `-m`/`--model <model>` is read; `resume` optional: an id from `conversations`, to go on with that conversation instead of a new one (see "Ended conversations") |
 | `conversations` | `assistant`, `cwd` | the ended conversations of that assistant in `cwd` (see "Ended conversations") |
 | `update` | `ref` | update every assistant on this host to its latest version (see "Versions and updates") |
-| `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust; Return for `screen`) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits; for `screen` it closes the dialog). Since 0.5.13 also `key:NAME`, one key into any dialog but `trust`: `up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `space`, or a digit or lower-case letter (an option's number, a shortcut such as `s`); the dialog stays open until the screen or a hook says otherwise |
+| `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust; Return for `screen`) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits; for `screen` it closes the dialog). Since 0.5.13 also `key:NAME`, one key into any dialog but `trust`: `up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `space`, or a digit or lower-case letter (an option's number, a shortcut such as `s`); the dialog stays open until the screen or a hook says otherwise. `send`: see "Delivery" under the session fields |
 | `interrupt` | `ref`, `session` | stop the running turn, like Esc in the terminal (into a dialog: deny); nothing happens while `idle`, `starting` or on the trust dialog |
 | `stop` | `ref`, `session` | end a `stoppable` session |
 | `restart` | `ref`, `session` | end the session's process and start it again, going on with the same conversation (see "Restart") |
@@ -270,7 +286,8 @@ Daemon to app:
 |---|---|---|
 | `welcome` | `host`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers` |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
-| `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued` |
+| `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
+| `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
 | `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server is not reachable, yet), `bad-start` (Codex refused), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |

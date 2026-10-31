@@ -16,6 +16,8 @@ namespace {
 // turn with Esc; no hook fires for that.
 const char *kInterruptMark = "[Request interrupted by user";
 constexpr auto kSubmitTimeout = std::chrono::seconds(15);
+constexpr auto kTypedTimeout = std::chrono::seconds(5); // the wrapper checks for up to 2 s
+constexpr auto kRetryAfter = std::chrono::milliseconds(600);
 constexpr auto kTailEvery = std::chrono::milliseconds(300);
 constexpr auto kSubagentsEvery = std::chrono::seconds(1);
 // An unfinished subagent from before this session object (a daemon restart,
@@ -107,6 +109,7 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
     : Session(host, registration.value("id", ""), registration.value("cwd", ""), registration.value("label", ""))
     , wrapper_(wrapper)
     , canRestart_(registration.value("restart", false))
+    , verify_(registration.value("verify", false))
 {
     // A wrapper that registers again after a daemon restart has a running
     // Claude Code whose turn we cannot know; take the free prompt as likely.
@@ -138,13 +141,33 @@ json ClaudeSession::describe() const
         return a.value("startedAt", 0LL) < b.value("startedAt", 0LL);
     });
     entry["subagents"] = std::move(running);
+    if (inFlight_) // typed, not confirmed yet
+        entry["queued"] = entry.value("queued", 0) + 1;
     return entry;
 }
 
 void ClaudeSession::submit(const Prompt &prompt)
 {
     const bool slash = prompt.text[0] == '/';
-    wrapper_.send({{"type", "type"}, {"text", (prompt.voice && !slash ? kMicMark : "") + prompt.text}});
+    const bool verify = verify_ && !sendUnchecked_;
+    sendUnchecked_ = false;
+    wrapper_.send({{"type", "type"}, {"text", (prompt.voice && !slash ? kMicMark : "") + prompt.text}, {"verify", verify}});
+    if (verify_)
+        inFlight_ = prompt;
+    if (verify) {
+        // The wrapper says whether it went in; until then nothing else may.
+        typedDeadline_ = Clock::now() + kTypedTimeout;
+        state_ = "busy";
+        return;
+    }
+    if (verify_ && slash) { // sent without the check: taken as delivered
+        tail_.poll();
+        slashPending_ = true;
+        slashMark_ = tail_.localOutputs();
+        state_ = "busy";
+        delivered();
+        return;
+    }
     if (slash) {
         tail_.poll();
         slashPending_ = true;
@@ -175,12 +198,29 @@ std::string ClaudeSession::answer(const std::string &choice)
         if (it == keys.end() && !(key.size() == 1 && ((key[0] >= '0' && key[0] <= '9') || (key[0] >= 'a' && key[0] <= 'z'))))
             return "bad-choice";
         wrapper_.send({{"type", "keys"}, {"data", it != keys.end() ? it->second : key}});
+        if (blocked_) {
+            retryOnPrompt_ = true;
+            retryAt_ = Clock::now() + kRetryAfter;
+        }
+        return {};
+    }
+    // The owner sees the screen and says the prompt is free: the next
+    // prompt goes in without the check.
+    if (choice == "send" && blocked_) {
+        if (queue_.empty())
+            return "no-dialog";
+        sendUnchecked_ = true;
+        unblock();
         return {};
     }
     if (choice != "allow" && choice != "deny")
         return "bad-choice";
     if (dialog_ == "screen") {
         wrapper_.send({{"type", "keys"}, {"data", choice == "deny" ? "\x1b" : "\r"}});
+        if (blocked_) {
+            retryOnPrompt_ = true;
+            retryAt_ = Clock::now() + kRetryAfter;
+        }
         return {};
     }
     const bool trustDialog = dialog_ == "trust";
@@ -205,8 +245,13 @@ void ClaudeSession::interrupt()
     if (state_ != "busy" && !(state_ == "waiting" && dialog_ != "trust"))
         return;
     wrapper_.send({{"type", "keys"}, {"data", "\x1b"}});
-    if (dialog_ == "screen") // Esc closes it; the screen says when
+    if (dialog_ == "screen") { // Esc closes it; the screen says when
+        if (blocked_) {
+            retryOnPrompt_ = true;
+            retryAt_ = Clock::now() + kRetryAfter;
+        }
         return;
+    }
     if (state_ == "waiting") {
         state_ = "busy";
         dialog_.clear();
@@ -294,6 +339,15 @@ void ClaudeSession::onHook(const json &event)
     if (name != "Notification" && name != "PermissionRequest")
         dialog_.clear();
     if (name == "UserPromptSubmit" || name == "Stop" || name == "SessionStart") {
+        blocked_ = false; // the prompt is Claude's again
+        retryAt_.reset();
+        typedDeadline_.reset();
+        if (name == "UserPromptSubmit")
+            delivered();
+        else if (inFlight_) { // a turn ended or started over without it
+            queue_.push_front(*inFlight_);
+            inFlight_.reset();
+        }
         submitDeadline_.reset();
         catchUp();
     }
@@ -454,14 +508,31 @@ void ClaudeSession::onDialog(const std::string &kind)
 // A dialog no hook reports, read off the screen by the wrapper (empty: it
 // is gone). At a free prompt it counts at once; in a turn only after a
 // moment, since a permission dialog's hook may still be on its way.
-void ClaudeSession::onScreen(const std::string &text)
+void ClaudeSession::onScreen(const std::string &text, bool prompt)
 {
     screenText_ = text;
     screenAt_.reset();
+    promptFree_ = prompt;
+    if (blocked_) {
+        if (!text.empty() && dialogInfo_.value("text", json()) != json(text)) {
+            dialogInfo_ = dialogInfo("", text, "");
+            changed();
+        }
+        if (prompt && retryOnPrompt_)
+            unblock();
+        return;
+    }
     if (dialog_ == "screen") {
         if (text.empty()) {
             state_ = screenFrom_;
             dialog_.clear();
+            // A slash command's picker closed onto a free prompt: the command
+            // is done, even when no output reaches the transcript (one that
+            // only has local commands is not written yet).
+            if (state_ == "busy" && slashPending_ && prompt) {
+                slashPending_ = false;
+                state_ = "idle";
+            }
             deliver();
         } else {
             dialogInfo_ = dialogInfo("", text, "");
@@ -473,6 +544,78 @@ void ClaudeSession::onScreen(const std::string &text)
         else
             screenAt_ = Clock::now() + std::chrono::seconds(1);
     }
+}
+
+// The wrapper's answer to a prompt typed with `verify`.
+void ClaudeSession::onTyped(bool ok, const std::string &screen)
+{
+    if (!inFlight_ || !typedDeadline_)
+        return;
+    typedDeadline_.reset();
+    if (!ok) {
+        notDelivered(screen, true);
+        return;
+    }
+    if (inFlight_->text[0] == '/') {
+        // No hook for a slash command: in is in. It ends with its output.
+        tail_.poll();
+        slashPending_ = true;
+        slashMark_ = tail_.localOutputs();
+        delivered();
+    } else {
+        submitDeadline_ = Clock::now() + kSubmitTimeout;
+    }
+}
+
+// The screen after a prompt that went in without becoming a turn.
+void ClaudeSession::onSnapshot(const std::string &screen)
+{
+    if (!snapshotPending_)
+        return;
+    snapshotPending_ = false;
+    if (inFlight_)
+        notDelivered(screen, false);
+}
+
+void ClaudeSession::delivered()
+{
+    if (!inFlight_)
+        return;
+    host_.broadcast({{"type", "delivered"}, {"session", id_}, {"ref", inFlight_->ref}});
+    inFlight_.reset();
+}
+
+// The prompt did not go in: in front of the queue again, and the session
+// waits on the screen until the prompt box is free.
+void ClaudeSession::notDelivered(const std::string &screen, bool retry)
+{
+    if (inFlight_)
+        queue_.push_front(*inFlight_);
+    inFlight_.reset();
+    typedDeadline_.reset();
+    submitDeadline_.reset();
+    voiceTurn_ = false;
+    const bool asked = dialog_ == "screen";
+    blocked_ = true;
+    retryOnPrompt_ = retry;
+    retryAt_.reset();
+    screenFrom_ = "idle";
+    state_ = "waiting";
+    dialog_ = "screen";
+    dialogInfo_ = dialogInfo("", screen, "");
+    if (!asked)
+        attention("screen", screen.substr(0, screen.find('\n')));
+    changed();
+}
+
+void ClaudeSession::unblock()
+{
+    blocked_ = false;
+    retryAt_.reset();
+    state_ = "idle";
+    dialog_.clear();
+    deliver();
+    changed();
 }
 
 void ClaudeSession::openScreenDialog()
@@ -498,6 +641,13 @@ void ClaudeSession::armEscapeCheck(bool forceIdle)
 void ClaudeSession::tick(Clock::time_point now)
 {
     runEscapeChecks(now);
+    if (typedDeadline_ && now >= *typedDeadline_) // the wrapper never answered
+        notDelivered("", true);
+    if (retryAt_ && now >= *retryAt_) {
+        retryAt_.reset();
+        if (blocked_ && promptFree_)
+            unblock();
+    }
     if (screenAt_ && now >= *screenAt_) {
         screenAt_.reset();
         if (!screenText_.empty() && dialog_.empty() && state_ == "busy")
@@ -522,15 +672,24 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
         next = std::min(next, *submitDeadline_);
     if (screenAt_)
         next = std::min(next, *screenAt_);
+    if (typedDeadline_)
+        next = std::min(next, *typedDeadline_);
+    if (retryAt_)
+        next = std::min(next, *retryAt_);
     return next;
 }
 
 void ClaudeSession::runEscapeChecks(Clock::time_point now)
 {
     if (submitDeadline_ && *submitDeadline_ <= now) {
-        // The prompt never became a turn: free the session.
+        // The prompt never became a turn: free the session. Under a wrapper
+        // that verifies, it goes back in the queue and the owner sees the
+        // screen (a Claude Code without a login, a dialog not recognised).
         submitDeadline_.reset();
-        if (state_ == "busy" && !slashPending_) {
+        if (inFlight_ && state_ == "busy" && !slashPending_) {
+            snapshotPending_ = true;
+            wrapper_.send({{"type", "snapshot"}});
+        } else if (state_ == "busy" && !slashPending_) {
             state_ = "idle";
             voiceTurn_ = false;
             deliver();
@@ -601,6 +760,8 @@ void ClaudeSession::pollTranscript()
             state_ = "idle";
             deliver();
             changed();
+        } else if (dialog_ == "screen") { // its picker is still open: idle once it closes
+            screenFrom_ = "idle";
         }
     }
     sendEntries(std::move(fresh));

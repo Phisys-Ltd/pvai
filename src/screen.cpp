@@ -69,6 +69,34 @@ std::string unbox(std::string row)
     return end == std::string::npos ? std::string() : row.substr(0, end + 1);
 }
 
+// Lines collected bottom up, as text top down: blank lines at the ends
+// dropped, the indent all lines share removed (options keep theirs), cut
+// to 2000 bytes.
+std::string joinLines(std::vector<std::string> lines)
+{
+    while (!lines.empty() && lines.back().empty())
+        lines.pop_back();
+    while (!lines.empty() && lines.front().empty())
+        lines.erase(lines.begin());
+    std::size_t indent = std::string::npos;
+    for (const auto &line : lines)
+        if (!line.empty())
+            indent = std::min(indent, line.find_first_not_of(' '));
+    std::string out;
+    for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
+        if (!out.empty())
+            out += "\n";
+        out += it->empty() ? *it : it->substr(indent);
+    }
+    if (out.size() > 2000) {
+        std::size_t at = 2000;
+        while (at > 0 && (static_cast<unsigned char>(out[at]) & 0xc0) == 0x80)
+            --at;
+        out.resize(at);
+    }
+    return out;
+}
+
 } // namespace
 
 void Screen::resize(int rows, int cols)
@@ -407,26 +435,47 @@ std::string screenDialog(const Screen &screen)
         blanks = 0;
         lines.push_back(text);
     }
-    while (!lines.empty() && lines.back().empty())
-        lines.pop_back();
-    // Without the indent all lines share, so that options keep theirs.
-    std::size_t indent = std::string::npos;
-    for (const auto &line : lines)
-        if (!line.empty())
-            indent = std::min(indent, line.find_first_not_of(' '));
-    std::string out;
-    for (auto it = lines.rbegin(); it != lines.rend(); ++it) {
-        if (!out.empty())
-            out += "\n";
-        out += it->empty() ? *it : it->substr(indent);
+    return joinLines(lines);
+}
+
+bool promptBox(const Screen &screen, std::string &text)
+{
+    static const std::string mark = "\xE2\x9D\xAF"; // ❯
+    int below = -1;
+    for (int r = screen.rows() - 1; r >= 0; --r) {
+        if (!isRule(screen.row(r)))
+            continue;
+        if (below < 0 || below - r < 2 || below - r > 16) {
+            below = r;
+            continue;
+        }
+        const std::string first = screen.row(r + 1);
+        const auto from = first.find_first_not_of(' ');
+        if (from == std::string::npos || first.compare(from, mark.size(), mark) != 0) {
+            below = r;
+            continue;
+        }
+        text.clear();
+        for (int k = r + 1; k < below; ++k)
+            text += (k > r + 1 ? "\n" : "") + screen.row(k);
+        return true;
     }
-    if (out.size() > 2000) {
-        std::size_t at = 2000;
-        while (at > 0 && (static_cast<unsigned char>(out[at]) & 0xc0) == 0x80)
-            --at;
-        out.resize(at);
+    return false;
+}
+
+std::string screenSnapshot(const Screen &screen)
+{
+    std::vector<std::string> lines; // bottom up, as screenDialog collects them
+    for (int r = screen.rows() - 1; r >= 0 && lines.size() < 20; --r) {
+        const std::string row = screen.row(r);
+        if (trim(row).empty()) {
+            if (!lines.empty() && !lines.back().empty())
+                lines.push_back({});
+            continue;
+        }
+        lines.push_back(isRule(row) ? std::string("\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80") : row); // a rule as ───
     }
-    return out;
+    return joinLines(lines);
 }
 
 } // namespace pvai
