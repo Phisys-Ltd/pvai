@@ -363,6 +363,7 @@ void ClaudeSession::onStatus(const json &status)
         {"sevenDay", limit("seven_day")},
         {"costUsd", pick(pick(status, "cost"), "total_cost_usd")},
         {"version", pick(status, "version")},
+        {"cache", tail_.cache()},
     };
     // Cost moves with every turn; a change of it alone is not news.
     json withoutCost = usage, oldWithoutCost = usage_;
@@ -500,6 +501,10 @@ void ClaudeSession::remember() const
 void ClaudeSession::pollTranscript()
 {
     auto fresh = tail_.poll();
+    if (usage_.is_object() && usage_.value("cache", json()) != tail_.cache()) {
+        usage_["cache"] = tail_.cache();
+        host_.broadcast({{"type", "usage"}, {"session", id_}, {"usage", usage_}});
+    }
     // A background task or agent finished and Claude Code took it up: a
     // turn without UserPromptSubmit, ended by Stop as usual.
     if (tail_.wakeTurns() != wakeMark_) {

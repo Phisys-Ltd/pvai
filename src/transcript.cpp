@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <ctime>
 
 #include <fstream>
 
@@ -24,6 +26,19 @@ std::string cut(std::string text, std::size_t limit)
         --at;
     text.resize(at);
     return text + "\xE2\x80\xA6"; // …
+}
+
+// Unix seconds of a transcript timestamp ("2026-10-28T19:20:28.623Z"), 0 if
+// it is none.
+long long unixTime(const std::string &stamp)
+{
+    std::tm tm{};
+    if (std::sscanf(stamp.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min,
+                    &tm.tm_sec) != 6)
+        return 0;
+    tm.tm_year -= 1900;
+    tm.tm_mon -= 1;
+    return static_cast<long long>(timegm(&tm));
 }
 
 // One line that says what a tool call does.
@@ -120,6 +135,7 @@ void TranscriptTail::follow(const std::string &path)
     partial_.clear();
     recent_.clear();
     toolNames_.clear();
+    cache_ = nullptr;
 }
 
 std::vector<json> TranscriptTail::poll()
@@ -214,6 +230,17 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
         return;
     if (!localCommand && (!line.contains("message") || !line["message"].is_object()))
         return;
+    if (type == "assistant") {
+        const json usage = line["message"].value("usage", json());
+        const json created = usage.is_object() ? usage.value("cache_creation", json()) : json();
+        long long ttl = cache_.is_object() ? cache_.value("ttl", 0LL) : 0;
+        if (created.is_object() && created.value("ephemeral_1h_input_tokens", 0LL) > 0)
+            ttl = 3600;
+        else if (created.is_object() && created.value("ephemeral_5m_input_tokens", 0LL) > 0)
+            ttl = 300;
+        if (const long long at = unixTime(line.value("timestamp", "")); usage.is_object() && ttl > 0 && at > 0)
+            cache_ = {{"ttl", ttl}, {"at", at}};
+    }
     const json &content = localCommand ? line["content"] : line["message"].value("content", json());
     const json base = {{"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}};
     auto emit = [&](json entry) {

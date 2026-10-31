@@ -183,14 +183,21 @@ daemon knows every live one on its host.
    "context": {"percent": 5, "tokens": 50971, "size": 1000000},
    "fiveHour": {"percent": 26, "resetsAt": 1793220000},
    "sevenDay": {"percent": 10, "resetsAt": 1793710800},
-   "costUsd": 0.0034, "version": "2.1.314"}
+   "costUsd": 0.0034, "version": "2.1.314",
+   "cache": {"ttl": 3600, "at": 1793448005}}
   ```
   `percent` may be `null` before the first answer; `fiveHour`/`sevenDay`
   are `null` until Claude Code knows them (after the first request) and are
   the account's limits, the same in every session of that login; `resetsAt`
   is Unix time. `version` is the version of Claude Code this session runs
   (from the status line input); it can be older than `welcome.installed`
-  after an update, until the session restarts.
+  after an update, until the session restarts. `cache` says how long the
+  prompt cache stays warm: `ttl` the seconds it lives after a request
+  (`300` or `3600`, from the cache writes of the last request that wrote
+  one: `ephemeral_5m`/`ephemeral_1h`), `at` the Unix time of the last API
+  request (the timestamp of Claude's last answer in the transcript); it is
+  warm until `at + ttl`. `null` until a request wrote to the cache, and
+  again after `/clear`; a change of it alone sends a `usage` update.
 - `claudeSession`: Claude Code's own session id once known, else `null`
   (always `null` for Codex). It survives a restart of the daemon (kept
   beside the wrapper's socket) once a hook has named it.
@@ -426,7 +433,7 @@ for Claude Code; the differences:
   (`tokens` its total, `size` the model's context window; for a thread that
   ran before the daemon saw it, the last count in its rollout file; `0` and
   `null` before the first turn), `fiveHour`/`sevenDay` from the account's rate
-  limits, `costUsd` always `null`, `version` the app server's (from its
+  limits, `costUsd` always `null`, no `cache`, `version` the app server's (from its
   user agent). The app server updates itself, apart from the `codex` CLI
   that `update` updates, so its version can differ from
   `installed.codex` either way: compare versions, not strings, before

@@ -44,6 +44,11 @@ public:
     // A hook ended or started a turn: a task notification read so far
     // belongs to it, even when Claude's answer to it is not in the file yet.
     void settleWakes() { wakePending_ = false; }
+    // How long the prompt cache stays warm: {"ttl": seconds, "at": Unix time
+    // of the last API request}, from the last answer of Claude's; null until
+    // a request wrote to the cache (a read alone keeps the TTL it was
+    // written with).
+    const json &cache() const { return cache_; }
 
 private:
     void take(const json &line, std::vector<json> &out);
@@ -57,6 +62,7 @@ private:
     std::size_t localOutputs_ = 0;
     std::size_t wakeTurns_ = 0;
     bool wakePending_ = false; // a task notification, no answer yet
+    json cache_;
 };
 
 } // namespace pvai

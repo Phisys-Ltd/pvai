@@ -629,13 +629,17 @@ int main(int argc, char **argv)
     auto append = [&](const std::string &line) { std::ofstream(run2, std::ios::app) << line << "\n"; };
     const std::string notification =
         R"({"type":"attachment","isSidechain":false,"attachment":{"type":"queued_command","prompt":"<task-notification>\n<status>completed</status>\n</task-notification>"}})";
-    const std::string answerLine = R"({"type":"assistant","uuid":"u-a1","message":{"content":[{"type":"text","text":"Noted."}]}})";
+    const std::string answerLine =
+        R"({"type":"assistant","uuid":"u-a1","timestamp":"2026-10-31T12:00:05.250Z","message":{"content":[{"type":"text","text":"Noted."}],)"
+        R"("usage":{"cache_creation":{"ephemeral_1h_input_tokens":343,"ephemeral_5m_input_tokens":0}}}})";
     append(notification);
     check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 1200).empty(),
           "a task notification alone starts no turn");
     append(answerLine);
-    check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 3000).empty(),
-          "Claude answering it does: the idle session is busy");
+    term = waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 3000);
+    check(!term.empty(), "Claude answering it does: the idle session is busy");
+    check(sub(term, "usage").value("cache", json()) == json({{"ttl", 3600}, {"at", 1793448005}}),
+          "usage.cache from the last answer: " + term.dump());
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     writeFile(agentMeta, R"({"agentType":"build-runner","description":"Build it","requestShape":"background","finished":true})");
     check(!waitSession(a, "wterm", [&](const json &s) { return agents(s) == json::array(); }, 4000).empty(),
