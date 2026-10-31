@@ -118,7 +118,7 @@ private:
     Clock::time_point nextTry_ = Clock::now();
     json models_ = json::array();
     // Kimi's modes until a session tells better (modes.ts in kimi-code).
-    json modes_ = json::array({{{"id", "default"}, {"name", "Default"}}, {{"id", "plan"}, {"name", "Plan"}},
+    json modes_ = json::array({{{"id", "default"}, {"name", "Ask"}}, {{"id", "plan"}, {"name", "Plan"}},
                                {{"id", "auto"}, {"name", "Auto"}}, {{"id", "yolo"}, {"name", "YOLO"}}});
     std::string agentVersion_;
 };

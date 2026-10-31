@@ -966,7 +966,7 @@ json ClaudeBackend::claudeModes()
                         {{"id", "acceptEdits"}, {"name", "Accept edits"}},
                         {{"id", "plan"}, {"name", "Plan"}},
                         {{"id", "auto"}, {"name", "Auto"}},
-                        {{"id", "bypassPermissions"}, {"name", "Bypass permissions"}}});
+                        {{"id", "bypassPermissions"}, {"name", "Bypass"}}});
 }
 
 json ClaudeBackend::modes() const

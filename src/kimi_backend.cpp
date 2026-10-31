@@ -691,9 +691,16 @@ void KimiBackend::setModes(const json &result)
     if (!modes.is_object() || !modes.contains("availableModes") || !modes["availableModes"].is_array())
         return;
     json list = json::array();
-    for (const auto &m : modes["availableModes"])
-        if (!str(m, "id").empty())
-            list.push_back({{"id", str(m, "id")}, {"name", str(m, "name").empty() ? str(m, "id") : str(m, "name")}});
+    // Short names, the same across assistants, for the ones known; Kimi's
+    // own for the rest.
+    static const std::map<std::string, std::string> names = {{"default", "Ask"}, {"plan", "Plan"}, {"auto", "Auto"}, {"yolo", "YOLO"}};
+    for (const auto &m : modes["availableModes"]) {
+        const std::string id = str(m, "id");
+        if (id.empty())
+            continue;
+        const auto known = names.find(id);
+        list.push_back({{"id", id}, {"name", known != names.end() ? known->second : str(m, "name").empty() ? id : str(m, "name")}});
+    }
     if (!list.empty())
         modes_ = list;
 }

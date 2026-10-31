@@ -562,8 +562,8 @@ CodexBackend::CodexBackend(Host &host)
 
 json CodexBackend::modes() const
 {
-    return json::array({{{"id", "untrusted"}, {"name", "Ask for everything"}},
-                        {{"id", "on-request"}, {"name", "Default"}},
+    return json::array({{{"id", "untrusted"}, {"name", "Ask always"}},
+                        {{"id", "on-request"}, {"name", "Ask"}},
                         {{"id", "never"}, {"name", "Never ask"}}});
 }
 

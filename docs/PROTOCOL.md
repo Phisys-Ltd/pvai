@@ -630,8 +630,9 @@ Since 0.5.25 every assistant lists its modes in `welcome.assistants[].modes`
 as `[{"id", "name"}]`, the session shows its current one as `mode`, and
 `{"type": "mode", "ref", "session", "mode"}` switches it:
 
-- Claude Code: `default` (Ask), `acceptEdits`, `plan`, `auto`,
-  `bypassPermissions`. The daemon presses Shift+Tab, as the owner would,
+- Claude Code: `default` (Ask), `acceptEdits` (Accept edits), `plan`
+  (Plan), `auto` (Auto), `bypassPermissions` (Bypass); the names are kept
+  short and alike across assistants, in English. The daemon presses Shift+Tab, as the owner would,
   until the footer shows the mode; at most once round Claude Code's
   cycle, so a mode this session does not offer (`auto` without the
   setting, `bypassPermissions` without its flag) ends `failed` with
@@ -639,12 +640,13 @@ as `[{"id", "name"}]`, the session shows its current one as `mode`, and
   dialog is open (`busy`), and only under a `pvai run` of 0.5.25 or later
   (`not-supported`), which reports the footer. It holds for that session;
   Claude Code's settings stay as they are.
-- Codex: the approval policy, `untrusted` (Ask for everything),
-  `on-request` (Default), `never` (Never ask); the sandbox stays as
+- Codex: the approval policy, `untrusted` (Ask always), `on-request`
+  (Ask), `never` (Never ask); the sandbox stays as
   configured. It goes with the next turn (`turn/start`) and holds from
   there; `done` at once.
-- Kimi: its ACP modes as it lists them (`default`, `plan`, `auto`,
-  `yolo`), with `session/set_mode`.
+- Kimi: its ACP modes as it lists them (`default` Ask, `plan` Plan,
+  `auto` Auto, `yolo` YOLO; Kimi's own name for any other), with
+  `session/set_mode`.
 
 ## Install and login
 
