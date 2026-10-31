@@ -495,8 +495,10 @@ void KimiBackend::noteAuth(const json &error)
 bool KimiBackend::spawn()
 {
     int pair[2];
-    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, pair) != 0)
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) // SOCK_CLOEXEC is Linux only
         return false;
+    setCloseOnExec(pair[0]);
+    setCloseOnExec(pair[1]);
     const std::string log = runtimeDir() + "/kimi.log";
     const pid_t pid = ::fork();
     if (pid < 0) {

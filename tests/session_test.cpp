@@ -543,7 +543,7 @@ int main(int argc, char **argv)
     ::setenv("PVAI_CLAUDE", (bin + "/claude").c_str(), 1);
     const std::string kimiSocket = home + "/kimi.sock";
     writeFile(bin + "/kimi",
-              "#!/bin/sh\ncase \"$1\" in\n--version) echo 2.4.1;;\nacp) exec '" + fs::canonical("/proc/self/exe").string()
+              "#!/bin/sh\ncase \"$1\" in\n--version) echo 2.4.1;;\nacp) exec '" + fs::canonical(argv[0]).string()
                   + "' --fake-kimi '" + kimiSocket + "';;\nesac\n",
               true);
     ::setenv("PVAI_KIMI", (bin + "/kimi").c_str(), 1);

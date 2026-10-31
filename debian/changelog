@@ -1,3 +1,11 @@
+pvai (0.5.20-1) trixie; urgency=medium
+
+  * Builds on macOS again: the Kimi socket pair without SOCK_CLOEXEC (close
+    on exec set with fcntl), and the session test finds itself by argv[0]
+    instead of /proc/self/exe.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 31 Oct 2026 14:40:00 +0100
+
 pvai (0.5.19-1) trixie; urgency=medium
 
   * Agent messages name what they answer: pvai propose --reply ID, the
