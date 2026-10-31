@@ -24,6 +24,7 @@
 #include <functional>
 #include <optional>
 #include <set>
+#include <thread>
 
 namespace pvai {
 int runDaemon(int port);
@@ -39,6 +40,7 @@ const char *kUsage =
     "usage: pvai run [--name LABEL] [-- COMMAND...]   Claude Code (default: claude) reachable by voice\n"
     "       pvai codex [ARGS...]                       the Codex TUI on Codex's shared app server, reachable by voice\n"
     "       pvai daemon [--port N]                     the host's sessions (started by run on demand)\n"
+    "       pvai daemon stop|restart [--force]         stop or restart it; refused while prompts are queued\n"
     "       pvai listen [ADDR[:PORT] | off]            direct access without ssh (TLS, port 7471), or show it\n"
     "       pvai pair [--name N] [--host H] [--link]   let one device pair within 10 minutes (link and QR code)\n"
     "       pvai devices                               list paired devices\n"
@@ -336,6 +338,74 @@ int runPropose(const std::string &to, std::string text, bool fromStdin, const st
 // The sessions an agent can write to: this host's, then the other hosts'
 // as the app last told the daemon. Each line starts with the target for
 // `pvai propose`.
+// pvai daemon stop|restart [--force]: refused while prompts are queued (they
+// live in the daemon's memory), unless forced; then the dropped ones are
+// listed. restart starts a new daemon once the old one has let go.
+int runDaemonControl(bool restart, bool force)
+{
+    const int fd = openDaemon(false);
+    if (fd < 0) {
+        if (!restart) {
+            std::printf("no daemon running\n");
+            return 0;
+        }
+    } else {
+        Conn conn(fd);
+        conn.send({{"type", "hello"}, {"client", "pvai"}, {"version", kVersion}});
+        conn.send({{"type", "shutdown"}, {"ref", "cli"}, {"force", force}});
+        bool done = false;
+        while (!done) {
+            pollfd p{conn.fd(), static_cast<short>(POLLIN | (conn.wantsWrite() ? POLLOUT : 0)), 0};
+            if (::poll(&p, 1, 5000) <= 0) {
+                std::fprintf(stderr, "pvai: the daemon did not answer\n");
+                return 1;
+            }
+            std::vector<json> messages;
+            const bool alive = conn.readMessages(messages) && conn.flush();
+            for (const auto &message : messages) {
+                const std::string type = message.is_object() ? message.value("type", "") : "";
+                if (type == "rejected" && message.value("reason", "") == "queued") {
+                    std::fprintf(stderr, "pvai: not stopped: prompts are waiting\n");
+                    for (const auto &w : message.value("waiting", json::array()))
+                        std::fprintf(stderr, "  %s \"%s\": %d queued\n", w.value("session", "").c_str(), w.value("label", "").c_str(),
+                                     w.value("queued", 0));
+                    std::fprintf(stderr, "pvai daemon %s --force drops them\n", restart ? "restart" : "stop");
+                    return 1;
+                }
+                if (type == "shutting-down") {
+                    for (const auto &d : message.value("dropped", json::array()))
+                        std::printf("dropped: %s ref %s: %s\n", d.value("session", "").c_str(), d.value("ref", json()).dump().c_str(),
+                                    d.value("text", "").c_str());
+                    done = true;
+                }
+            }
+            if (!alive && !done) {
+                std::fprintf(stderr, "pvai: the daemon closed the connection\n");
+                return 1;
+            }
+        }
+        // Gone once its socket stops answering.
+        for (int i = 0; i < 50; ++i) {
+            const int probe = connectUnix(daemonSocket());
+            if (probe < 0)
+                break;
+            ::close(probe);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        std::printf("daemon stopped\n");
+    }
+    if (!restart)
+        return 0;
+    const int fresh = openDaemon(true);
+    if (fresh < 0) {
+        std::fprintf(stderr, "pvai: no new daemon\n");
+        return 1;
+    }
+    ::close(fresh);
+    std::printf("daemon started\n");
+    return 0;
+}
+
 int runPeers()
 {
     const int fd = openDaemon(false);
@@ -759,6 +829,9 @@ int main(int argc, char **argv)
             return localClient({{"type", "answer"}, {"ref", "cli"}, {"session", args[1]}, {"choice", args[2]}}, false);
         if (verb == "stop" && args.size() == 2)
             return localClient({{"type", "stop"}, {"ref", "cli"}, {"session", args[1]}}, false);
+        if (verb == "daemon" && args.size() >= 2 && (args[1] == "stop" || args[1] == "restart")
+            && (args.size() == 2 || (args.size() == 3 && args[2] == "--force")))
+            return runDaemonControl(args[1] == "restart", args.size() == 3);
         if (verb == "daemon") {
             int port = kDefaultPort;
             if (args.size() == 3 && args[1] == "--port")

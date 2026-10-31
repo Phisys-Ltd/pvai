@@ -304,6 +304,7 @@ Daemon to app:
 | `updated` | `ref`, `installed`, `changed`, `errors` | answer to `update` |
 | `proposals` | `proposals: [Proposal]` | the agent messages waiting for the owner, sent after `welcome` and after every change (see "Agent messages") |
 | `dismissed` | `ref`, `proposal` | answer to `dismiss`; `proposal` is gone from `proposals` (also when it was unknown) |
+| `dropped` | `prompts: [{session, ref, text}]` | (since 0.5.21) the daemon is stopping by `pvai daemon stop|restart --force` and these queued prompts are lost (`ref` the one of their `prompt`, `text` the first 80 bytes); to every app. Without `--force` the daemon does not stop while any prompt is queued (`pvai` gets `rejected` with `queued` over loopback, from `{"type": "shutdown", "ref", "force"}`) |
 | `entry` | `session`, `entry: Entry` | one new piece of the conversation |
 | `pong` | | keepalive |
 | `error` | `code`, `text` | `auth` (then the daemon closes), `bad-message`, `unknown-session` (`text` is the id) |

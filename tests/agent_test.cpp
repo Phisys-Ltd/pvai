@@ -277,8 +277,27 @@ int main(int argc, char **argv)
                  "--reply p1234abcd M4/w8bb65867 \"...\"]\ndone",
           "the line with the proposal's id and what it answers: " + typed.dump());
 
-    ::kill(daemon, SIGTERM);
-    ::waitpid(daemon, nullptr, 0);
+    // Stopping the daemon: not while a prompt waits (they live in memory),
+    // unless forced, and then the apps hear which went.
+    app.send({{"type", "prompt"}, {"ref", 12}, {"session", "wsender"}, {"text", "waits"}});
+    json accepted = app.next("accepted");
+    while (!accepted.is_null() && accepted.value("ref", 0) != 12)
+        accepted = app.next("accepted");
+    check(!accepted.is_null() && accepted.value("delivery", "") == "queued", "a prompt waits behind the running turn");
+    r = run("daemon stop");
+    check(r.status == 1 && r.out.find("not stopped: prompts are waiting") != std::string::npos
+              && r.out.find("wsender \"sender-label\": 1 queued") != std::string::npos,
+          "daemon stop is refused while one waits: " + r.out);
+    r = run("daemon stop --force");
+    check(r.status == 0 && r.out.find("dropped: wsender ref 12: waits") != std::string::npos && r.out.find("daemon stopped") != std::string::npos,
+          "--force stops it and names what went: " + r.out);
+    const json dropped = app.next("dropped");
+    check(!dropped.is_null() && dropped.value("prompts", json::array()).size() == 1
+              && dropped["prompts"][0].value("ref", 0) == 12 && dropped["prompts"][0].value("session", "") == "wsender",
+          "every app gets dropped: " + dropped.dump());
+    int status = -1;
+    ::waitpid(daemon, &status, 0);
+    check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the daemon ended by itself");
     std::filesystem::remove_all(home);
     std::printf("%s\n", g_failed ? "FAILED" : "all passed");
     return g_failed ? 1 : 0;

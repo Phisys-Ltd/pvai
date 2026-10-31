@@ -230,6 +230,20 @@ public:
                 sessionsDirty_ = false;
                 broadcast(sessionsMessage());
             }
+            if (stopping_) {
+                // What was said goes out before the sockets close.
+                const auto until = Clock::now() + std::chrono::seconds(2);
+                for (bool pending = true; pending && Clock::now() < until;) {
+                    pending = false;
+                    for (auto &peer : peers_)
+                        if (peer->conn->wantsWrite() && peer->conn->flush() && peer->conn->wantsWrite())
+                            pending = true;
+                    if (pending)
+                        ::poll(nullptr, 0, 20);
+                }
+                logLine("stopped");
+                return 0;
+            }
         }
     }
 
@@ -568,6 +582,8 @@ private:
             onPeers(message);
         else if (type == "listPeers" && !peer->ssl)
             peer->conn->send(peerListMessage());
+        else if (type == "shutdown" && !peer->ssl)
+            onShutdown(peer, message);
     }
 
     void registerWrapper(Peer *peer, const json &message)
@@ -909,6 +925,35 @@ private:
                 + (replyTo.empty() ? "" : ", answering " + replyTo));
         peer->conn->send({{"type", "proposed"}, {"ref", ref}, {"id", proposal.id}, {"to", to}, {"apps", apps}});
         broadcast(proposalsMessage());
+    }
+
+    // ---- Stopping: `pvai daemon stop|restart` ----
+
+    // Queued prompts live in memory only: with any queued the daemon does
+    // not stop unless forced, and then it tells every app which went.
+    void onShutdown(Peer *peer, const json &message)
+    {
+        const json ref = message.value("ref", json());
+        json waiting = json::array(), dropped = json::array();
+        for (const Session *session : sessions()) {
+            if (session->queued().empty())
+                continue;
+            waiting.push_back({{"session", session->id()}, {"label", session->label()}, {"queued", session->queued().size()}});
+            for (const auto &p : session->queued())
+                dropped.push_back({{"session", session->id()}, {"ref", p.ref}, {"text", cut(oneLine(p.text, 400), 80)}});
+        }
+        if (!dropped.empty() && !message.value("force", false)) {
+            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", "queued"}, {"waiting", waiting}});
+            return;
+        }
+        if (!dropped.empty()) {
+            logLine("stopping with " + std::to_string(dropped.size()) + " queued prompt(s) dropped");
+            broadcast({{"type", "dropped"}, {"prompts", dropped}});
+        } else {
+            logLine("stopping");
+        }
+        peer->conn->send({{"type", "shutting-down"}, {"ref", ref}, {"dropped", dropped}});
+        stopping_ = true;
     }
 
     // ---- Peers: the sessions on other hosts, as the app knows them ----
@@ -1392,6 +1437,7 @@ private:
     // Agent messages
     std::vector<Proposal> proposals_;
     json otherHosts_ = json::array(); // sessions on other hosts, from the app's last `peers`
+    bool stopping_ = false;           // `shutdown` accepted: the loop ends after this round
     std::string peersSelf_;      // the app's name for this host
     long long peersAt_ = 0;      // when it came, Unix time
     std::map<std::string, std::vector<Clock::time_point>> proposalTimes_; // per sender, the last minute

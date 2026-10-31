@@ -252,8 +252,10 @@ Only a running daemon listens. After a reboot it starts with the first
 - Homebrew: `brew upgrade pvai`.
 - From source: `git pull`, build and install as above.
 
-Then restart the daemon (see "Troubleshooting"); running sessions report
-to the new one by themselves. A pvai binary in a new place (another
+Then restart the daemon with `pvai daemon restart`; running sessions
+report to the new one by themselves. It refuses while prompts wait in a
+session's queue (they live in the daemon's memory and would be lost);
+`pvai daemon restart --force` drops them and lists which. A pvai binary in a new place (another
 prefix) makes `pvai run` rewrite the hooks on its next start.
 
 **macOS, when you replace the binary by hand**: delete the old file first,
@@ -269,7 +271,7 @@ As each user that set pvai up:
 
 ```
 pvai uninstall-hooks              # takes pvai's hooks and status line out of ~/.claude/settings.json
-pkill -f 'pvai daemon'            # stops this user's daemon
+pvai daemon stop --force         # stops this user's daemon
 rm -r ~/.config/pvai              # token, TLS key, paired devices, listen setting
 ```
 
@@ -295,7 +297,9 @@ Then the program:
 - **A session does not show up.** Was it started through `pvai run` or
   `pvai codex`? Is `pvai install-hooks` happy ("in place")? Is the
   daemon running (`pgrep -fl 'pvai daemon'`)?
-- **Restart the daemon**: `pkill -f 'pvai daemon'; pvai token >/dev/null`.
+- **Restart the daemon**: `pvai daemon restart` (refused while prompts are
+  queued; `--force` drops them). A daemon that no longer answers:
+  `pkill -f '^pvai daemon'; pvai token >/dev/null`.
   Its log is `daemon.log` in `$XDG_RUNTIME_DIR/pvai/` (on macOS and
   without `XDG_RUNTIME_DIR`: `$TMPDIR/pvai-<uid>/`).
 - **The daemon dies when the ssh connection ends.** On systems where

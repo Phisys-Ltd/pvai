@@ -71,6 +71,7 @@ public:
     // A prompt is queued and goes in when the session's prompt is free;
     // true when it went in at once.
     bool prompt(const Prompt &prompt);
+    const std::deque<Prompt> &queued() const { return queue_; }
     // A typed prompt counts only once the assistant confirms it (`delivered`).
     virtual bool confirmsDelivery() const { return false; }
     virtual std::string answer(const std::string &choice) = 0;

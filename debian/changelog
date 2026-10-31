@@ -1,3 +1,11 @@
+pvai (0.5.21-1) trixie; urgency=medium
+
+  * pvai daemon stop|restart: refused while prompts are queued (they live
+    in the daemon's memory); --force drops them, lists them and tells every
+    app with a dropped message. INSTALL.md uses it instead of pkill.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 31 Oct 2026 19:00:00 +0100
+
 pvai (0.5.20-1) trixie; urgency=medium
 
   * Builds on macOS again: the Kimi socket pair without SOCK_CLOEXEC (close
