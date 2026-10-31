@@ -966,6 +966,26 @@ int main(int argc, char **argv)
         hook("wver", {{"hook_event_name", "Stop"}, {"session_id", "v-1"}, {"last_assistant_message", "Zwei."}});
     }
 
+    // A wrapper that registers again after a daemon restart: busy when its
+    // transcript has a turn going on, idle when the last turn ended.
+    {
+        const std::string runFile = home + "/elsewhere/mid-turn.jsonl", doneFile = home + "/elsewhere/done.jsonl";
+        const std::string prompt = R"({"type":"user","message":{"role":"user","content":"do it"}})";
+        const std::string answer = R"({"type":"assistant","message":{"content":[{"type":"text","text":"On it."}]}})";
+        const std::string end = R"({"type":"system","subtype":"turn_duration","durationMs":5})";
+        writeFile(runFile, end + "\n" + prompt + "\n" + answer + "\n");
+        writeFile(doneFile, prompt + "\n" + answer + "\n" + end + "\n");
+        writeFile(runtime + "/pvai/wmid.claude", json({{"claudeSession", "mid-1"}, {"transcript", runFile}}).dump() + "\n");
+        writeFile(runtime + "/pvai/wdone.claude", json({{"claudeSession", "done-1"}, {"transcript", doneFile}}).dump() + "\n");
+        Client mid, done;
+        mid.send({{"type", "register"}, {"id", "wmid"}, {"cwd", project}, {"label", "mid"}, {"running", true}, {"restart", true}});
+        done.send({{"type", "register"}, {"id", "wdone"}, {"cwd", project}, {"label", "done"}, {"running", true}, {"restart", true}});
+        check(!waitSession(a, "wmid", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),
+              "mid-turn after a daemon restart: busy");
+        check(!waitSession(a, "wdone", [](const json &s) { return s.value("state", "") == "idle"; }).empty(),
+              "after the turn's end: idle");
+    }
+
     // Claude Code not on this host: start is refused, welcome says so.
     fs::rename(bin + "/claude", bin + "/claude.away");
     a.send({{"type", "start"}, {"ref", 34}, {"assistant", "claude"}, {"cwd", project}});

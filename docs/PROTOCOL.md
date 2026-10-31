@@ -228,7 +228,10 @@ daemon knows every live one on its host.
   again after `/clear`; a change of it alone sends a `usage` update.
 - `claudeSession`: Claude Code's own session id once known, else `null`
   (always `null` for Codex). It survives a restart of the daemon (kept
-  beside the wrapper's socket) once a hook has named it.
+  beside the wrapper's socket) once a hook has named it. With it the
+  state does too (since 0.5.22): a session whose transcript has a turn
+  going on (a prompt or an answer after Claude Code's last turn end) is
+  `busy` after the restart, else `idle`.
 - `subagents`: the subagents of a session that run now, oldest first; they
   can outlive the turn that started them (background agents), so a session
   can be `idle` with subagents running. A finished one drops out, and every

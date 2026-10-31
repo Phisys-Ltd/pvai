@@ -113,7 +113,7 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
     , verify_(registration.value("verify", false))
 {
     // A wrapper that registers again after a daemon restart has a running
-    // Claude Code whose turn we cannot know; take the free prompt as likely.
+    // Claude Code: idle, unless its transcript shows a turn going on.
     if (registration.value("running", false)) {
         state_ = "idle";
         std::ifstream in(runtimeDir() + "/" + id_ + ".claude");
@@ -125,6 +125,9 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
                 tail_.follow(transcript_);
                 tail_.poll();
                 wakeMark_ = tail_.wakeTurns();
+                // A daemon restarted during a turn: the turn goes on.
+                if (turnRunning(transcript_))
+                    state_ = "busy";
             }
         }
     }

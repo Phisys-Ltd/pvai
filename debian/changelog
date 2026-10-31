@@ -1,3 +1,11 @@
+pvai (0.5.22-1) trixie; urgency=medium
+
+  * After a daemon restart during a turn the session showed idle until its
+    next hook; it is busy now when the transcript has a turn going on (a
+    prompt or an answer after the last turn_duration line).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 31 Oct 2026 19:20:00 +0100
+
 pvai (0.5.21-1) trixie; urgency=medium
 
   * pvai daemon stop|restart: refused while prompts are queued (they live

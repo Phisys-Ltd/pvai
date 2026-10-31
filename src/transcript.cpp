@@ -127,6 +127,41 @@ std::string commandFile(const std::string &command)
     return found;
 }
 
+bool turnRunning(const std::string &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return false;
+    in.seekg(0, std::ios::end);
+    const std::streamoff size = in.tellg();
+    in.seekg(std::max<std::streamoff>(0, size - 4 * 1024 * 1024));
+    std::string line;
+    bool running = false, ends = false;
+    if (size > 4 * 1024 * 1024)
+        std::getline(in, line); // a partial first line
+    while (std::getline(in, line)) {
+        const json entry = json::parse(line, nullptr, false);
+        if (!entry.is_object() || entry.value("isSidechain", false))
+            continue;
+        const std::string type = entry.value("type", "");
+        if (type == "system" && (entry.value("subtype", "") == "turn_duration" || entry.value("subtype", "") == "stop_hook_summary")) {
+            running = false;
+            ends = true;
+        } else if (type == "user" && !entry.value("isMeta", false) && entry.contains("message") && entry["message"].is_object()) {
+            const json content = entry["message"].value("content", json());
+            const std::string text = content.is_string() ? content.get<std::string>()
+                                   : content.is_array() && !content.empty() && content[0].is_object() ? content[0].value("text", "") : "";
+            if (text.rfind("[Request interrupted by user", 0) == 0)
+                running = false;
+            else if (content.is_string() && text.rfind("<command-name>", 0) != 0 && text.rfind("<local-command", 0) != 0)
+                running = true;
+        } else if (type == "assistant") {
+            running = true;
+        }
+    }
+    return ends && running;
+}
+
 void TranscriptTail::follow(const std::string &path)
 {
     path_ = path;

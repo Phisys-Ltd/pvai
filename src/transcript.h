@@ -20,6 +20,12 @@ namespace pvai {
 // several.
 std::string commandFile(const std::string &command);
 
+// Whether a turn runs now, from the end of a transcript: a prompt or an
+// answer of Claude's after the last turn end (Claude Code writes a
+// turn_duration line when a turn ends; an interrupt ends one too). False
+// when the file says nothing either way.
+bool turnRunning(const std::string &path);
+
 class TranscriptTail {
 public:
     static constexpr std::size_t kKeep = 500;           // entries kept for `history`
