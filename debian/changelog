@@ -1,3 +1,15 @@
+pvai (0.5.24-1) trixie; urgency=medium
+
+  * Install and log in assistants from the app: install (claude from its
+    installer, codex and kimi from npm with a Node of their own when the
+    system's is too old) and login (device codes; Claude Code's code back
+    with login-code), progress as install/login events, the result in a
+    new assistants message. Also pvai install and pvai login.
+  * welcome.assistants lists every assistant, with installed and loggedIn
+    for all three (claude auth status, codex login status, Kimi's ACP).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 31 Oct 2026 20:40:00 +0100
+
 pvai (0.5.23-1) trixie; urgency=medium
 
   * The daemon logs when it takes on a running Claude Code session after a

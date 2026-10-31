@@ -14,6 +14,7 @@
 #include "kimi_backend.h"
 #include "common.h"
 #include "pairing.h"
+#include "setup.h"
 #include "session.h"
 #include "tls.h"
 
@@ -164,6 +165,8 @@ public:
         backends_.push_back(std::move(claude));
         backends_.push_back(std::make_unique<CodexBackend>(*this));
         backends_.push_back(std::make_unique<KimiBackend>(*this));
+        setup_ = std::make_unique<Setup>([this](const json &event) { broadcast(event); },
+                                         [this](const std::string &name, bool install, bool ok) { setupFinished(name, install, ok); });
         loadListen();
         refreshVersions();
     }
@@ -181,6 +184,10 @@ public:
             const std::size_t firstJob = fds.size();
             for (const auto &job : jobs_)
                 fds.push_back({job.fd, POLLIN, 0});
+            const std::size_t firstSetup = fds.size();
+            const std::vector<int> setupFds = setup_->fds();
+            for (const int fd : setupFds)
+                fds.push_back({fd, POLLIN, 0});
             const std::size_t firstHandshake = fds.size();
             for (const auto &h : handshakes_)
                 fds.push_back({h.accept->fd(), h.accept->events(), 0});
@@ -208,9 +215,13 @@ public:
                 if (fds[i].revents)
                     ready.push_back(peers_[i - firstPeer].get());
             std::vector<pid_t> readable;
-            for (std::size_t i = firstJob; i < firstHandshake; ++i)
+            for (std::size_t i = firstJob; i < firstSetup; ++i)
                 if (fds[i].revents)
                     readable.push_back(jobs_[i - firstJob].pid);
+            std::vector<int> setupReady;
+            for (std::size_t i = firstSetup; i < firstHandshake; ++i)
+                if (fds[i].revents)
+                    setupReady.push_back(fds[i].fd);
             std::vector<Handshake *> shaking;
             for (std::size_t i = firstHandshake; i < firstPeer; ++i)
                 if (fds[i].revents)
@@ -220,6 +231,9 @@ public:
             for (Peer *peer : ready)
                 service(peer);
             serviceJobs(readable);
+            for (const int fd : setupReady)
+                setup_->service(fd);
+            setup_->tick(Clock::now());
             for (const auto &backend : backends_)
                 backend->tick(Clock::now());
             directTick();
@@ -427,7 +441,7 @@ private:
     Backend *backend(const std::string &name)
     {
         for (auto &backend : backends_)
-            if (backend->name() == name && backend->available())
+            if (backend->name() == name)
                 return backend.get();
         return nullptr;
     }
@@ -436,16 +450,79 @@ private:
     {
         versionsRead_ = Clock::now();
         for (auto &backend : backends_)
-            if (backend->available())
+            if (backend->installedHere()) {
                 backend->refreshVersion();
+                backend->refreshLogin([this](bool changed) {
+                    if (changed)
+                        broadcast(assistantsMessage());
+                });
+            }
+    }
+
+    // ---- Install and login from the app (setup.h) ----
+
+    void onInstall(Peer *peer, const json &message)
+    {
+        const json ref = message.value("ref", json());
+        Backend *chosen = backend(message.value("assistant", ""));
+        std::string reason = !chosen ? "unknown-assistant" : chosen->installedHere() ? "already-installed" : "";
+        if (reason.empty())
+            reason = setup_->install(chosen->name(), ref);
+        if (!reason.empty())
+            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", reason}});
+        else
+            logLine("install of " + chosen->name() + " started");
+    }
+
+    void onLogin(Peer *peer, const json &message)
+    {
+        const json ref = message.value("ref", json());
+        const std::string type = message.value("type", "");
+        Backend *chosen = backend(message.value("assistant", ""));
+        std::string reason = !chosen ? "unknown-assistant" : "";
+        if (reason.empty() && type == "login")
+            reason = !chosen->installedHere() ? "not-installed" : setup_->login(chosen->name(), chosen->program(), ref);
+        else if (reason.empty() && type == "login-code")
+            reason = setup_->loginCode(chosen->name(), message.value("code", ""));
+        else if (reason.empty())
+            reason = setup_->loginCancel(chosen->name());
+        if (!reason.empty())
+            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", reason}});
+        else if (type == "login")
+            logLine("login of " + chosen->name() + " started");
+    }
+
+    // An install or login ended: the program, its version and its login
+    // are read again, and every app hears the new state.
+    void setupFinished(const std::string &name, bool install, bool ok)
+    {
+        logLine(std::string(install ? "install" : "login") + " of " + name + (ok ? " done" : " failed"));
+        Backend *chosen = backend(name);
+        if (!chosen)
+            return;
+        if (install)
+            chosen->findProgram();
+        if (!install && ok)
+            if (auto *kimi = dynamic_cast<KimiBackend *>(chosen))
+                kimi->setLoggedIn(true);
+        broadcast(assistantsMessage());
+        chosen->refreshVersion([this] { broadcast(assistantsMessage()); });
+        chosen->refreshLogin([this](bool changed) {
+            if (changed)
+                broadcast(assistantsMessage());
+        });
+    }
+
+    json assistantsMessage() const
+    {
+        json message = welcomeMessage();
+        return {{"type", "assistants"}, {"assistants", message["assistants"]}, {"installed", message["installed"]}};
     }
 
     json welcomeMessage() const
     {
         json assistants = json::array(), installed = json::object();
         for (const auto &backend : backends_) {
-            if (!backend->available())
-                continue;
             assistants.push_back(backend->describe());
             if (!backend->installed().empty())
                 installed[backend->name()] = backend->installed();
@@ -556,6 +633,10 @@ private:
             onStart(peer, message);
         else if (type == "conversations")
             onConversations(peer, message);
+        else if (type == "install")
+            onInstall(peer, message);
+        else if (type == "login" || type == "login-code" || type == "login-cancel")
+            onLogin(peer, message);
         else if (type == "update")
             onUpdate(peer, message);
         else if (type == "projects")
@@ -1032,6 +1113,7 @@ private:
             take(backend->deadline());
         for (const auto &job : jobs_)
             take(job.deadline);
+        take(setup_->deadline());
         take(directDeadline());
         if (!next)
             return -1;
@@ -1438,6 +1520,7 @@ private:
     std::vector<Proposal> proposals_;
     json otherHosts_ = json::array(); // sessions on other hosts, from the app's last `peers`
     bool stopping_ = false;           // `shutdown` accepted: the loop ends after this round
+    std::unique_ptr<Setup> setup_;
     std::string peersSelf_;      // the app's name for this host
     long long peersAt_ = 0;      // when it came, Unix time
     std::map<std::string, std::vector<Clock::time_point>> proposalTimes_; // per sender, the last minute

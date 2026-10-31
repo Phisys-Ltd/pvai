@@ -270,6 +270,10 @@ App to daemon:
 | `start` | `ref`, `cwd`, `label`, `args`, `assistant`, `resume` | start a session in `cwd` (absolute) without a terminal; `label` optional; `assistant` one of `welcome.assistants` (default `claude`); `args` optional strings: extra arguments for `claude`; for Codex and Kimi only `-m`/`--model <model>` is read; `resume` optional: an id from `conversations`, to go on with that conversation instead of a new one (see "Ended conversations") |
 | `conversations` | `assistant`, `cwd` | the ended conversations of that assistant in `cwd` (see "Ended conversations") |
 | `update` | `ref` | update every assistant on this host to its latest version (see "Versions and updates") |
+| `install` | `ref`, `assistant` | (since 0.5.24) install an assistant for the daemon's user, only on the owner's click (see "Install and login") |
+| `login` | `ref`, `assistant` | (since 0.5.24) log an assistant in on this host: a link and a code for the owner (see "Install and login") |
+| `login-code` | `ref`, `assistant`, `code` | the code the login page showed, for a login in state `code-needed` (Claude Code) |
+| `login-cancel` | `ref`, `assistant` | end a running login |
 | `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust; Return for `screen`) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits; for `screen` it closes the dialog). Since 0.5.13 also `key:NAME`, one key into any dialog but `trust`: `up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `space`, or a digit or lower-case letter (an option's number, a shortcut such as `s`); the dialog stays open until the screen or a hook says otherwise. `send`: see "Delivery" under the session fields. Kimi: also `always` and `option:<id>`, see "Kimi sessions" |
 | `interrupt` | `ref`, `session` | stop the running turn, like Esc in the terminal (into a dialog: deny); nothing happens while `idle`, `starting` or on the trust dialog |
 | `stop` | `ref`, `session` | end a `stoppable` session |
@@ -305,6 +309,9 @@ Daemon to app:
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
 | `conversations` | `assistant`, `cwd`, `conversations: [Conversation]` | answer to `conversations` |
 | `updated` | `ref`, `installed`, `changed`, `errors` | answer to `update` |
+| `install` | `ref`, `assistant`, `state`, `step`, `text`, `error` | an install's progress, to every app: `state` `running`, then `done` or `failed` (`error` why); `step` `download` (claude), `node`, `npm` (codex, kimi), `check`; `text` the last line of output |
+| `login` | `ref`, `assistant`, `state`, `url`, `code`, `text`, `error` | a login's progress, to every app: `state` `waiting` (show `url` and `code`; the owner signs in in a browser), `code-needed` (Claude Code: the page shows a code, send it with `login-code`), `done` or `failed` (`error`: why, also `cancelled` and `timed out`) |
+| `assistants` | `assistants`, `installed` | (since 0.5.24) `welcome.assistants` and `welcome.installed` again, to every app, when an install or a login changed them |
 | `proposals` | `proposals: [Proposal]` | the agent messages waiting for the owner, sent after `welcome` and after every change (see "Agent messages") |
 | `dismissed` | `ref`, `proposal` | answer to `dismiss`; `proposal` is gone from `proposals` (also when it was unknown) |
 | `dropped` | `prompts: [{session, ref, text}]` | (since 0.5.21) the daemon is stopping by `pvai daemon stop|restart --force` and these queued prompts are lost (`ref` the one of their `prompt`, `text` the first 80 bytes); to every app. Without `--force` the daemon does not stop while any prompt is queued (`pvai` gets `rejected` with `queued` over loopback, from `{"type": "shutdown", "ref", "force"}`) |
@@ -565,14 +572,13 @@ non-hidden models from its app server, empty until it answered; Kimi's
 values of its `model` option, empty until a session started). The app
 knows no assistant by name: a new one shows up here and works without a
 change to the app. `installed` (since 0.5.18): whether `start` can start it, its program
-being on this host; `false` only for Claude Code, which is listed anyway
-because its sessions can come from `pvai run` in a terminal with another
-`PATH` (Codex and Kimi are listed only when installed). `start` of one
-that is not is `rejected` with `not-installed`. `loggedIn` (only some
-assistants, Kimi since 0.5.16):
+being on this host. Since 0.5.24 every assistant is listed, installed or
+not (before, Codex and Kimi only when installed); see "Install and login". `start` of one
+that is not is `rejected` with `not-installed`. `loggedIn` (Kimi since 0.5.16,
+all since 0.5.24):
 `true` or `false` once the assistant said, `null` before; `false` means
-`start` is `rejected` with `not-logged-in` and the owner has to log in on
-the host (`kimi login`, or a provider in `~/.kimi-code/config.toml`).
+the owner has to log in (`login`, see "Install and login"; for Kimi
+`start` is then `rejected` with `not-logged-in`).
 
 ## Ended conversations
 
@@ -608,6 +614,48 @@ closed, the host restarted):
    `detached`), Kimi with `session/load` (a detached session; Kimi plays
    the history back, its text only). An id that is not there is
    `rejected` with `unknown-conversation`.
+
+## Install and login
+
+Since 0.5.24 the app can install an assistant that is missing and log one
+in, without a terminal. Both run only when the owner asks (a click), for
+the user the daemon runs as (with `root`, in `/root`), never system wide,
+one task per assistant at a time.
+
+- `{"type": "install", "ref", "assistant"}` (`rejected`: `unknown-assistant`,
+  `already-installed`, `busy`). Claude Code comes from its official
+  installer (`curl -fsSL https://claude.ai/install.sh | bash`, into
+  `~/.local/bin/claude`). Codex (`@openai/codex`) and Kimi Code
+  (`@moonshot-ai/kimi-code`) come from npm into a prefix of their own
+  under `~/.local/share/pvai/`, with the system's Node when it is new
+  enough (Codex 20, Kimi 22.19), else Node 22 from nodejs.org, checked
+  against its `SHASUMS256.txt`, beside them; a wrapper in `~/.local/bin`
+  starts each with that Node. The system's Node is never touched. Events
+  `install` follow (`running` with `step` and the last line of output,
+  then `done` or `failed`), at most 15 minutes. Then `assistants` with the
+  new `installed`.
+- `{"type": "login", "ref", "assistant"}` (`rejected`: `unknown-assistant`,
+  `not-installed`, `busy`) runs the assistant's own login in a
+  pseudo-terminal, without a browser on the host, and reads link and code
+  off its output:
+  - Codex: `codex login --device-auth`: `url`
+    `https://auth.openai.com/codex/device` and a `code` such as
+    `ABCD-12345` (15 minutes); it is done when the owner has entered it.
+  - Kimi: `kimi login`: `url` with the code in it, and the `code`
+    (30 minutes).
+  - Claude Code: `claude auth login`: `url` only, then `code-needed`: the
+    page shows a code after the sign-in, which the app sends with
+    `{"type": "login-code", "ref", "assistant", "code"}` (`rejected`
+    `no-login` when none waits for it); `waiting` again until it is through.
+  `login-cancel` ends it; after 30 minutes it ends by itself. The output's
+  forms are the assistants' own and may change with their versions: `text`
+  always carries the last line as it came.
+- `loggedIn` in `welcome.assistants` for all three: Claude Code from
+  `claude auth status --json`, Codex from `codex login status`, Kimi from
+  its ACP answers (and `true` after a login went through); read with the
+  versions, after every install and login. `null` when not known.
+- `welcome.assistants` lists every assistant pvai knows, installed or not
+  (`installed: false`), so the app can offer to install it.
 
 ## Versions and updates
 

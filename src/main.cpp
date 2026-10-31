@@ -60,6 +60,8 @@ const char *kUsage =
     "       pvai propose [--reply ID] HOST[/SESSION] [TEXT]\n"
     "                                                  suggest a message to another session; the owner releases it\n"
     "       pvai peers                                 list the sessions propose can reach, also on other hosts\n"
+    "       pvai install claude|codex|kimi             install an assistant for this user (as the app can)\n"
+    "       pvai login claude|codex|kimi               log it in: shows a link and a code\n"
     "       pvai watch                                 print what the daemon tells apps\n"
     "       pvai --version | version                   print the version\n";
 
@@ -404,6 +406,62 @@ int runDaemonControl(bool restart, bool force)
     ::close(fresh);
     std::printf("daemon started\n");
     return 0;
+}
+
+// pvai install NAME, pvai login NAME: what the app does, from a terminal.
+// Follows the task's events; a login that wants a code back reads it.
+int runSetup(const std::string &verb, const std::string &assistant)
+{
+    const int fd = openDaemon(true);
+    if (fd < 0) {
+        std::fprintf(stderr, "pvai: no daemon\n");
+        return 1;
+    }
+    Conn conn(fd);
+    conn.send({{"type", "hello"}, {"client", "pvai"}, {"version", kVersion}});
+    conn.send({{"type", verb}, {"ref", "cli"}, {"assistant", assistant}});
+    std::string shown;
+    for (;;) {
+        pollfd p{conn.fd(), static_cast<short>(POLLIN | (conn.wantsWrite() ? POLLOUT : 0)), 0};
+        if (::poll(&p, 1, -1) <= 0)
+            return 1;
+        std::vector<json> messages;
+        const bool alive = conn.readMessages(messages) && conn.flush();
+        for (const auto &m : messages) {
+            const std::string type = m.is_object() ? m.value("type", "") : "";
+            if (type == "rejected" && m.value("ref", json()) == "cli") {
+                std::fprintf(stderr, "pvai: %s %s refused: %s\n", verb.c_str(), assistant.c_str(), m.value("reason", "").c_str());
+                return 1;
+            }
+            if (type != verb || m.value("assistant", "") != assistant)
+                continue;
+            auto field = [&](const char *key) { return m.contains(key) && m[key].is_string() ? m[key].get<std::string>() : std::string(); };
+            const std::string state = field("state");
+            std::string line = state;
+            for (const char *key : {"step", "url", "code", "text", "error"})
+                if (const std::string v = field(key); !v.empty())
+                    line += std::string("  ") + key + ": " + v;
+            if (line != shown) {
+                std::printf("%s\n", line.c_str());
+                std::fflush(stdout);
+                shown = line;
+            }
+            if (state == "code-needed") {
+                std::printf("code from the page: ");
+                std::fflush(stdout);
+                std::string code;
+                if (!std::getline(std::cin, code))
+                    return 1;
+                conn.send({{"type", "login-code"}, {"ref", "cli"}, {"assistant", assistant}, {"code", code}});
+            }
+            if (state == "done")
+                return 0;
+            if (state == "failed")
+                return 1;
+        }
+        if (!alive)
+            return 1;
+    }
 }
 
 int runPeers()
@@ -877,6 +935,8 @@ int main(int argc, char **argv)
             if (args.size() == at + 1 || args.size() == at + 2)
                 return runPropose(args[at], args.size() == at + 2 ? args[at + 1] : "", args.size() == at + 1, replyTo);
         }
+        if ((verb == "install" || verb == "login") && args.size() == 2)
+            return runSetup(verb, args[1]);
         if (verb == "peers" && args.size() == 1)
             return runPeers();
         if (verb == "watch")

@@ -885,6 +885,21 @@ void ClaudeBackend::conversations(const std::string &cwd, std::function<void(std
 }
 
 // `pvai run --detached`, which registers like any other wrapper.
+// `claude auth status --json`: {"loggedIn": true, ...}.
+void ClaudeBackend::refreshLogin(std::function<void(bool changed)> done)
+{
+    const std::string bin = binary();
+    if (bin.empty())
+        return done(false);
+    host_.runProcess({bin, "auth", "status", "--json"}, std::chrono::seconds(30), [this, done](int, const std::string &output) {
+        const json status = json::parse(output.substr(std::min(output.find('{'), output.size())), nullptr, false);
+        const json now = status.is_object() && status.contains("loggedIn") && status["loggedIn"].is_boolean() ? status["loggedIn"] : json();
+        const bool changed = now != loggedIn_;
+        loggedIn_ = now;
+        done(changed);
+    });
+}
+
 // PVAI_CLAUDE names the binary (an empty value: none), as PVAI_CODEX does.
 std::string ClaudeBackend::binary() const
 {

@@ -121,7 +121,7 @@ Backend::Backend(Host &host)
 
 json Backend::describe() const
 {
-    return {{"name", name()}, {"title", title()}, {"models", models()}, {"installed", installedHere()}};
+    return {{"name", name()}, {"title", title()}, {"models", models()}, {"installed", installedHere()}, {"loggedIn", loggedIn_}};
 }
 
 void Backend::refreshVersion(std::function<void()> done)

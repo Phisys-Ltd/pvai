@@ -72,8 +72,10 @@ public:
     std::string title() const override { return "Kimi Code"; }
     json models() const override { return models_; }
     bool available() const override { return !bin_.empty(); }
-    json describe() const override;
     void update(std::function<void(const UpdateResult &)> done) override;
+    void findProgram() override;
+    // A login just went through: the next call tells for sure.
+    void setLoggedIn(bool on) { loggedIn_ = on; }
 
     void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) override;
     void start(const StartRequest &request, Started done) override;
@@ -113,7 +115,6 @@ private:
     Clock::time_point nextTry_ = Clock::now();
     json models_ = json::array();
     std::string agentVersion_;
-    json loggedIn_; // null until known
 };
 
 } // namespace pvai

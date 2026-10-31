@@ -68,6 +68,8 @@ public:
     std::string title() const override { return "Codex"; }
     json models() const override { return models_; }
     bool available() const override { return !bin_.empty(); }
+    void findProgram() override;
+    void refreshLogin(std::function<void(bool changed)> done) override;
 
     void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) override;
     void start(const StartRequest &request, Started done) override;

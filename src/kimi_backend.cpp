@@ -433,11 +433,10 @@ KimiBackend::~KimiBackend()
     }
 }
 
-json KimiBackend::describe() const
+void KimiBackend::findProgram()
 {
-    json entry = Backend::describe();
-    entry["loggedIn"] = loggedIn_;
-    return entry;
+    if (bin_.empty())
+        bin_ = kimiBinary();
 }
 
 // Installed with npm, which pvai leaves alone: an update changes nothing.

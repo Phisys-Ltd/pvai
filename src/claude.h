@@ -145,6 +145,7 @@ public:
     // Sessions come from wrappers whatever the daemon's PATH says.
     bool available() const override { return true; }
     bool installedHere() const override { return !binary().empty(); }
+    void refreshLogin(std::function<void(bool changed)> done) override;
 
     void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) override;
     void start(const StartRequest &request, Started done) override;

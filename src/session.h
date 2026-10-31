@@ -164,6 +164,14 @@ public:
 
     // The installed version, empty when unknown; read in the background.
     const std::string &installed() const { return installed_; }
+    // Logged in on this host: true, false, or null when unknown.
+    const json &loggedIn() const { return loggedIn_; }
+    // Reads it again where the assistant can say (`done` with true when it
+    // changed); after an install, looks for the program again.
+    virtual void refreshLogin(std::function<void(bool changed)> done) { done(false); }
+    virtual void findProgram() {}
+    // The program `start` and a login run, empty when not installed.
+    std::string program() const { return binary(); }
     void refreshVersion(std::function<void()> done = {});
     virtual void update(std::function<void(const UpdateResult &)> done);
 
@@ -188,6 +196,7 @@ protected:
 
     Host &host_;
     std::string installed_;
+    json loggedIn_;
     bool updating_ = false;
 };
 

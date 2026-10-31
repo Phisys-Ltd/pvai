@@ -530,17 +530,30 @@ int main(int argc, char **argv)
               "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n"
               "--version) echo \"$(cat \"$d/claude.version\") (Claude Code)\";;\n"
               "update) echo 2.0.0 > \"$d/claude.version\"; echo updated;;\n"
+              "auth) if [ \"$2\" = status ]; then [ -e \"$d/claude.in\" ] && echo '{\"loggedIn\": true}' || echo '{\"loggedIn\": false}';\n"
+              "  else echo 'Opening browser to sign in'; echo 'If the browser did not open, visit: https://claude.com/cai/oauth/authorize?code=true&state=s1';\n"
+              "  printf 'Paste code here if prompted > '; read code; [ \"$code\" = good#s1 ] || { echo 'Invalid code'; exit 1; }\n"
+              "  touch \"$d/claude.in\"; echo 'Login successful'; fi;;\n"
               "*) echo \"$@\" >> \"$d/claude.args\"; exec sleep 30;;\nesac\n",
               true);
     writeFile(bin + "/codex",
-              "#!/bin/sh\ncase \"$1\" in\n--version) echo codex-cli 5.5.5;;\n"
-              "update) echo checking; echo 'npm ERR! needs root' >&2; exit 1;;\nesac\n",
+              "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n--version) echo codex-cli 5.5.5;;\n"
+              "update) echo checking; echo 'npm ERR! needs root' >&2; exit 1;;\n"
+              "login) if [ \"$2\" = status ]; then [ -e \"$d/codex.in\" ] && { echo 'Logged in using ChatGPT'; exit 0; }; echo 'Not logged in'; exit 1; fi\n"
+              "  echo '1. Open this link in your browser and sign in to your account'; echo '   https://auth.openai.com/codex/device';\n"
+              "  echo '2. Enter this one-time code (expires in 15 minutes)'; echo '   ABCD-12345'; sleep 1; touch \"$d/codex.in\";;\nesac\n",
               true);
     ::setenv("HOME", home.c_str(), 1);
     ::setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);
     ::setenv("PATH", (bin + ":" + std::getenv("PATH")).c_str(), 1);
     ::setenv("PVAI_CODEX", (bin + "/codex").c_str(), 1);
     ::setenv("PVAI_CLAUDE", (bin + "/claude").c_str(), 1);
+    // An install of claude puts the program back that a test moved away.
+    ::setenv("PVAI_INSTALL_CLAUDE",
+             ("echo 'pvai-step: download'; echo fetching; sleep 0.3; mv '" + bin + "/claude.away' '" + bin
+              + "/claude'; echo 'pvai-step: check'; '" + bin + "/claude' --version")
+                 .c_str(),
+             1);
     const std::string kimiSocket = home + "/kimi.sock";
     writeFile(bin + "/kimi",
               "#!/bin/sh\ncase \"$1\" in\n--version) echo 2.4.1;;\nacp) exec '" + fs::canonical(argv[0]).string()
@@ -998,7 +1011,51 @@ int main(int argc, char **argv)
         check(!list.empty() && list[0].value("name", "") == "claude" && !list[0].value("installed", true),
               "welcome lists claude with installed false: " + list.dump());
     }
-    fs::rename(bin + "/claude.away", bin + "/claude");
+    // Installed from the app: the install's steps, then the new state.
+    a.send({{"type", "install"}, {"ref", 36}, {"assistant", "claude"}});
+    json step = a.next("install", [](const json &m) { return m.value("step", json()) == "download"; });
+    check(step.value("assistant", "") == "claude" && step.value("ref", 0) == 36 && step.value("state", "") == "running",
+          "an install reports its steps: " + step.dump());
+    const json installed = a.next("install", [](const json &m) { return m.value("state", "") != "running"; }, 5000);
+    check(installed.value("state", "") == "done", "and ends done: " + installed.dump());
+    const json nowInstalled = a.next("assistants", [](const json &m) {
+        const json list = m.value("assistants", json::array());
+        return !list.empty() && list[0].value("installed", false);
+    });
+    check(!nowInstalled.empty(), "assistants says claude is installed now");
+    a.send({{"type", "install"}, {"ref", 37}, {"assistant", "claude"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 37; }).value("reason", "") == "already-installed",
+          "a second install: already-installed");
+
+    // Logins: Codex's device code; Claude Code's link and the code back.
+    a.send({{"type", "login"}, {"ref", 38}, {"assistant", "codex"}});
+    json login = a.next("login", [](const json &m) { return m.value("assistant", "") == "codex" && !m.value("code", json()).is_null(); });
+    check(login.value("url", "") == "https://auth.openai.com/codex/device" && login.value("code", "") == "ABCD-12345"
+              && login.value("state", "") == "waiting",
+          "codex: the device link and code: " + login.dump());
+    login = a.next("login", [](const json &m) { return m.value("assistant", "") == "codex" && m.value("state", "") != "waiting"; }, 5000);
+    check(login.value("state", "") == "done", "and done once it went through: " + login.dump());
+    check(!a.next("assistants", [](const json &m) {
+              for (const auto &x : m.value("assistants", json::array()))
+                  if (x.value("name", "") == "codex")
+                      return x.value("loggedIn", json()) == true;
+              return false;
+          }).empty(),
+          "codex loggedIn true from codex login status");
+    a.send({{"type", "login"}, {"ref", 39}, {"assistant", "claude"}});
+    login = a.next("login", [](const json &m) { return m.value("assistant", "") == "claude" && m.value("state", "") == "code-needed"; });
+    check(login.value("url", "").rfind("https://claude.com/cai/oauth/authorize?", 0) == 0, "claude: the link, and it wants the code: " + login.dump());
+    a.send({{"type", "login-code"}, {"ref", 40}, {"assistant", "claude"}, {"code", "good#s1"}});
+    login = a.next("login", [](const json &m) { return m.value("assistant", "") == "claude" && m.value("state", "") == "done"; }, 5000);
+    check(!login.empty(), "the code goes in, the login is done");
+    check(!a.next("assistants", [](const json &m) {
+              const json list = m.value("assistants", json::array());
+              return !list.empty() && list[0].value("loggedIn", json()) == true;
+          }).empty(),
+          "claude loggedIn true from claude auth status");
+    a.send({{"type", "login-code"}, {"ref", 41}, {"assistant", "claude"}, {"code", "x"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 41; }).value("reason", "") == "no-login",
+          "a code without a login: no-login");
 
     // A session the app started that ends at once: the app hears why.
     {

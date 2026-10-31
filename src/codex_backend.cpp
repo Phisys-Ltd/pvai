@@ -532,6 +532,25 @@ CodexBackend::CodexBackend(Host &host)
 {
 }
 
+void CodexBackend::findProgram()
+{
+    if (bin_.empty())
+        bin_ = codexBinary();
+}
+
+// `codex login status`: "Logged in using ..." and status 0 when it is.
+void CodexBackend::refreshLogin(std::function<void(bool changed)> done)
+{
+    if (bin_.empty())
+        return done(false);
+    host_.runProcess({bin_, "login", "status"}, std::chrono::seconds(30), [this, done](int status, const std::string &output) {
+        const json now = status == 0 && output.find("Logged in") != std::string::npos;
+        const bool changed = now != loggedIn_;
+        loggedIn_ = now;
+        done(changed);
+    });
+}
+
 short CodexBackend::events() const
 {
     return static_cast<short>(POLLIN | (link_.wantsWrite() ? POLLOUT : 0));
