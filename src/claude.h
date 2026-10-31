@@ -52,6 +52,7 @@ private:
     void catchUp();
     void remember() const;
     void openScreenDialog();
+    bool ours(const std::string &claudeSession, const std::string &source) const;
 
     Conn &wrapper_;
     bool canRestart_ = false;

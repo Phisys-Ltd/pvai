@@ -642,6 +642,19 @@ int main(int argc, char **argv)
     hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "Ok."}});
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle again");
 
+    // A Claude Code started from a shell command of this one inherits pvai's
+    // environment: its hooks and status line are not this session's.
+    hook("wterm", {{"hook_event_name", "SessionStart"}, {"session_id", "nested-9"}, {"source", "startup"}});
+    hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "nested-9"}, {"prompt", "x"}});
+    {
+        Client status;
+        status.send({{"type", "status"}, {"id", "wterm"}, {"status", {{"session_id", "nested-9"}, {"version", "9.9.9"}}}});
+    }
+    check(waitSession(a, "wterm", [](const json &s) {
+              return s.value("state", "") != "idle" || s.value("claudeSession", "") != "running-1"
+                  || sub(s, "usage").value("version", "") == "9.9.9";
+          }, 800).empty(), "a nested Claude Code's hooks and status line change nothing");
+
     // Subagents: running while their meta file has no `finished`; a task
     // notification starts a turn without UserPromptSubmit.
     const std::string run2 = home + "/elsewhere/run-2.jsonl";

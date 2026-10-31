@@ -269,6 +269,10 @@ void ClaudeSession::onHook(const json &event)
     if (fingerprint == lastEvent_)
         return;
     lastEvent_ = fingerprint;
+    if (!ours(event.value("session_id", ""), name == "SessionStart" ? event.value("source", "") : "")) {
+        host_.log(id_ + ": " + name + " of another Claude Code (" + event.value("session_id", "") + "), dropped");
+        return;
+    }
     bool known = false;
     if (const std::string id = event.value("session_id", ""); !id.empty() && id != claudeSession_) {
         claudeSession_ = id;
@@ -358,10 +362,24 @@ void ClaudeSession::onHook(const json &event)
     changed();
 }
 
+// A Claude Code started from within this one (a shell command of Claude's)
+// inherits pvai's environment, and its hooks and status line report to
+// this session. Another session id is ours only before the first one is
+// known, while starting (a restart), or when SessionStart says that this
+// Claude Code moved to another conversation (/clear, /resume, a compaction).
+bool ClaudeSession::ours(const std::string &claudeSession, const std::string &source) const
+{
+    if (claudeSession.empty() || claudeSession_.empty() || claudeSession == claudeSession_ || state_ == "starting")
+        return true;
+    return source == "clear" || source == "resume" || source == "compact";
+}
+
 // Claude Code's status line input: what /context and /usage would show, in
 // short. Passed on when it changes.
 void ClaudeSession::onStatus(const json &status)
 {
+    if (status.is_object() && !ours(status.value("session_id", ""), ""))
+        return;
     auto pick = [](const json &object, const char *key) {
         return object.is_object() && object.contains(key) ? object[key] : json();
     };
