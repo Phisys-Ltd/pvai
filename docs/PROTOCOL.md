@@ -288,7 +288,7 @@ Daemon to app:
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `interrupting` | `ref`, `session` | the Esc went in; the session turns `idle` when the transcript shows the interrupt, or after about 4 s anyway, then with its queue dropped (a hung session, such as one without a login) |
@@ -297,7 +297,7 @@ Daemon to app:
 | `projects` | `dirs: [path]` | most recently used first |
 | `browse` | `path`, `dirs: [name]`, `ok` | sorted, hidden ones left out; `ok: false` when `path` cannot be read |
 | `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn's prompt was spoken |
-| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the dialog's first line) |
+| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the dialog's first line). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual |
 | `history` | `session`, `entries: [Entry]` | answer to `subscribe`, oldest first; sent again, to every subscriber, when the session moves to another transcript (`/clear`): the view starts over |
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
 | `conversations` | `assistant`, `cwd`, `conversations: [Conversation]` | answer to `conversations` |
@@ -535,9 +535,9 @@ has open are Kimi's own and are not shown (Kimi locks them).
 order the app should offer them:
 
 ```json
-[{"name": "claude", "title": "Claude Code", "models": ["opus", "sonnet", "haiku"]},
- {"name": "codex", "title": "Codex", "models": ["<a Codex model>", "..."]},
- {"name": "kimi", "title": "Kimi Code", "models": ["<a Kimi model>"], "loggedIn": false}]
+[{"name": "claude", "title": "Claude Code", "models": ["opus", "sonnet", "haiku"], "installed": true},
+ {"name": "codex", "title": "Codex", "models": ["<a Codex model>", "..."], "installed": true},
+ {"name": "kimi", "title": "Kimi Code", "models": ["<a Kimi model>"], "installed": true, "loggedIn": false}]
 ```
 
 `name` is what `start.assistant`, `conversations.assistant` and
@@ -546,7 +546,12 @@ order the app should offer them:
 non-hidden models from its app server, empty until it answered; Kimi's
 values of its `model` option, empty until a session started). The app
 knows no assistant by name: a new one shows up here and works without a
-change to the app. `loggedIn` (only some assistants, Kimi since 0.5.16):
+change to the app. `installed` (since 0.5.18): whether `start` can start it, its program
+being on this host; `false` only for Claude Code, which is listed anyway
+because its sessions can come from `pvai run` in a terminal with another
+`PATH` (Codex and Kimi are listed only when installed). `start` of one
+that is not is `rejected` with `not-installed`. `loggedIn` (only some
+assistants, Kimi since 0.5.16):
 `true` or `false` once the assistant said, `null` before; `false` means
 `start` is `rejected` with `not-logged-in` and the owner has to log in on
 the host (`kimi login`, or a provider in `~/.kimi-code/config.toml`).

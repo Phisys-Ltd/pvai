@@ -156,7 +156,9 @@ public:
     virtual std::string name() const = 0;  // "claude", "codex"; `start.assistant`
     virtual std::string title() const = 0; // for the app: "Claude Code"
     virtual json models() const = 0;       // what `start` can ask for
-    virtual bool available() const = 0;    // installed on this host
+    virtual bool available() const = 0;    // installed on this host, or sessions of it can come
+    // `start` can start it: its program is on this host.
+    virtual bool installedHere() const { return available(); }
     virtual json describe() const;         // the entry in `welcome.assistants`
 
     // The installed version, empty when unknown; read in the background.

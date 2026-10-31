@@ -22,8 +22,8 @@ constexpr std::size_t kMaxAgentLine = 16 * 1024 * 1024; // session/load plays a 
 
 std::string kimiBinary()
 {
-    if (const char *chosen = std::getenv("PVAI_KIMI"))
-        return chosen;
+    if (const char *chosen = std::getenv("PVAI_KIMI")) // an empty value: none
+        return *chosen && ::access(chosen, X_OK) == 0 ? chosen : std::string();
     return findBinary("kimi");
 }
 

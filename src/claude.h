@@ -39,6 +39,7 @@ public:
     void onDraft(bool dirty);
     void onDialog(const std::string &kind);
     void onScreen(const std::string &text, bool prompt);
+    void onExited(int status, const std::string &screen);
     void onTyped(bool ok, const std::string &screen);
     void onSnapshot(const std::string &screen);
     bool confirmsDelivery() const override { return verify_; }
@@ -46,6 +47,7 @@ public:
 protected:
     void submit(const Prompt &prompt) override;
     void terminate();
+    bool stopping_ = false; // `stop` asked for the end
 
 private:
     void armEscapeCheck(bool forceIdle = false);
@@ -88,6 +90,7 @@ private:
     std::string screenText_;
     std::optional<Clock::time_point> screenAt_;
     std::string screenFrom_ = "idle";
+    Clock::time_point began_ = Clock::now();
     // Delivery under a wrapper that verifies (pvai 0.5.15 and later): the
     // prompt typed now, until UserPromptSubmit (or for a slash command the
     // wrapper's `typed`) confirms it; the wrapper's answer is due by
@@ -139,7 +142,9 @@ public:
     std::string name() const override { return "claude"; }
     std::string title() const override { return "Claude Code"; }
     json models() const override { return {"opus", "sonnet", "haiku"}; }
+    // Sessions come from wrappers whatever the daemon's PATH says.
     bool available() const override { return true; }
+    bool installedHere() const override { return !binary().empty(); }
 
     void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) override;
     void start(const StartRequest &request, Started done) override;
@@ -151,7 +156,7 @@ public:
     static std::string projectDir(const std::string &cwd);
 
 protected:
-    std::string binary() const override { return findBinary("claude"); }
+    std::string binary() const override;
 };
 
 } // namespace pvai

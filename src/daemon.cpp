@@ -515,6 +515,8 @@ private:
                 session->onDraft(message.value("dirty", false));
             else if (type == "dialog")
                 session->onDialog(message.value("kind", ""));
+            else if (type == "exited")
+                session->onExited(message.value("status", 0), message.value("screen", json()).is_string() ? message["screen"].get<std::string>() : "");
             else if (type == "screen")
                 session->onScreen(message.value("dialog", json()).is_string() ? message["dialog"].get<std::string>() : "",
                                   message.value("prompt", false));
@@ -593,6 +595,10 @@ private:
         Backend *chosen = backend(message.value("assistant", "claude"));
         if (!chosen) {
             peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", "unknown-assistant"}});
+            return;
+        }
+        if (!chosen->installedHere()) {
+            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", "not-installed"}});
             return;
         }
         const auto serial = peer->serial;

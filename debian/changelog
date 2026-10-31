@@ -1,3 +1,14 @@
+pvai (0.5.18-1) trixie; urgency=medium
+
+  * welcome.assistants[].installed; start of an assistant whose program is
+    not on this host is rejected not-installed (Claude Code was listed and
+    started anyway, and its session ended at once).
+  * A Claude Code session the app started that ends within 90 s or with an
+    error sends attention kind "ended" with the last lines of its screen.
+  * PVAI_CLAUDE names the claude binary, as PVAI_CODEX and PVAI_KIMI do.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 31 Oct 2026 13:40:00 +0100
+
 pvai (0.5.17-1) trixie; urgency=medium
 
   * Each refused direct access goes to the system log (ident pvai,

@@ -1,6 +1,7 @@
 #include "claude.h"
 
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -271,6 +272,7 @@ std::string ClaudeSession::restart()
     if (state_ != "idle" || draft_)
         return "busy";
     wrapper_.send({{"type", "restart"}, {"resume", claudeSession_}});
+    began_ = Clock::now();
     state_ = "starting";
     // The old process takes its subagents with it.
     created_ = std::filesystem::file_time_type::clock::now();
@@ -290,6 +292,7 @@ void ClaudeSession::terminate()
 
 std::string DetachedClaudeSession::stop()
 {
+    stopping_ = true;
     terminate();
     return {};
 }
@@ -544,6 +547,25 @@ void ClaudeSession::onScreen(const std::string &text, bool prompt)
         else
             screenAt_ = Clock::now() + std::chrono::seconds(1);
     }
+}
+
+// Claude Code ended. A session the app started that ends within 90 s, or
+// with an error, and not because it was stopped: the app hears why, as far
+// as the screen tells (the last lines it showed).
+void ClaudeSession::onExited(int status, const std::string &screen)
+{
+    host_.log(id_ + ": claude exited with " + std::to_string(status));
+    if (!detached() || stopping_)
+        return;
+    if (status == 0 && Clock::now() - began_ > std::chrono::seconds(90))
+        return;
+    std::string tail = screen;
+    for (int lines = 0, at = static_cast<int>(tail.size()) - 1; at >= 0; --at)
+        if (tail[at] == '\n' && ++lines == 10) {
+            tail = tail.substr(at + 1);
+            break;
+        }
+    attention("ended", tail.empty() ? "Claude Code ended (exit status " + std::to_string(status) + ")." : tail);
 }
 
 // The wrapper's answer to a prompt typed with `verify`.
@@ -859,6 +881,14 @@ void ClaudeBackend::conversations(const std::string &cwd, std::function<void(std
 }
 
 // `pvai run --detached`, which registers like any other wrapper.
+// PVAI_CLAUDE names the binary (an empty value: none), as PVAI_CODEX does.
+std::string ClaudeBackend::binary() const
+{
+    if (const char *chosen = std::getenv("PVAI_CLAUDE"))
+        return *chosen && ::access(chosen, X_OK) == 0 ? chosen : std::string();
+    return findBinary("claude");
+}
+
 void ClaudeBackend::start(const StartRequest &request, Started done)
 {
     if (!request.resume.empty()) {

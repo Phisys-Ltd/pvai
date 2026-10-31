@@ -734,6 +734,19 @@ int runWrapper(const WrapperOptions &options)
 
     int status = 0;
     ::waitpid(g_child, &status, 0);
+    // How it ended, with the last lines it showed ("command not found",
+    // "Not logged in"): the daemon tells the app when a session ends early.
+    if (daemon) {
+        const int code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+        daemon->send({{"type", "exited"}, {"status", code}, {"screen", screenSnapshot(screen)}});
+        const auto until = Clock::now() + std::chrono::seconds(1);
+        while (daemon->wantsWrite() && Clock::now() < until) {
+            pollfd p{daemon->fd(), POLLOUT, 0};
+            ::poll(&p, 1, 100);
+            if (!daemon->flush())
+                break;
+        }
+    }
     restoreTerminal();
     for (auto &viewer : viewers) {
         ::fcntl(viewer->conn->fd(), F_SETFL, 0);

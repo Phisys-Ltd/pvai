@@ -540,6 +540,7 @@ int main(int argc, char **argv)
     ::setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);
     ::setenv("PATH", (bin + ":" + std::getenv("PATH")).c_str(), 1);
     ::setenv("PVAI_CODEX", (bin + "/codex").c_str(), 1);
+    ::setenv("PVAI_CLAUDE", (bin + "/claude").c_str(), 1);
     const std::string kimiSocket = home + "/kimi.sock";
     writeFile(bin + "/kimi",
               "#!/bin/sh\ncase \"$1\" in\n--version) echo 2.4.1;;\nacp) exec '" + fs::canonical("/proc/self/exe").string()
@@ -586,7 +587,8 @@ int main(int argc, char **argv)
     check(assistants.size() == 3 && assistants[0].value("name", "") == "claude" && assistants[0].value("title", "") == "Claude Code"
               && assistants[0].value("models", json()).size() == 3 && assistants[1].value("name", "") == "codex"
               && assistants[2].value("name", "") == "kimi" && assistants[2].value("title", "") == "Kimi Code"
-              && assistants[2].contains("loggedIn") && assistants[2]["loggedIn"].is_null(),
+              && assistants[2].contains("loggedIn") && assistants[2]["loggedIn"].is_null()
+              && assistants[0].value("installed", false) && assistants[1].value("installed", false) && assistants[2].value("installed", false),
           "welcome lists the assistants as objects: " + assistants.dump());
     check(welcome.value("installed", json()) == json({{"claude", "1.0.0"}, {"codex", "5.5.5"}, {"kimi", "2.4.1"}}),
           "welcome.installed: " + welcome.value("installed", json()).dump());
@@ -962,6 +964,41 @@ int main(int argc, char **argv)
         hook("wver", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "v-1"}, {"prompt", "zwei"}});
         check(a.next("delivered").value("ref", 0) == 31, "and UserPromptSubmit delivers it");
         hook("wver", {{"hook_event_name", "Stop"}, {"session_id", "v-1"}, {"last_assistant_message", "Zwei."}});
+    }
+
+    // Claude Code not on this host: start is refused, welcome says so.
+    fs::rename(bin + "/claude", bin + "/claude.away");
+    a.send({{"type", "start"}, {"ref", 34}, {"assistant", "claude"}, {"cwd", project}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 34; }).value("reason", "") == "not-installed",
+          "start without claude installed: not-installed");
+    {
+        Client b;
+        b.send(app());
+        const json list = b.next("welcome").value("assistants", json());
+        check(!list.empty() && list[0].value("name", "") == "claude" && !list[0].value("installed", true),
+              "welcome lists claude with installed false: " + list.dump());
+    }
+    fs::rename(bin + "/claude.away", bin + "/claude");
+
+    // A session the app started that ends at once: the app hears why.
+    {
+        Client early;
+        early.send({{"type", "register"}, {"id", "wearly"}, {"cwd", project}, {"label", "early"}, {"detached", true}, {"restart", true}});
+        check(!waitSession(a, "wearly", [](const json &) { return true; }).empty(), "a detached session registers");
+        early.send({{"type", "exited"}, {"status", 1}, {"screen", "line 1\nNot logged in \xC2\xB7 Please run /login"}});
+        const json ended = a.next("attention", [](const json &m) { return m.value("session", "") == "wearly"; });
+        check(ended.value("kind", "") == "ended" && ended.value("text", "") == "line 1\nNot logged in \xC2\xB7 Please run /login",
+              "an early end is an attention with the last lines: " + ended.dump());
+    }
+    {
+        Client stopped;
+        stopped.send({{"type", "register"}, {"id", "wstop"}, {"cwd", project}, {"label", "stop"}, {"detached", true}, {"restart", true}});
+        check(!waitSession(a, "wstop", [](const json &) { return true; }).empty(), "another detached session");
+        a.send({{"type", "stop"}, {"ref", 35}, {"session", "wstop"}});
+        check(stopped.next("terminate").value("type", "") == "terminate", "stop terminates it");
+        stopped.send({{"type", "exited"}, {"status", 129}, {"screen", "bye"}});
+        check(a.next("attention", [](const json &m) { return m.value("session", "") == "wstop"; }, 600).empty(),
+              "a stopped session's end says nothing");
     }
 
     // Subagents: running while their meta file has no `finished`; a task
