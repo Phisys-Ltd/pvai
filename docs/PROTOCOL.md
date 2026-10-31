@@ -112,7 +112,7 @@ daemon knows every live one on its host.
 
 - `id`: opaque, stable while it lives: chosen by the wrapper (`w` + 8 hex
   digits) for Claude Code, Codex's thread id for Codex.
-- `assistant`: the `name` of its assistant in `welcome.assistants`: `claude` or `codex`.
+- `assistant`: the `name` of its assistant in `welcome.assistants`: `claude`, `codex` or `kimi`.
 - `label`: `pvai run --name`, else the basename of the working directory.
 - `state`:
   - `starting`: wrapper up, Claude Code has not reported `SessionStart` yet.
@@ -264,10 +264,10 @@ App to daemon:
 |---|---|---|
 | `hello` | `token`, `client`, `version` | first line on every connection; `token` only on loopback (see "Direct access") |
 | `prompt` | `ref`, `session`, `text`, `voice`, `from`, `fromLabel` | type `text` into that session; `ref` is the app's id for the answer; `voice: true` when the text was spoken; `from` and `fromLabel` only for an agent message the owner released (see "Agent messages") |
-| `start` | `ref`, `cwd`, `label`, `args`, `assistant`, `resume` | start a session in `cwd` (absolute) without a terminal; `label` optional; `assistant` one of `welcome.assistants` (default `claude`); `args` optional strings: extra arguments for `claude`; for Codex only `-m`/`--model <model>` is read; `resume` optional: an id from `conversations`, to go on with that conversation instead of a new one (see "Ended conversations") |
+| `start` | `ref`, `cwd`, `label`, `args`, `assistant`, `resume` | start a session in `cwd` (absolute) without a terminal; `label` optional; `assistant` one of `welcome.assistants` (default `claude`); `args` optional strings: extra arguments for `claude`; for Codex and Kimi only `-m`/`--model <model>` is read; `resume` optional: an id from `conversations`, to go on with that conversation instead of a new one (see "Ended conversations") |
 | `conversations` | `assistant`, `cwd` | the ended conversations of that assistant in `cwd` (see "Ended conversations") |
 | `update` | `ref` | update every assistant on this host to its latest version (see "Versions and updates") |
-| `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust; Return for `screen`) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits; for `screen` it closes the dialog). Since 0.5.13 also `key:NAME`, one key into any dialog but `trust`: `up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `space`, or a digit or lower-case letter (an option's number, a shortcut such as `s`); the dialog stays open until the screen or a hook says otherwise. `send`: see "Delivery" under the session fields |
+| `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust; Return for `screen`) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits; for `screen` it closes the dialog). Since 0.5.13 also `key:NAME`, one key into any dialog but `trust`: `up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `space`, or a digit or lower-case letter (an option's number, a shortcut such as `s`); the dialog stays open until the screen or a hook says otherwise. `send`: see "Delivery" under the session fields. Kimi: also `always` and `option:<id>`, see "Kimi sessions" |
 | `interrupt` | `ref`, `session` | stop the running turn, like Esc in the terminal (into a dialog: deny); nothing happens while `idle`, `starting` or on the trust dialog |
 | `stop` | `ref`, `session` | end a `stoppable` session |
 | `restart` | `ref`, `session` | end the session's process and start it again, going on with the same conversation (see "Restart") |
@@ -288,7 +288,7 @@ Daemon to app:
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server is not reachable, yet), `bad-start` (Codex refused), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `interrupting` | `ref`, `session` | the Esc went in; the session turns `idle` when the transcript shows the interrupt, or after about 4 s anyway, then with its queue dropped (a hung session, such as one without a login) |
@@ -489,6 +489,46 @@ for Claude Code; the differences:
   A TUI thread shows up with its first prompt (within about 15 s); prompts
   from the app go into it like the owner's.
 
+## Kimi sessions
+
+Since 0.5.16. The daemon starts one `kimi acp` (Kimi Code's Agent Client
+Protocol server, stdio) when `kimi` is installed and speaks to it for all
+Kimi sessions; if it ends, its sessions end and it is started again.
+Every Kimi session is the daemon's (`detached`, `stoppable`; `stop` closes
+it in Kimi, where `conversations` still finds it). Sessions a `kimi` TUI
+has open are Kimi's own and are not shown (Kimi locks them).
+
+- `start` with `assistant: "kimi"` is `session/new` in `cwd`; `args` only
+  `-m`/`--model <model>` (a value of `welcome.assistants[].models`). Without
+  a login it is `rejected` with `not-logged-in`, and `loggedIn` turns
+  `false`.
+- A prompt is `session/prompt`; the first of a session carries the 🔊
+  convention as embedded context (not part of the conversation Kimi keeps).
+  The turn ends with Kimi's answer to it: `say` with the 🔊 line as usual;
+  a cancelled turn is an `interrupted` entry. A prompt that fails because
+  the login is gone gets a text entry saying so, `attention` with `kind:
+  "login"`, and `say`.
+- Dialogs: Kimi's `session/request_permission`. A tool's approval is
+  `permission` (`dialogInfo.tool` `shell`, `edit`, `read`, `search`,
+  `fetch`, ... from the tool's kind, `text` the command or path, `message`
+  Kimi's title for it); a question Kimi asks (its AskUserQuestion, bridged
+  as a permission request) is `question` (`text` the question).
+  `dialogInfo.options` lists Kimi's choices, in its order:
+  `[{"id": "approve_once", "name": "Approve", "kind": "allow_once"},
+  {"id": "approve_always", "name": "...", "kind": "allow_always"},
+  {"id": "reject", "name": "Reject", "kind": "reject_once"}]` (a question's
+  ids are `q1_opt_<i>` and `q1_skip`). `answer` takes `allow` (the first
+  allow option), `deny` (the first reject option), `always` (the
+  allow_always option: Kimi asks no more for that kind of call in this
+  session) or `option:<id>` for any of them. `interrupt` cancels the
+  dialog and the turn.
+- `usage`: `model` the model's name, `context` from Kimi's `usage_update`
+  after each turn (`tokens` the context used, `size` the model's window),
+  `version` Kimi Code's; `fiveHour`, `sevenDay`, `costUsd` stay `null`
+  (ACP has no limits or cost), there is no `cache`.
+- `update` leaves Kimi alone (installed with npm): it is never in
+  `changed` or `errors`.
+
 ## Assistants
 
 `welcome.assistants` lists what `start` can start on this host, in the
@@ -496,15 +536,20 @@ order the app should offer them:
 
 ```json
 [{"name": "claude", "title": "Claude Code", "models": ["opus", "sonnet", "haiku"]},
- {"name": "codex", "title": "Codex", "models": ["<a Codex model>", "..."]}]
+ {"name": "codex", "title": "Codex", "models": ["<a Codex model>", "..."]},
+ {"name": "kimi", "title": "Kimi Code", "models": ["<a Kimi model>"], "loggedIn": false}]
 ```
 
 `name` is what `start.assistant`, `conversations.assistant` and
 `Session.assistant` carry; `title` is for people; `models` are the values
 `start` takes as `args: ["--model", m]` (Claude Code's aliases; Codex's
-non-hidden models from its app server, empty until it answered). The app
-knows no assistant by name: a new one (Moonshot's Kimi, say) shows up here
-and works without a change to the app.
+non-hidden models from its app server, empty until it answered; Kimi's
+values of its `model` option, empty until a session started). The app
+knows no assistant by name: a new one shows up here and works without a
+change to the app. `loggedIn` (only some assistants, Kimi since 0.5.16):
+`true` or `false` once the assistant said, `null` before; `false` means
+`start` is `rejected` with `not-logged-in` and the owner has to log in on
+the host (`kimi login`, or a provider in `~/.kimi-code/config.toml`).
 
 ## Ended conversations
 
@@ -531,12 +576,15 @@ closed, the host restarted):
      included (`stop` puts them there); `title` the thread's name, else its
      first prompt. Loaded threads (live sessions) and subagents' threads
      are left out.
+   - Kimi: its `session/list` for that `cwd` (title and `updatedAt` as
+     Kimi keeps them); running sessions are left out.
 2. `start` with `resume: "<id>"` (and `assistant`, `cwd`) goes on with it:
    Claude Code as `claude --resume <id>` plus `args` (a detached session
    that reads the transcript), Codex by unarchiving and resuming the
    thread (a detached session; a thread that is still loaded only becomes
-   `detached`). An id that is not there is `rejected` with
-   `unknown-conversation`.
+   `detached`), Kimi with `session/load` (a detached session; Kimi plays
+   the history back, its text only). An id that is not there is
+   `rejected` with `unknown-conversation`.
 
 ## Versions and updates
 

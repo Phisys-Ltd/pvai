@@ -157,12 +157,12 @@ public:
     virtual std::string title() const = 0; // for the app: "Claude Code"
     virtual json models() const = 0;       // what `start` can ask for
     virtual bool available() const = 0;    // installed on this host
-    json describe() const;                 // the entry in `welcome.assistants`
+    virtual json describe() const;         // the entry in `welcome.assistants`
 
     // The installed version, empty when unknown; read in the background.
     const std::string &installed() const { return installed_; }
     void refreshVersion(std::function<void()> done = {});
-    void update(std::function<void(const UpdateResult &)> done);
+    virtual void update(std::function<void(const UpdateResult &)> done);
 
     virtual void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) = 0;
     virtual void start(const StartRequest &request, Started done) = 0;

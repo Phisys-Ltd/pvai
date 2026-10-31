@@ -11,6 +11,7 @@
 //   socket and skip the token: the runtime directory is the user's own.
 #include "claude.h"
 #include "codex_backend.h"
+#include "kimi_backend.h"
 #include "common.h"
 #include "pairing.h"
 #include "session.h"
@@ -153,6 +154,7 @@ public:
         claude_ = claude.get();
         backends_.push_back(std::move(claude));
         backends_.push_back(std::make_unique<CodexBackend>(*this));
+        backends_.push_back(std::make_unique<KimiBackend>(*this));
         loadListen();
         refreshVersions();
     }

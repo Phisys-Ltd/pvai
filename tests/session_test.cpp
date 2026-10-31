@@ -369,8 +369,146 @@ private:
 
 } // namespace
 
+// Kimi Code's `kimi acp`: the daemon starts bin/kimi, which runs this test
+// binary as a relay (--fake-kimi) between its stdio and this socket; the
+// test plays the agent, one JSON-RPC message per line.
+class FakeKimi {
+public:
+    explicit FakeKimi(const std::string &path)
+    {
+        listen_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path.c_str());
+        ::bind(listen_, reinterpret_cast<sockaddr *>(&addr), sizeof addr);
+        ::listen(listen_, 4);
+        thread_ = std::thread([this] { loop(); });
+    }
+    ~FakeKimi()
+    {
+        stop_ = true;
+        thread_.join();
+        ::close(listen_);
+    }
+
+    void send(const json &message)
+    {
+        std::lock_guard lock(mutex_);
+        out_ += message.dump() + "\n";
+    }
+    void update(const std::string &session, const json &update)
+    {
+        send({{"jsonrpc", "2.0"}, {"method", "session/update"}, {"params", {{"sessionId", session}, {"update", update}}}});
+    }
+    void respond(const json &request, const json &result)
+    {
+        send({{"jsonrpc", "2.0"}, {"id", request["id"]}, {"result", result}});
+    }
+
+    // The first message from the daemon since the last take() that matches,
+    // waiting up to `ms`; null when none came. It is taken off the list.
+    json take(const std::function<bool(const json &)> &pred, int ms = 3000)
+    {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+        while (std::chrono::steady_clock::now() < until) {
+            {
+                std::lock_guard lock(mutex_);
+                for (auto it = in_.begin(); it != in_.end(); ++it)
+                    if (pred(*it)) {
+                        json m = *it;
+                        in_.erase(it);
+                        return m;
+                    }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        return nullptr;
+    }
+    json call(const std::string &method, int ms = 3000)
+    {
+        return take([&](const json &m) { return m.value("method", "") == method; }, ms);
+    }
+    json answerTo(const json &id, int ms = 3000)
+    {
+        return take([&](const json &m) { return !m.contains("method") && m.value("id", json()) == id; }, ms);
+    }
+
+private:
+    void loop()
+    {
+        std::string buffer;
+        while (!stop_) {
+            pollfd p[2] = {{listen_, POLLIN, 0}, {client_, POLLIN, 0}};
+            ::poll(p, 2, 20);
+            if (p[0].revents & POLLIN)
+                client_ = ::accept(listen_, nullptr, nullptr);
+            if (client_ >= 0 && (p[1].revents & (POLLIN | POLLHUP))) {
+                char chunk[65536];
+                const ssize_t n = ::read(client_, chunk, sizeof chunk);
+                if (n <= 0) {
+                    ::close(client_);
+                    client_ = -1;
+                } else {
+                    buffer.append(chunk, static_cast<std::size_t>(n));
+                    for (auto end = buffer.find('\n'); end != std::string::npos; end = buffer.find('\n')) {
+                        json m = json::parse(buffer.substr(0, end), nullptr, false);
+                        buffer.erase(0, end + 1);
+                        std::lock_guard lock(mutex_);
+                        in_.push_back(std::move(m));
+                    }
+                }
+            }
+            std::string out;
+            {
+                std::lock_guard lock(mutex_);
+                if (client_ >= 0)
+                    out.swap(out_);
+            }
+            if (!out.empty())
+                (void)::write(client_, out.data(), out.size());
+        }
+        if (client_ >= 0)
+            ::close(client_);
+    }
+
+    int listen_ = -1;
+    int client_ = -1;
+    std::atomic<bool> stop_{false};
+    std::thread thread_;
+    std::mutex mutex_;
+    std::deque<json> in_;
+    std::string out_;
+};
+
+// --fake-kimi SOCKET: stdin to the socket, the socket to stdout.
+int relay(const char *path)
+{
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path);
+    if (::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr) != 0)
+        return 1;
+    for (;;) {
+        pollfd p[2] = {{STDIN_FILENO, POLLIN, 0}, {fd, POLLIN, 0}};
+        if (::poll(p, 2, -1) < 0)
+            return 1;
+        char chunk[65536];
+        for (int i = 0; i < 2; ++i)
+            if (p[i].revents & (POLLIN | POLLHUP)) {
+                const ssize_t n = ::read(p[i].fd, chunk, sizeof chunk);
+                if (n <= 0)
+                    return 0;
+                if (::write(i == 0 ? fd : STDOUT_FILENO, chunk, static_cast<std::size_t>(n)) != n)
+                    return 1;
+            }
+    }
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 3 && std::string(argv[1]) == "--fake-kimi")
+        return relay(argv[2]);
     if (argc != 2) {
         std::fprintf(stderr, "usage: %s /path/to/pvai\n", argv[0]);
         return 2;
@@ -402,6 +540,12 @@ int main(int argc, char **argv)
     ::setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);
     ::setenv("PATH", (bin + ":" + std::getenv("PATH")).c_str(), 1);
     ::setenv("PVAI_CODEX", (bin + "/codex").c_str(), 1);
+    const std::string kimiSocket = home + "/kimi.sock";
+    writeFile(bin + "/kimi",
+              "#!/bin/sh\ncase \"$1\" in\n--version) echo 2.4.1;;\nacp) exec '" + fs::canonical("/proc/self/exe").string()
+                  + "' --fake-kimi '" + kimiSocket + "';;\nesac\n",
+              true);
+    ::setenv("PVAI_KIMI", (bin + "/kimi").c_str(), 1);
     ::unsetenv(kEnvId);
     const int appPort = 20000 + static_cast<int>(::getpid() % 20000);
 
@@ -422,6 +566,7 @@ int main(int argc, char **argv)
     writeFile(transcripts + "/running-1.jsonl", userLine("still running"));
 
     FakeCodex codex(home + "/.codex/app-server-control/app-server-control.sock");
+    FakeKimi kimi(kimiSocket);
 
     const pid_t daemon = ::fork();
     if (daemon == 0) {
@@ -438,11 +583,121 @@ int main(int argc, char **argv)
     a.send(app());
     json welcome = a.next("welcome");
     const json assistants = welcome.value("assistants", json());
-    check(assistants.size() == 2 && assistants[0].value("name", "") == "claude" && assistants[0].value("title", "") == "Claude Code"
-              && assistants[0].value("models", json()).size() == 3 && assistants[1].value("name", "") == "codex",
-          "welcome lists both assistants as objects: " + assistants.dump());
-    check(welcome.value("installed", json()) == json({{"claude", "1.0.0"}, {"codex", "5.5.5"}}),
+    check(assistants.size() == 3 && assistants[0].value("name", "") == "claude" && assistants[0].value("title", "") == "Claude Code"
+              && assistants[0].value("models", json()).size() == 3 && assistants[1].value("name", "") == "codex"
+              && assistants[2].value("name", "") == "kimi" && assistants[2].value("title", "") == "Kimi Code"
+              && assistants[2].contains("loggedIn") && assistants[2]["loggedIn"].is_null(),
+          "welcome lists the assistants as objects: " + assistants.dump());
+    check(welcome.value("installed", json()) == json({{"claude", "1.0.0"}, {"codex", "5.5.5"}, {"kimi", "2.4.1"}}),
           "welcome.installed: " + welcome.value("installed", json()).dump());
+
+    // ---- Kimi Code over ACP: the fake agent.
+    {
+        const json init = kimi.call("initialize");
+        check(init.value("params", json()).value("protocolVersion", 0) == 1, "kimi acp is initialized: " + init.dump());
+        kimi.respond(init, {{"protocolVersion", 1}, {"agentInfo", {{"name", "Kimi Code CLI"}, {"version", "2.4.1"}}},
+                            {"agentCapabilities", {{"loadSession", true}}}});
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        a.send({{"type", "start"}, {"ref", 40}, {"assistant", "kimi"}, {"cwd", project}});
+        json call = kimi.call("session/new");
+        check(call.value("params", json()).value("cwd", "") == project, "start is session/new in the folder");
+        kimi.send({{"jsonrpc", "2.0"}, {"id", call["id"]}, {"error", {{"code", -32000}, {"message", "Authentication required"}}}});
+        check(a.next("rejected").value("reason", "") == "not-logged-in", "without a login: rejected not-logged-in");
+        {
+            Client b;
+            b.send(app());
+            const json again = b.next("welcome").value("assistants", json());
+            check(again.size() == 3 && again[2].value("loggedIn", true) == false, "and welcome says loggedIn false");
+        }
+        a.send({{"type", "start"}, {"ref", 41}, {"assistant", "kimi"}, {"cwd", project}, {"args", {"-m", "kimi-k3"}}});
+        call = kimi.call("session/new");
+        const json modelOption = {{"id", "model"}, {"currentValue", "kimi-k2"},
+                                  {"options", {{{"value", "kimi-k2"}, {"name", "Kimi K2"}}, {{"value", "kimi-k3"}, {"name", "Kimi K3"}}}}};
+        kimi.respond(call, {{"sessionId", "k-1"}, {"configOptions", {modelOption}}});
+        check(a.next("started").value("session", "") == "k-1", "a new Kimi session");
+        json set = kimi.call("session/set_config_option");
+        check(set.value("params", json()).value("value", "") == "kimi-k3", "-m sets the model option");
+        json chosen = modelOption;
+        chosen["currentValue"] = "kimi-k3";
+        kimi.respond(set, {{"configOptions", {chosen}}});
+        const json model = a.next("usage", [](const json &m) { return sub(m, "usage").value("model", json()) == "Kimi K3"; });
+        check(!model.empty(), "usage.model by name, after -m");
+        json k1;
+        a.send({{"type", "subscribe"}, {"session", "k-1"}});
+        a.next("history");
+
+        a.send({{"type", "prompt"}, {"ref", 42}, {"session", "k-1"}, {"text", "Hallo"}, {"voice", true}});
+        const json prompt = kimi.call("session/prompt");
+        const json blocks = prompt.value("params", json()).value("prompt", json());
+        check(blocks.size() == 2 && blocks[0].value("text", "") == "\xF0\x9F\x8E\x99 Hallo" && blocks[1].value("type", "") == "resource",
+              "session/prompt with the voice context as a resource: " + blocks.dump());
+        kimi.update("k-1", {{"sessionUpdate", "tool_call"}, {"toolCallId", "t1"}, {"title", "Run ls"}, {"kind", "execute"},
+                            {"status", "pending"}, {"rawInput", {{"command", "ls -la"}}}});
+        kimi.send({{"jsonrpc", "2.0"}, {"id", "perm-1"}, {"method", "session/request_permission"},
+                   {"params", {{"sessionId", "k-1"},
+                               {"toolCall", {{"toolCallId", "t1"}, {"title", "Run ls"}, {"kind", "execute"}, {"rawInput", {{"command", "ls -la"}}}}},
+                               {"options", {{{"optionId", "approve_once"}, {"name", "Approve"}, {"kind", "allow_once"}},
+                                            {{"optionId", "approve_always"}, {"name", "Approve for this session"}, {"kind", "allow_always"}},
+                                            {{"optionId", "reject"}, {"name", "Reject"}, {"kind", "reject_once"}}}}}}});
+        const json asked = a.next("attention");
+        check(asked.value("kind", "") == "permission" && asked.value("text", "") == "shell: ls -la", "a permission request asks: " + asked.dump());
+        k1 = waitSession(a, "k-1", [](const json &s) { return s.value("state", "") == "waiting"; });
+        const json info = sub(k1, "dialogInfo");
+        check(k1.value("assistant", "") == "kimi" && k1.value("detached", false) && k1.value("stoppable", false)
+                  && k1.value("dialog", json()) == "permission" && info.value("tool", "") == "shell" && info.value("text", "") == "ls -la"
+                  && info.value("options", json()).size() == 3 && info["options"][1].value("id", "") == "approve_always",
+              "dialog permission with the options: " + k1.dump());
+        a.send({{"type", "answer"}, {"ref", 43}, {"session", "k-1"}, {"choice", "always"}});
+        const json answered = kimi.answerTo("perm-1");
+        check(answered.value("result", json()).value("outcome", json()) == json({{"outcome", "selected"}, {"optionId", "approve_always"}}),
+              "answer always picks approve_always: " + answered.dump());
+        kimi.update("k-1", {{"sessionUpdate", "tool_call_update"}, {"toolCallId", "t1"}, {"status", "completed"},
+                            {"content", {{{"type", "content"}, {"content", {{"type", "text"}, {"text", "a.txt"}}}}}}});
+        kimi.update("k-1", {{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Da ist a.txt.\n"}}}});
+        kimi.update("k-1", {{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "\xF0\x9F\x94\x8A Eine Datei."}}}});
+        kimi.update("k-1", {{"sessionUpdate", "usage_update"}, {"used", 5000}, {"size", 200000}});
+        kimi.respond(prompt, {{"stopReason", "end_turn"}});
+        const json said = a.next("say", [](const json &m) { return m.value("session", "") == "k-1"; });
+        check(said.value("text", "") == "Eine Datei." && said.value("voice", false), "the turn ends and says the 🔊 line: " + said.dump());
+        k1 = waitSession(a, "k-1", [](const json &s) { return s.value("state", "") == "idle"; });
+        check(sub(sub(k1, "usage"), "context") == json({{"percent", 3}, {"tokens", 5000}, {"size", 200000}}),
+              "usage.context from usage_update: " + k1.dump());
+        a.send({{"type", "subscribe"}, {"session", "k-1"}});
+        const json hist = a.next("history", [](const json &m) { return m.value("session", "") == "k-1"; });
+        std::string kinds;
+        for (const auto &e : hist.value("entries", json::array()))
+            kinds += e.value("kind", "") + ",";
+        check(kinds == "prompt,tool,result,text,", "the history: prompt, tool, result, text: " + hist.dump());
+
+        // Earlier sessions, and one played back.
+        a.send({{"type", "conversations"}, {"assistant", "kimi"}, {"cwd", project}});
+        call = kimi.call("session/list");
+        kimi.respond(call, {{"sessions", {{{"sessionId", "k-old"}, {"cwd", project}, {"title", "Alte Frage"}, {"updatedAt", "2026-10-30T10:00:00Z"}},
+                                          {{"sessionId", "k-1"}, {"cwd", project}, {"title", "Hallo"}, {"updatedAt", "2026-10-31T10:00:00Z"}}}}});
+        const json list = a.next("conversations").value("conversations", json());
+        check(list.size() == 1 && list[0].value("id", "") == "k-old" && list[0].value("title", "") == "Alte Frage"
+                  && list[0].value("at", 0LL) == 1793354400,
+              "conversations from session/list, without the running one: " + list.dump());
+        a.send({{"type", "start"}, {"ref", 44}, {"assistant", "kimi"}, {"cwd", project}, {"resume", "k-old"}});
+        call = kimi.call("session/load");
+        check(call.value("params", json()).value("sessionId", "") == "k-old", "resume is session/load");
+        kimi.update("k-old", {{"sessionUpdate", "user_message_chunk"}, {"content", {{"type", "text"}, {"text", "Alte Frage"}}}});
+        kimi.update("k-old", {{"sessionUpdate", "agent_message_chunk"}, {"content", {{"type", "text"}, {"text", "Alte Antwort"}}}});
+        kimi.respond(call, {{"configOptions", {modelOption}}});
+        check(a.next("started").value("session", "") == "k-old", "the earlier session runs again");
+        a.send({{"type", "subscribe"}, {"session", "k-old"}});
+        const json old = a.next("history", [](const json &m) { return m.value("session", "") == "k-old"; });
+        const json entries = old.value("entries", json::array());
+        check(entries.size() == 2 && entries[0].value("kind", "") == "prompt" && entries[0].value("text", "") == "Alte Frage"
+                  && entries[1].value("kind", "") == "text" && entries[1].value("text", "") == "Alte Antwort",
+              "with its history played back: " + old.dump());
+        check(a.next("say", [](const json &m) { return m.value("session", "") == "k-old"; }, 300).empty(), "the playback says nothing");
+
+        a.send({{"type", "stop"}, {"ref", 45}, {"session", "k-old"}});
+        check(kimi.call("session/close").value("params", json()).value("sessionId", "") == "k-old", "stop is session/close");
+        a.send({{"type", "stop"}, {"ref", 46}, {"session", "k-1"}});
+        check(!kimi.call("session/close").is_null(), "for both");
+    }
     check(welcome.value("conversations", false), "welcome.conversations");
 
     // ---- Codex: a TUI's thread is adopted, with its history and version.
@@ -838,10 +1093,11 @@ int main(int argc, char **argv)
     check(updated.value("ref", 0) == 20, "update answers updated");
     check(updated.value("changed", json()) == json({{"claude", {"1.0.0", "2.0.0"}}}), "changed: " + updated.value("changed", json()).dump());
     check(updated.value("errors", json()) == json({{"codex", "npm ERR! needs root"}}), "errors: " + updated.value("errors", json()).dump());
-    check(updated.value("installed", json()) == json({{"claude", "2.0.0"}, {"codex", "5.5.5"}}), "installed after the update");
-    a.send({{"type", "start"}, {"ref", 21}, {"assistant", "kimi"}, {"cwd", project}});
+    check(updated.value("installed", json()) == json({{"claude", "2.0.0"}, {"codex", "5.5.5"}, {"kimi", "2.4.1"}}),
+          "installed after the update");
+    a.send({{"type", "start"}, {"ref", 21}, {"assistant", "gemini"}, {"cwd", project}});
     check(a.next("rejected").value("reason", "") == "unknown-assistant", "an unknown assistant is refused");
-    a.send({{"type", "conversations"}, {"assistant", "kimi"}, {"cwd", project}});
+    a.send({{"type", "conversations"}, {"assistant", "gemini"}, {"cwd", project}});
     check(a.next("conversations").value("conversations", json()) == json::array(), "and has no conversations");
 
     // ---- Hooks: pvai run puts them in place, once.

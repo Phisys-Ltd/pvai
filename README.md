@@ -1,7 +1,7 @@
 # pvai
 
-The daemon behind PhiVoice AI: it makes Claude Code and Codex sessions on a
-host reachable for an app, so prompts can be spoken instead of typed and the
+The daemon behind PhiVoice AI: it makes Claude Code, Codex and Kimi Code
+sessions on a host reachable for an app, so prompts can be spoken instead of typed and the
 end of each turn can be read aloud. One C++20 binary for Linux and macOS,
 without Qt; the app talks to it over the JSON protocol in
 `docs/PROTOCOL.md`.
@@ -26,9 +26,11 @@ without Qt; the app talks to it over the JSON protocol in
 - `pvai codex …` starts the Codex TUI on Codex's shared app server
   (`--remote unix://`), where the daemon follows its threads; Codex needs
   no wrapper and no hooks.
+- Kimi Code needs no command of pvai's: the daemon runs one `kimi acp`
+  (Agent Client Protocol over stdio) for the sessions the app starts.
 - `pvai daemon` (started on demand by the first `pvai run`) knows the live
   sessions of the host (Claude Code under `pvai run`, Codex threads in the
-  app server) and speaks `docs/PROTOCOL.md` on 127.0.0.1:7470.
+  app server, Kimi sessions it started) and speaks `docs/PROTOCOL.md` on 127.0.0.1:7470.
 - `pvai token` prints the host's token for the app and starts the daemon
   when none runs.
 
