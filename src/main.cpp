@@ -55,7 +55,8 @@ const char *kUsage =
     "       pvai answer SESSION allow|deny             answer the dialog a session waits on\n"
     "       pvai stop SESSION                          end a session started with start\n"
     "       pvai send [--voice] SESSION TEXT           type TEXT into a session (for tests)\n"
-    "       pvai propose HOST[/SESSION] [TEXT]         suggest a message to another session; the owner releases it\n"
+    "       pvai propose [--reply ID] HOST[/SESSION] [TEXT]\n"
+    "                                                  suggest a message to another session; the owner releases it\n"
     "       pvai peers                                 list the sessions propose can reach, also on other hosts\n"
     "       pvai watch                                 print what the daemon tells apps\n"
     "       pvai --version | version                   print the version\n";
@@ -287,7 +288,7 @@ int adminRequest(const json &request, bool startDaemon, const std::function<bool
 }
 
 // An agent message for the owner to release in the app; never waits for it.
-int runPropose(const std::string &to, std::string text, bool fromStdin)
+int runPropose(const std::string &to, std::string text, bool fromStdin, const std::string &replyTo)
 {
     if (fromStdin)
         text.assign(std::istreambuf_iterator<char>(std::cin), {});
@@ -299,7 +300,10 @@ int runPropose(const std::string &to, std::string text, bool fromStdin)
     const char *from = std::getenv(kEnvId);
     Conn conn(fd);
     conn.send({{"type", "hello"}, {"client", "pvai"}, {"version", kVersion}});
-    conn.send({{"type", "propose"}, {"ref", "cli"}, {"to", to}, {"text", text}, {"from", from ? from : ""}});
+    json propose = {{"type", "propose"}, {"ref", "cli"}, {"to", to}, {"text", text}, {"from", from ? from : ""}};
+    if (!replyTo.empty())
+        propose["replyTo"] = replyTo;
+    conn.send(propose);
     for (;;) {
         pollfd p{conn.fd(), static_cast<short>(POLLIN | (conn.wantsWrite() ? POLLOUT : 0)), 0};
         if (::poll(&p, 1, 3000) <= 0)
@@ -310,6 +314,7 @@ int runPropose(const std::string &to, std::string text, bool fromStdin)
             const std::string type = message.is_object() ? message.value("type", "") : "";
             if (type == "proposed") {
                 const int apps = message.value("apps", 0);
+                std::printf("%s to %s: ", message.value("id", "").c_str(), message.value("to", to).c_str());
                 if (apps > 0)
                     std::printf("waiting for the owner in the app (%d app%s connected)\n", apps, apps == 1 ? "" : "s");
                 else
@@ -317,7 +322,9 @@ int runPropose(const std::string &to, std::string text, bool fromStdin)
                 return 0;
             }
             if (type == "rejected") {
-                std::fprintf(stderr, "pvai: not proposed: %s\n", message.value("reason", "").c_str());
+                const std::string reason = message.value("reason", "");
+                std::fprintf(stderr, "pvai: not proposed: %s%s\n", reason.c_str(),
+                             reason == "ambiguous-target" ? " (several sessions have that label: use the id, see pvai peers)" : "");
                 return 1;
             }
         }
@@ -375,7 +382,7 @@ int runPeers()
                 std::printf("  none\n");
             for (const auto &s : message["peers"])
                 line(s.value("host", ""), s);
-            std::printf("write to one with: pvai propose HOST/SESSION \"TEXT\" (a label works instead of the id)\n");
+            std::printf("write to one with: pvai propose HOST/SESSION \"TEXT\" (a label works instead of the id when only one session has it)\n");
             return 0;
         }
         if (!alive)
@@ -787,8 +794,16 @@ int main(int argc, char **argv)
             return localClient({{"type", "prompt"}, {"ref", "cli"}, {"session", args[at]},
                                 {"text", args[at + 1]}, {"voice", voice}}, false);
         }
-        if (verb == "propose" && (args.size() == 2 || args.size() == 3))
-            return runPropose(args[1], args.size() == 3 ? args[2] : "", args.size() == 2);
+        if (verb == "propose") {
+            std::size_t at = 1;
+            std::string replyTo;
+            if (args.size() > 2 && args[1] == "--reply") {
+                replyTo = args[2];
+                at = 3;
+            }
+            if (args.size() == at + 1 || args.size() == at + 2)
+                return runPropose(args[at], args.size() == at + 2 ? args[at + 1] : "", args.size() == at + 1, replyTo);
+        }
         if (verb == "peers" && args.size() == 1)
             return runPeers();
         if (verb == "watch")

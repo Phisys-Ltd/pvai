@@ -320,18 +320,26 @@ interactive use, and no agent can steer the others.
 
 The flow:
 
-1. The agent runs `pvai propose TO TEXT` (or the text on stdin) in its
-   session. `TO` is `host/session`: `host` is the target daemon's short
-   hostname (`welcome.host`), `session` a session id or a label. A bare
-   `host` means "whichever session the owner picks".
+1. The agent runs `pvai propose [--reply ID] TO TEXT` (or the text on
+   stdin) in its session. `TO` is `host/session`: `host` is the target
+   daemon's short hostname (`welcome.host`), `session` a session id or a
+   label. A bare `host` means "whichever session the owner picks".
+   `--reply ID` names the proposal this one answers (the id in the first
+   line of the message being answered).
 2. `pvai propose` hands it to its own daemon over loopback:
-   `{"type": "propose", "ref", "to", "text", "from"}`, where `from` is
+   `{"type": "propose", "ref", "to", "text", "from", "replyTo"}`, where `from` is
    `PVAI_ID` from the environment (set by `pvai run`; empty in a Codex
-   thread, then only the host is known). The daemon answers `proposed`
-   with the proposal's `id` and `apps` (how many apps are connected now;
+   thread, then only the host is known) and `replyTo` optional. A label
+   as `session` becomes the id when exactly one session of that host has
+   it (this host's own sessions, or the app's `peers` for other hosts);
+   when several have it the proposal is `rejected` with
+   `ambiguous-target`, so it cannot land in the wrong one; an unknown name
+   stays as it is (the app may know it). The daemon answers `proposed`
+   with the proposal's `id`, the `to` it resolved and `apps` (how many apps are connected now;
    connections whose `hello.client` is `pvai`, the CLI's own, do not count)
    or `rejected` (`empty`, `too-long` over 32 KiB, `bad-target`,
-   `too-many`). `TO` is a bad target unless `host` is 1 to 64 letters,
+   `ambiguous-target`, `bad-reply` (`replyTo` is not a proposal id: `p`
+   and hex digits), `too-many`). `TO` is a bad target unless `host` is 1 to 64 letters,
    digits, `-`, `.` or `_`, and `session`, when given, 1 to 128 bytes
    without control characters.
    The CLI prints that the message waits for the owner and returns at
@@ -340,8 +348,11 @@ The flow:
    connected app:
    ```json
    {"id": "p3f9a01c2", "from": "w8bb65867", "fromLabel": "phi-claude-voice",
-    "to": "taifun/wd718313b", "text": "...", "at": 1793300000}
+    "to": "taifun/wd718313b", "text": "...", "replyTo": "p77aa0b1e", "at": 1793300000}
    ```
+   `replyTo` (since 0.5.19) is the proposal it answers, else `null`: the
+   app can show a message under the one it answers, and see which got no
+   answer.
    `fromLabel` is the sender session's label, empty when the daemon does
    not know `from` (a Codex thread). At most 16 open proposals per daemon
    (then `too-many`), 10 a minute per sender session (all senders without
@@ -353,13 +364,16 @@ The flow:
    There is no "always allow": each message is released by hand (click,
    or the spoken "senden").
 5. On *Send* the app sends a normal `prompt` to the target host, with
-   `from: "M4/w8bb65867"` (sender host and session) and `fromLabel` (the
-   proposal's, which only the sender's daemon knows). The target daemon
+   `from: "M4/w8bb65867"` (sender host and session), `fromLabel` (the
+   proposal's, which only the sender's daemon knows), and since 0.5.19
+   `proposal` (its id) and `replyTo` (the proposal's). The target daemon
    types this first line before the text, so the receiving agent knows
-   who wrote and where to answer:
+   which message it is, who wrote, what it answers and how to answer it:
    ```
-   [Message from M4/w8bb65867 (phi-claude-voice), released by the owner. Answer with: pvai propose M4/w8bb65867 "..."]
+   [Message p3f9a01c2 from M4/w8bb65867 (phi-claude-voice), answering p77aa0b1e, released by the owner. Answer with: pvai propose --reply p3f9a01c2 M4/w8bb65867 "..."]
    ```
+   Without `proposal` the id and `--reply` are left out, without
+   `replyTo` the "answering" part (as before 0.5.19).
    Control characters in `from` and `fromLabel` are dropped, `from` is cut
    to 128 bytes and `fromLabel` to 64; without `fromLabel` the parentheses
    are left out. The line counts toward nothing: the 32 KiB limit is on
@@ -409,7 +423,7 @@ this host (taifun):
   taifun/wb4c7dc28  claude  busy  "phi-claude-voice"  /root/projects  (this session)
 other hosts (from the app, 2 min ago):
   M4/w97dde1bd  claude  idle  "Projekte"  /Users/m/Projekte
-write to one with: pvai propose HOST/SESSION "TEXT" (a label works instead of the id)
+write to one with: pvai propose HOST/SESSION "TEXT" (a label works instead of the id when only one session has it)
 ```
 
 The context every session gets (the SessionStart hook, Codex's developer

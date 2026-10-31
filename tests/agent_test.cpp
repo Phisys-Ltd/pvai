@@ -176,6 +176,33 @@ int main(int argc, char **argv)
     r = run("propose taifun \"$(head -c 40000 /dev/zero | tr '\\0' x)\"");
     check(r.status == 1 && r.out.find("too-long") != std::string::npos, "too long: " + r.out);
 
+    // A reply names the proposal it answers; a label is resolved to the one
+    // session that has it, two with the same label are refused.
+    const std::string self = hostName();
+    r = run("propose --reply p0a1b2c3d " + self + "/w1 'the answer'", "PVAI_ID=wsender");
+    check(r.status == 0 && r.out.find(" to " + self + "/w1: ") != std::string::npos, "propose --reply: " + r.out);
+    list = app.next("proposals");
+    check(count(list) == 3 && list["proposals"][2].value("replyTo", "") == "p0a1b2c3d" && list["proposals"][0]["replyTo"].is_null(),
+          "the proposal carries replyTo: " + list.dump());
+    r = run("propose --reply nonsense " + self + "/w1 text");
+    check(r.status == 1 && r.out.find("bad-reply") != std::string::npos, "a bad reply id: " + r.out);
+    Client second, third;
+    second.send({{"type", "register"}, {"id", "wtwo"}, {"label", "sender-label"}, {"cwd", "/x"}, {"running", true}});
+    third.send({{"type", "register"}, {"id", "wthree"}, {"label", "only-one"}, {"cwd", "/x"}, {"running", true}});
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    r = run("propose " + self + "/sender-label text");
+    check(r.status == 1 && r.out.find("ambiguous-target") != std::string::npos, "two sessions with that label: " + r.out);
+    r = run("propose " + self + "/only-one text");
+    check(r.status == 0 && r.out.find(" to " + self + "/wthree: ") != std::string::npos, "one label is the session's id: " + r.out);
+    list = app.next("proposals");
+    check(count(list) == 4 && list["proposals"][3].value("to", "") == self + "/wthree", "and the proposal goes to the id");
+    for (std::size_t i = 2; i < count(list); ++i) {
+        app.send({{"type", "dismiss"}, {"ref", 70 + static_cast<int>(i)}, {"proposal", list["proposals"][i].value("id", "")}});
+        app.next("dismissed");
+    }
+    while (!app.next().is_null()) {
+    }
+
     // Dismiss: gone from the list; an unknown one is answered alike.
     app.send({{"type", "dismiss"}, {"ref", 7}, {"proposal", first}});
     list = app.next("proposals");
@@ -236,6 +263,19 @@ int main(int argc, char **argv)
     app.send({{"type", "prompt"}, {"ref", 10}, {"session", "wsender"}, {"text", "plain"}});
     typed = wrapper.next("type");
     check(typed.value("text", "") == "plain", "a prompt without from is typed as it is: " + typed.dump());
+
+    // With the proposal's id and what it answers: both in the line, and the
+    // way to answer names it.
+    Client hook2;
+    hook2.send({{"type", "hook"}, {"id", "wsender"}, {"event", {{"hook_event_name", "Stop"}, {"session_id", "x"}}}});
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    app.send({{"type", "prompt"}, {"ref", 11}, {"session", "wsender"}, {"text", "done"}, {"from", "M4/w8bb65867"},
+              {"proposal", "p1234abcd"}, {"replyTo", "p0a1b2c3d"}});
+    typed = wrapper.next("type");
+    check(typed.is_object() && typed.value("text", "")
+              == "[Message p1234abcd from M4/w8bb65867, answering p0a1b2c3d, released by the owner. Answer with: pvai propose "
+                 "--reply p1234abcd M4/w8bb65867 \"...\"]\ndone",
+          "the line with the proposal's id and what it answers: " + typed.dump());
 
     ::kill(daemon, SIGTERM);
     ::waitpid(daemon, nullptr, 0);

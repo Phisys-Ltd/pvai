@@ -98,6 +98,7 @@ struct Proposal {
     std::string fromLabel;
     std::string to;   // host or host/session
     std::string text;
+    std::string replyTo; // the proposal this one answers, or empty
     long long at = 0; // Unix time
     Clock::time_point expires;
 };
@@ -128,6 +129,13 @@ constexpr std::size_t kMaxJobOutput = 64 * 1024;
 constexpr auto kVersionAge = std::chrono::minutes(10);
 
 // `host` or `host/session`: a short hostname, then a session id or label.
+// A proposal's id as the daemon makes them: "p" and hex digits.
+bool goodProposalId(const std::string &id)
+{
+    return id.size() >= 2 && id.size() <= 33 && id[0] == 'p'
+        && std::all_of(id.begin() + 1, id.end(), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)); });
+}
+
 bool goodTarget(const std::string &to)
 {
     const auto slash = to.find('/');
@@ -809,16 +817,54 @@ private:
                           {"delivery", typed && !session->confirmsDelivery() ? "typed" : "queued"}});
     }
 
-    // An agent message the owner released: who wrote and how to answer, as
-    // its own first line.
+    // An agent message the owner released: which one, who wrote, what it
+    // answers and how to answer it, as its own first line.
     static std::string fromLine(const json &message)
     {
         const std::string from = oneLine(message.value("from", ""), 128);
         if (from.empty())
             return {};
         const std::string label = oneLine(message.value("fromLabel", ""), 64);
-        return "[Message from " + from + (label.empty() ? "" : " (" + label + ")")
-            + ", released by the owner. Answer with: pvai propose " + from + " \"...\"]\n";
+        const std::string id = message.value("proposal", json()).is_string() ? message["proposal"].get<std::string>() : "";
+        const std::string replyTo = message.value("replyTo", json()).is_string() ? message["replyTo"].get<std::string>() : "";
+        const bool known = goodProposalId(id);
+        return "[Message " + (known ? id + " " : std::string()) + "from " + from + (label.empty() ? "" : " (" + label + ")")
+            + (goodProposalId(replyTo) ? ", answering " + replyTo : "") + ", released by the owner. Answer with: pvai propose "
+            + (known ? "--reply " + id + " " : std::string()) + from + " \"...\"]\n";
+    }
+
+    // A target's session given by label: the id when exactly one session of
+    // that host has it (this host's own, or the app's `peers`); "" when
+    // several do, so that a message does not land in the wrong one; the
+    // target unchanged otherwise (an id, or one the app may know better).
+    std::string resolveTarget(const std::string &to) const
+    {
+        const auto slash = to.find('/');
+        if (slash == std::string::npos)
+            return to;
+        const std::string host = to.substr(0, slash), name = to.substr(slash + 1);
+        const bool here = host == hostName() || (!peersSelf_.empty() && host == peersSelf_);
+        std::vector<std::string> byLabel;
+        if (here) {
+            for (const Session *s : const_cast<Daemon *>(this)->sessions()) {
+                if (s->id() == name)
+                    return to;
+                if (s->label() == name)
+                    byLabel.push_back(s->id());
+            }
+        } else {
+            for (const auto &other : otherHosts_) {
+                if (str(other, "host") != host)
+                    continue;
+                if (str(other, "session") == name)
+                    return to;
+                if (str(other, "label") == name && !str(other, "session").empty())
+                    byLabel.push_back(str(other, "session"));
+            }
+        }
+        if (byLabel.size() == 1)
+            return host + "/" + byLabel[0];
+        return byLabel.empty() ? to : std::string();
     }
 
     // ---- Agent messages: proposals wait for the owner in the app ----
@@ -826,7 +872,8 @@ private:
     void onPropose(Peer *peer, const json &message)
     {
         const json ref = message.value("ref", json());
-        const std::string to = message.value("to", "");
+        std::string to = message.value("to", "");
+        const std::string replyTo = message.value("replyTo", "");
         const std::string text = trim(message.value("text", ""));
         const std::string from = oneLine(message.value("from", ""), 64);
         auto reject = [&](const char *reason) {
@@ -838,13 +885,18 @@ private:
             return reject("too-long");
         if (!goodTarget(to))
             return reject("bad-target");
+        if (!replyTo.empty() && !goodProposalId(replyTo))
+            return reject("bad-reply");
+        to = resolveTarget(to);
+        if (to.empty())
+            return reject("ambiguous-target");
         const auto now = Clock::now();
         auto &recent = proposalTimes_[from];
         std::erase_if(recent, [&](const Clock::time_point &t) { return now - t >= std::chrono::minutes(1); });
         if (proposals_.size() >= kMaxProposals || recent.size() >= kProposalsPerMinute)
             return reject("too-many");
         recent.push_back(now);
-        Proposal proposal{"p" + randomHex(4), from, {}, to, text, static_cast<long long>(std::time(nullptr)),
+        Proposal proposal{"p" + randomHex(4), from, {}, to, text, replyTo, static_cast<long long>(std::time(nullptr)),
                           now + kProposalLife};
         if (const Session *sender = session(from))
             proposal.fromLabel = sender->label();
@@ -853,8 +905,9 @@ private:
         for (const auto &other : peers_)
             if (other->kind == Kind::App && other->client != "pvai")
                 ++apps;
-        logLine("proposal " + proposal.id + " from " + (from.empty() ? "?" : from) + " to " + to);
-        peer->conn->send({{"type", "proposed"}, {"ref", ref}, {"id", proposal.id}, {"apps", apps}});
+        logLine("proposal " + proposal.id + " from " + (from.empty() ? "?" : from) + " to " + to
+                + (replyTo.empty() ? "" : ", answering " + replyTo));
+        peer->conn->send({{"type", "proposed"}, {"ref", ref}, {"id", proposal.id}, {"to", to}, {"apps", apps}});
         broadcast(proposalsMessage());
     }
 
@@ -916,7 +969,7 @@ private:
         json list = json::array();
         for (const auto &p : proposals_)
             list.push_back({{"id", p.id}, {"from", p.from}, {"fromLabel", p.fromLabel}, {"to", p.to}, {"text", p.text},
-                            {"at", p.at}});
+                            {"replyTo", p.replyTo.empty() ? json() : json(p.replyTo)}, {"at", p.at}});
         return {{"type", "proposals"}, {"proposals", list}};
     }
 

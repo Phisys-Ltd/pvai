@@ -146,8 +146,8 @@ const char *const kVoiceContext =
     "found, or what you need. No code, paths, markdown or lists in that line; the owner may be away "
     "from the screen. To write to another session, also on another host (the owner may say \"ask M4\" or "
     "\"tell the taifun session\"), list them with `pvai peers` and send with `pvai propose HOST/SESSION "
-    "\"TEXT\"`; the owner releases each message in the app, so it arrives later, and the answer comes back "
-    "as a new prompt.";
+    "\"TEXT\"` (to answer a message, the command its first line names, with `--reply`); the owner releases "
+    "each message in the app, so it arrives later, and the answer comes back as a new prompt.";
 
 std::string findBinary(const std::string &name)
 {

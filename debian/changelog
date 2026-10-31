@@ -1,3 +1,14 @@
+pvai (0.5.19-1) trixie; urgency=medium
+
+  * Agent messages name what they answer: pvai propose --reply ID, the
+    proposal's replyTo, and the released prompt's first line carries the
+    message's id, what it answers and the --reply to answer with (the app
+    sends proposal and replyTo along).
+  * A label as the target is resolved to the one session that has it;
+    two with the same label are rejected ambiguous-target.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 31 Oct 2026 14:20:00 +0100
+
 pvai (0.5.18-1) trixie; urgency=medium
 
   * welcome.assistants[].installed; start of an assistant whose program is
