@@ -628,8 +628,16 @@ int main(int argc, char **argv)
         call = kimi.call("session/new");
         const json modelOption = {{"id", "model"}, {"currentValue", "kimi-k2"},
                                   {"options", {{{"value", "kimi-k2"}, {"name", "Kimi K2"}}, {{"value", "kimi-k3"}, {"name", "Kimi K3"}}}}};
-        kimi.respond(call, {{"sessionId", "k-1"}, {"configOptions", {modelOption}}});
+        kimi.respond(call, {{"sessionId", "k-1"}, {"configOptions", {modelOption}},
+                            {"modes", {{"currentModeId", "default"},
+                                       {"availableModes", {{{"id", "default"}, {"name", "Default"}}, {{"id", "plan"}, {"name", "Plan"}}}}}}});
         check(a.next("started").value("session", "") == "k-1", "a new Kimi session");
+        a.send({{"type", "mode"}, {"ref", 47}, {"session", "k-1"}, {"mode", "plan"}});
+        json modeCall = kimi.call("session/set_mode");
+        check(modeCall.value("params", json()).value("modeId", "") == "plan", "a mode change is session/set_mode");
+        kimi.respond(modeCall, json::object());
+        const json modeSet = a.next("mode", [](const json &m) { return m.value("ref", 0) == 47; });
+        check(modeSet.value("state", "") == "done" && modeSet.value("mode", "") == "plan", "and done: " + modeSet.dump());
         json set = kimi.call("session/set_config_option");
         check(set.value("params", json()).value("value", "") == "kimi-k3", "-m sets the model option");
         json chosen = modelOption;
@@ -733,9 +741,15 @@ int main(int argc, char **argv)
     check(!codex.call("thread/start", [](const json &p) { return p.value("model", "") == "gpt-test"; }).is_null(), "the model goes to thread/start");
     json fresh = waitSession(a, "t-new", [](const json &s) { return s.value("label", "") == "neu"; });
     check(fresh.value("detached", false), "a started thread is detached and labelled");
+    a.send({{"type", "mode"}, {"ref", 60}, {"session", "t-new"}, {"mode", "never"}});
+    const json codexMode = a.next("mode", [](const json &m) { return m.value("ref", 0) == 60; });
+    check(codexMode.value("state", "") == "done" && codexMode.value("mode", "") == "never", "a Codex mode is set: " + codexMode.dump());
     a.send({{"type", "prompt"}, {"ref", 3}, {"session", "t-new"}, {"text", "hello"}});
     check(a.next("accepted").value("delivery", "") == "typed", "the prompt goes in");
-    check(!codex.call("turn/start", [](const json &p) { return p.dump().find("hello") != std::string::npos; }).is_null(), "as turn/start");
+    check(!codex.call("turn/start", [](const json &p) {
+              return p.dump().find("hello") != std::string::npos && p.value("approvalPolicy", "") == "never";
+          }).is_null(),
+          "as turn/start, with the approval policy of the mode");
     codex.send({{"method", "turn/started"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u1"}}}}}});
     codex.send({{"method", "item/completed"},
                 {"params", {{"threadId", "t-new"}, {"item", {{"type", "agentMessage"}, {"id", "i2"}, {"text", "Answer.\n\xF0\x9F\x94\x8A Spoken."}}}}}});
@@ -997,6 +1011,43 @@ int main(int argc, char **argv)
               "mid-turn after a daemon restart: busy");
         check(!waitSession(a, "wdone", [](const json &s) { return s.value("state", "") == "idle"; }).empty(),
               "after the turn's end: idle");
+    }
+
+    // The permission mode: from the hooks and the footer; a change is
+    // Shift+Tab until the footer shows it, once round the cycle at most.
+    {
+        Client mw;
+        mw.send({{"type", "register"}, {"id", "wmode"}, {"cwd", project}, {"label", "mode"}, {"restart", true}, {"verify", true},
+                 {"modes", true}});
+        hook("wmode", {{"hook_event_name", "SessionStart"}, {"session_id", "m-1"}, {"source", "startup"}, {"permission_mode", "default"}});
+        check(!waitSession(a, "wmode", [](const json &s) { return s.value("mode", json()) == "default"; }).empty(),
+              "the mode from the hook");
+        a.send({{"type", "mode"}, {"ref", 50}, {"session", "wmode"}, {"mode", "plan"}});
+        check(mw.next("keys").value("data", "") == "\x1b[Z", "a change presses Shift+Tab");
+        mw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}, {"mode", "acceptEdits"}});
+        check(mw.next("keys").value("data", "") == "\x1b[Z", "not there yet: again");
+        mw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}, {"mode", "plan"}});
+        json event = a.next("mode", [](const json &m) { return m.value("ref", 0) == 50; });
+        check(event.value("state", "") == "done" && event.value("mode", "") == "plan" && event.value("session", "") == "wmode",
+              "then done: " + event.dump());
+        a.send({{"type", "mode"}, {"ref", 51}, {"session", "wmode"}, {"mode", "bypassPermissions"}});
+        for (const char *m : {"default", "acceptEdits", "plan"}) {
+            check(mw.next("keys").value("data", "") == "\x1b[Z", std::string("pressing on towards bypass, at ") + m);
+            mw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}, {"mode", m}});
+        }
+        event = a.next("mode", [](const json &m) { return m.value("ref", 0) == 51; });
+        check(event.value("state", "") == "failed" && event.value("error", "") == "unavailable",
+              "a mode not in the cycle: unavailable after one round: " + event.dump());
+        a.send({{"type", "mode"}, {"ref", 52}, {"session", "wmode"}, {"mode", "fast"}});
+        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 52; }).value("reason", "") == "unknown-mode",
+              "an unknown mode is refused");
+        Client old;
+        old.send({{"type", "register"}, {"id", "wold"}, {"cwd", project}, {"label", "old"}, {"restart", true}, {"verify", true}});
+        hook("wold", {{"hook_event_name", "SessionStart"}, {"session_id", "o-1"}, {"source", "startup"}});
+        check(!waitSession(a, "wold", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "an older wrapper");
+        a.send({{"type", "mode"}, {"ref", 53}, {"session", "wold"}, {"mode", "plan"}});
+        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 53; }).value("reason", "") == "not-supported",
+              "a wrapper that does not report the footer: not-supported");
     }
 
     // Claude Code not on this host: start is refused, welcome says so.

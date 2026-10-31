@@ -406,9 +406,11 @@ int runWrapper(const WrapperOptions &options)
     Screen screen(size.ws_row, size.ws_col);
     std::string screenShown;
     bool promptShown = false; // the prompt box is on the screen, no dialog over it
+    std::string modeShown;    // the permission mode the footer shows
     std::optional<Clock::time_point> screenCheckAt;
     auto sendScreen = [&] {
-        daemon->send({{"type", "screen"}, {"dialog", screenShown.empty() ? json() : json(screenShown)}, {"prompt", promptShown}});
+        daemon->send({{"type", "screen"}, {"dialog", screenShown.empty() ? json() : json(screenShown)}, {"prompt", promptShown},
+                      {"mode", modeShown.empty() ? json() : json(modeShown)}});
     };
     auto promptFree = [&](std::string &box) { return promptBox(screen, box) && screenDialog(screen).empty(); };
     // A prompt typed with `verify`: pasted only into a free prompt box, and
@@ -426,7 +428,7 @@ int runWrapper(const WrapperOptions &options)
     auto registerSelf = [&] {
         daemon->send({{"type", "register"}, {"id", id}, {"label", options.label}, {"cwd", cwd},
                       {"pid", static_cast<int>(::getpid())}, {"running", registered}, {"detached", detached},
-                      {"restart", true}, {"verify", true}});
+                      {"restart", true}, {"verify", true}, {"modes", true}});
         if (draft.dirty())
             daemon->send({{"type", "draft"}, {"dirty", true}});
         if (trustAsked)
@@ -505,6 +507,7 @@ int runWrapper(const WrapperOptions &options)
         }
         screenShown.clear();
         promptShown = false;
+        modeShown.clear();
         if (typing) {
             typing.reset();
             typed(false);
@@ -712,9 +715,11 @@ int runWrapper(const WrapperOptions &options)
             std::string box;
             std::string shown = screenDialog(screen);
             const bool prompt = shown.empty() && promptBox(screen, box);
-            if (shown != screenShown || prompt != promptShown) {
+            const std::string mode = shown.empty() ? screenMode(screen) : modeShown;
+            if (shown != screenShown || prompt != promptShown || mode != modeShown) {
                 screenShown = std::move(shown);
                 promptShown = prompt;
+                modeShown = mode;
                 if (daemon)
                     sendScreen();
             }

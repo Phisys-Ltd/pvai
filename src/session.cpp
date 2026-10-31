@@ -35,6 +35,14 @@ json dialogInfo(const std::string &tool, const std::string &text, const std::str
     return info;
 }
 
+void Session::modeEvent(const json &ref, const std::string &state, const std::string &error)
+{
+    json event = {{"type", "mode"}, {"ref", ref}, {"session", id_}, {"state", state}, {"mode", mode_}};
+    if (!error.empty())
+        event["error"] = error;
+    host_.broadcast(event);
+}
+
 void Session::changed()
 {
     if (state_ != loggedState_) {
@@ -60,6 +68,7 @@ json Session::describe() const
             {"dialog", dialog_.empty() ? json() : json(dialog_)},
             {"dialogInfo", dialog_.empty() || !dialogInfo_.is_object() ? json() : dialogInfo_},
             {"usage", usage_},
+            {"mode", mode_},
             {"claudeSession", nullptr}};
 }
 
@@ -121,7 +130,8 @@ Backend::Backend(Host &host)
 
 json Backend::describe() const
 {
-    return {{"name", name()}, {"title", title()}, {"models", models()}, {"installed", installedHere()}, {"loggedIn", loggedIn_}};
+    return {{"name", name()}, {"title", title()}, {"models", models()}, {"modes", modes()}, {"installed", installedHere()},
+            {"loggedIn", loggedIn_}};
 }
 
 void Backend::refreshVersion(std::function<void()> done)

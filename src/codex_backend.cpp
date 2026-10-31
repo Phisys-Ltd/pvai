@@ -186,9 +186,14 @@ void CodexSession::submit(const Prompt &prompt)
     // Codex's slash commands live in its TUI; /compact has a call of its own
     // and runs as a turn like a prompt.
     const bool compact = prompt.text == "/compact";
-    backend_.call(compact ? "thread/compact/start" : "turn/start",
-                  compact ? json{{"threadId", id}}
-                          : json{{"threadId", id}, {"input", {{{"type", "text"}, {"text", text}, {"text_elements", json::array()}}}}},
+    json params = compact ? json{{"threadId", id}}
+                          : json{{"threadId", id}, {"input", {{{"type", "text"}, {"text", text}, {"text_elements", json::array()}}}}};
+    // A mode set since the last turn: it holds for this one and the next.
+    if (!compact && !approval_.empty()) {
+        params["approvalPolicy"] = approval_;
+        approval_.clear();
+    }
+    backend_.call(compact ? "thread/compact/start" : "turn/start", params,
                   [&host, id](const json &, const json &error) {
                       auto *self = dynamic_cast<CodexSession *>(host.session(id));
                       if (!self || error.is_null())
@@ -227,6 +232,29 @@ void CodexSession::reply(bool allow)
         state_ = "busy";
         dialog_.clear();
     }
+}
+
+void CodexSession::setApproval(const json &policy)
+{
+    // A granular policy (an object) is none of the modes.
+    const json mode = policy.is_string() ? policy : json();
+    if (mode != mode_) {
+        mode_ = mode;
+        changed();
+    }
+}
+
+// Codex's approval policies; the sandbox stays as configured. The new one
+// goes with the next turn/start (the app server takes it from there on).
+std::string CodexSession::setMode(const std::string &mode, const json &ref)
+{
+    if (mode != "untrusted" && mode != "on-request" && mode != "never")
+        return "unknown-mode";
+    approval_ = mode;
+    mode_ = mode;
+    changed();
+    modeEvent(ref, "done");
+    return {};
 }
 
 bool CodexSession::stoppable() const
@@ -530,6 +558,13 @@ void CodexSession::onRequest(const json &requestId, const std::string &method, c
 CodexBackend::CodexBackend(Host &host)
     : Backend(host)
 {
+}
+
+json CodexBackend::modes() const
+{
+    return json::array({{{"id", "untrusted"}, {"name", "Ask for everything"}},
+                        {{"id", "on-request"}, {"name", "Default"}},
+                        {{"id", "never"}, {"name", "Never ask"}}});
 }
 
 void CodexBackend::findProgram()
@@ -847,9 +882,10 @@ void CodexBackend::adopt(const std::string &id)
         adopting_.erase(id);
         if (!result.contains("thread"))
             return;
-        if (result["thread"].value("parentThreadId", json()).is_null())
-            addSession(result["thread"], false);
-        else
+        if (result["thread"].value("parentThreadId", json()).is_null()) {
+            if (CodexSession *session = addSession(result["thread"], false))
+                session->setApproval(result.value("approvalPolicy", json()));
+        } else
             noteSubagent(result["thread"]);
     });
 }
@@ -965,6 +1001,7 @@ void CodexBackend::start(const StartRequest &request, Started done)
         if (!session)
             return done({}, failure);
         session->setLabel(label);
+        session->setApproval(result.value("approvalPolicy", json()));
         done(session->id(), {});
     };
     if (request.resume.empty()) {

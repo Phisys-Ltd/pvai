@@ -1,6 +1,7 @@
 #include "screen.h"
 
 #include <algorithm>
+#include <cctype>
 #include <array>
 
 namespace pvai {
@@ -461,6 +462,30 @@ bool promptBox(const Screen &screen, std::string &text)
         return true;
     }
     return false;
+}
+
+std::string screenMode(const Screen &screen)
+{
+    static const std::pair<const char *, const char *> marks[] = {
+        {"accept edits on", "acceptEdits"},
+        {"plan mode on", "plan"},
+        {"auto mode on", "auto"},
+        {"bypass permissions on", "bypassPermissions"},
+    };
+    int seen = 0;
+    for (int r = screen.rows() - 1; r >= 0 && seen < 6; --r) {
+        std::string row = screen.row(r);
+        if (trim(row).empty())
+            continue;
+        ++seen;
+        for (char &c : row)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        for (const auto &[mark, mode] : marks)
+            if (row.find(mark) != std::string::npos)
+                return mode;
+    }
+    std::string box;
+    return promptBox(screen, box) ? "default" : "";
 }
 
 std::string screenSnapshot(const Screen &screen)

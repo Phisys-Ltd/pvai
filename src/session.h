@@ -75,6 +75,9 @@ public:
     // A typed prompt counts only once the assistant confirms it (`delivered`).
     virtual bool confirmsDelivery() const { return false; }
     virtual std::string answer(const std::string &choice) = 0;
+    // Switches the session's mode (one of its backend's `modes`); the
+    // result follows as a `mode` event to every app.
+    virtual std::string setMode(const std::string &, const json &) { return "not-supported"; }
     virtual std::string stop() = 0;
     virtual void interrupt() = 0;
     // Ends the session's process and starts it again, going on with the
@@ -120,6 +123,10 @@ protected:
     bool draft_ = false;     // the owner has typed into the prompt and not sent it
     bool voiceTurn_ = false; // the running turn's prompt was spoken
     json usage_;             // context window, rate limits, model, cost, version
+    json mode_;              // the permission mode's id, null when unknown
+
+    // A mode change is done or failed (`error`): every app hears it.
+    void modeEvent(const json &ref, const std::string &state, const std::string &error = {});
 
 private:
     bool ended_ = false;
@@ -157,6 +164,7 @@ public:
     virtual std::string name() const = 0;  // "claude", "codex"; `start.assistant`
     virtual std::string title() const = 0; // for the app: "Claude Code"
     virtual json models() const = 0;       // what `start` can ask for
+    virtual json modes() const { return json::array(); } // [{id, name}] a session's mode can be
     virtual bool available() const = 0;    // installed on this host, or sessions of it can come
     // `start` can start it: its program is on this host.
     virtual bool installedHere() const { return available(); }

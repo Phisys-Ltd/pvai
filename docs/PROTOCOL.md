@@ -226,6 +226,13 @@ daemon knows every live one on its host.
   request (the timestamp of Claude's last answer in the transcript); it is
   warm until `at + ttl`. `null` until a request wrote to the cache, and
   again after `/clear`; a change of it alone sends a `usage` update.
+- `mode` (since 0.5.25): the permission mode the session is in, one of
+  its assistant's `modes` (see "Assistants"), `null` when not known.
+  Claude Code: from its hooks (`permission_mode`) and, under a `pvai run`
+  of 0.5.25 or later, from the footer under the prompt box ("plan mode
+  on", "accept edits on", "auto mode on"), so that a Shift+Tab in the
+  terminal shows at once. Codex: the thread's approval policy. Kimi: its
+  ACP mode. A change sends a `sessions` update.
 - `claudeSession`: Claude Code's own session id once known, else `null`
   (always `null` for Codex). It survives a restart of the daemon (kept
   beside the wrapper's socket) once a hook has named it. With it the
@@ -270,6 +277,7 @@ App to daemon:
 | `start` | `ref`, `cwd`, `label`, `args`, `assistant`, `resume` | start a session in `cwd` (absolute) without a terminal; `label` optional; `assistant` one of `welcome.assistants` (default `claude`); `args` optional strings: extra arguments for `claude`; for Codex and Kimi only `-m`/`--model <model>` is read; `resume` optional: an id from `conversations`, to go on with that conversation instead of a new one (see "Ended conversations") |
 | `conversations` | `assistant`, `cwd` | the ended conversations of that assistant in `cwd` (see "Ended conversations") |
 | `update` | `ref` | update every assistant on this host to its latest version (see "Versions and updates") |
+| `mode` | `ref`, `session`, `mode` | (since 0.5.25) switch the session's permission mode to one of its assistant's `modes`; a `mode` event follows (see "Permission modes") |
 | `install` | `ref`, `assistant` | (since 0.5.24) install an assistant for the daemon's user, only on the owner's click (see "Install and login") |
 | `login` | `ref`, `assistant` | (since 0.5.24) log an assistant in on this host: a link and a code for the owner (see "Install and login") |
 | `login-code` | `ref`, `assistant`, `code` | the code the login page showed, for a login in state `code-needed` (Claude Code) |
@@ -311,6 +319,7 @@ Daemon to app:
 | `updated` | `ref`, `installed`, `changed`, `errors` | answer to `update` |
 | `install` | `ref`, `assistant`, `state`, `step`, `text`, `error` | an install's progress, to every app: `state` `running`, then `done` or `failed` (`error` why); `step` `download` (claude), `node`, `npm` (codex, kimi), `check`; `text` the last line of output |
 | `login` | `ref`, `assistant`, `state`, `url`, `code`, `text`, `error` | a login's progress, to every app: `state` `waiting` (show `url` and `code`; the owner signs in in a browser), `code-needed` (Claude Code: the page shows a code, send it with `login-code`), `done` or `failed` (`error`: why, also `cancelled` and `timed out`) |
+| `mode` | `ref`, `session`, `state`, `mode`, `error` | a mode change ended, to every app: `state` `done` (`mode` the new one) or `failed` (`error`: `unavailable`, the mode is not in this session's cycle; `no change on the screen`; Kimi's own words); `rejected` before (`unknown-session`, `unknown-mode`, `not-supported`, `busy`) |
 | `assistants` | `assistants`, `installed` | (since 0.5.24) `welcome.assistants` and `welcome.installed` again, to every app, when an install or a login changed them |
 | `proposals` | `proposals: [Proposal]` | the agent messages waiting for the owner, sent after `welcome` and after every change (see "Agent messages") |
 | `dismissed` | `ref`, `proposal` | answer to `dismiss`; `proposal` is gone from `proposals` (also when it was unknown) |
@@ -614,6 +623,28 @@ closed, the host restarted):
    `detached`), Kimi with `session/load` (a detached session; Kimi plays
    the history back, its text only). An id that is not there is
    `rejected` with `unknown-conversation`.
+
+## Permission modes
+
+Since 0.5.25 every assistant lists its modes in `welcome.assistants[].modes`
+as `[{"id", "name"}]`, the session shows its current one as `mode`, and
+`{"type": "mode", "ref", "session", "mode"}` switches it:
+
+- Claude Code: `default` (Ask), `acceptEdits`, `plan`, `auto`,
+  `bypassPermissions`. The daemon presses Shift+Tab, as the owner would,
+  until the footer shows the mode; at most once round Claude Code's
+  cycle, so a mode this session does not offer (`auto` without the
+  setting, `bypassPermissions` without its flag) ends `failed` with
+  `unavailable`, back where it started minus the presses. Not while a
+  dialog is open (`busy`), and only under a `pvai run` of 0.5.25 or later
+  (`not-supported`), which reports the footer. It holds for that session;
+  Claude Code's settings stay as they are.
+- Codex: the approval policy, `untrusted` (Ask for everything),
+  `on-request` (Default), `never` (Never ask); the sandbox stays as
+  configured. It goes with the next turn (`turn/start`) and holds from
+  there; `done` at once.
+- Kimi: its ACP modes as it lists them (`default`, `plan`, `auto`,
+  `yolo`), with `session/set_mode`.
 
 ## Install and login
 

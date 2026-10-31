@@ -47,6 +47,15 @@ int main()
     feed(screen, "\x1b[2A\x1b[3Ghi");
     check(pvai::promptBox(screen, box) && box == "\xE2\x9D\xAF hi", "typing into the box changes it: [" + box + "]");
 
+    // The permission mode in the footer under the prompt box.
+    check(pvai::screenMode(screen) == "default", "no mode in the footer: default");
+    feed(screen, "\r\x1b[K  \xE2\x8F\xB8 plan mode on (shift+tab to cycle)");
+    check(pvai::screenMode(screen) == "plan", "plan mode on: " + pvai::screenMode(screen));
+    feed(screen, "\r\x1b[K  \xE2\x8F\xB5\xE2\x8F\xB5 accept edits on (shift+tab to cycle)");
+    check(pvai::screenMode(screen) == "acceptEdits", "accept edits on");
+    feed(screen, "\r\x1b[K  \xE2\x8F\xB5\xE2\x8F\xB5 auto mode on (shift+tab to cycle)");
+    check(pvai::screenMode(screen) == "auto", "auto mode on");
+
     // Scrolling at the bottom and the alternate screen.
     pvai::Screen small(3, 12);
     feed(small, "a\r\nb\r\nc\r\nd");

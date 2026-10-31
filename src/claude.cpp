@@ -111,6 +111,7 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
     , wrapper_(wrapper)
     , canRestart_(registration.value("restart", false))
     , verify_(registration.value("verify", false))
+    , screenModes_(registration.value("modes", false))
 {
     // A wrapper that registers again after a daemon restart has a running
     // Claude Code: idle, unless its transcript shows a turn going on.
@@ -325,6 +326,8 @@ void ClaudeSession::onHook(const json &event)
         host_.log(id_ + ": " + name + " of another Claude Code (" + event.value("session_id", "") + "), dropped");
         return;
     }
+    if (const std::string mode = event.value("permission_mode", ""); !mode.empty())
+        noteMode(mode);
     bool known = false;
     if (const std::string id = event.value("session_id", ""); !id.empty() && id != claudeSession_) {
         claudeSession_ = id;
@@ -512,11 +515,79 @@ void ClaudeSession::onDialog(const std::string &kind)
     changed();
 }
 
+// The permission mode as a hook or the screen says; a change under way
+// goes on with the next press or is done.
+void ClaudeSession::noteMode(const std::string &mode)
+{
+    if (mode_ != json(mode)) {
+        mode_ = mode;
+        changed();
+    }
+    if (modeTarget_.empty() || mode == modeSeen_) // no news (a hook saying it again)
+        return;
+    modeSeen_ = mode;
+    if (mode == modeTarget_)
+        return modeDone("done");
+    if (modePresses_ > 0 && mode == modeFrom_)
+        return modeDone("failed", "unavailable"); // once round: not in this session's cycle
+    if (modeDeadline_ && modePresses_ > 0) // this press has shown its mode: the next one
+        pressModeKey();
+}
+
+std::string ClaudeSession::setMode(const std::string &mode, const json &ref)
+{
+    bool known = false;
+    for (const auto &m : ClaudeBackend::claudeModes())
+        known = known || str(m, "id") == mode;
+    if (!known)
+        return "unknown-mode";
+    if (!screenModes_)
+        return "not-supported"; // a wrapper before 0.5.25 does not report the footer
+    if (state_ == "starting" || state_ == "waiting")
+        return "busy";
+    if (!modeTarget_.empty())
+        return "busy";
+    modeRef_ = ref;
+    if (mode_ == json(mode)) {
+        modeEvent(ref, "done");
+        return {};
+    }
+    modeTarget_ = mode;
+    modeFrom_ = mode_.is_string() ? mode_.get<std::string>() : "";
+    modeSeen_ = modeFrom_;
+    modePresses_ = 0;
+    pressModeKey();
+    return {};
+}
+
+void ClaudeSession::pressModeKey()
+{
+    if (modePresses_ >= 6)
+        return modeDone("failed", "unavailable");
+    ++modePresses_;
+    wrapper_.send({{"type", "keys"}, {"data", "\x1b[Z"}}); // Shift+Tab
+    modeDeadline_ = Clock::now() + std::chrono::seconds(3);
+}
+
+void ClaudeSession::modeDone(const std::string &state, const std::string &error)
+{
+    modeTarget_.clear();
+    modeFrom_.clear();
+    modeSeen_.clear();
+    modeDeadline_.reset();
+    modePresses_ = 0;
+    const json ref = modeRef_;
+    modeRef_ = nullptr;
+    modeEvent(ref, state, error);
+}
+
 // A dialog no hook reports, read off the screen by the wrapper (empty: it
 // is gone). At a free prompt it counts at once; in a turn only after a
 // moment, since a permission dialog's hook may still be on its way.
-void ClaudeSession::onScreen(const std::string &text, bool prompt)
+void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::string &mode)
 {
+    if (!mode.empty())
+        noteMode(mode);
     screenText_ = text;
     screenAt_.reset();
     promptFree_ = prompt;
@@ -674,6 +745,8 @@ void ClaudeSession::tick(Clock::time_point now)
         if (blocked_ && promptFree_)
             unblock();
     }
+    if (modeDeadline_ && now >= *modeDeadline_)
+        modeDone("failed", "no change on the screen");
     if (screenAt_ && now >= *screenAt_) {
         screenAt_.reset();
         if (!screenText_.empty() && dialog_.empty() && state_ == "busy")
@@ -698,6 +771,8 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
         next = std::min(next, *submitDeadline_);
     if (screenAt_)
         next = std::min(next, *screenAt_);
+    if (modeDeadline_)
+        next = std::min(next, *modeDeadline_);
     if (typedDeadline_)
         next = std::min(next, *typedDeadline_);
     if (retryAt_)
@@ -885,6 +960,20 @@ void ClaudeBackend::conversations(const std::string &cwd, std::function<void(std
 }
 
 // `pvai run --detached`, which registers like any other wrapper.
+json ClaudeBackend::claudeModes()
+{
+    return json::array({{{"id", "default"}, {"name", "Ask"}},
+                        {{"id", "acceptEdits"}, {"name", "Accept edits"}},
+                        {{"id", "plan"}, {"name", "Plan"}},
+                        {{"id", "auto"}, {"name", "Auto"}},
+                        {{"id", "bypassPermissions"}, {"name", "Bypass permissions"}}});
+}
+
+json ClaudeBackend::modes() const
+{
+    return claudeModes();
+}
+
 // `claude auth status --json`: {"loggedIn": true, ...}.
 void ClaudeBackend::refreshLogin(std::function<void(bool changed)> done)
 {

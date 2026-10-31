@@ -28,6 +28,9 @@ public:
     bool stoppable() const override;
 
     std::string answer(const std::string &choice) override;
+    std::string setMode(const std::string &mode, const json &ref) override;
+    // The thread's approval policy (thread/start, resume): its mode.
+    void setApproval(const json &policy);
     std::string stop() override;
     void interrupt() override;
     json history(int limit) override;
@@ -58,6 +61,7 @@ private:
     std::map<std::string, std::string> outputs_; // command output by item id, while it runs
     std::map<std::string, std::string> files_;   // a file change's paths by item id, while it runs
     std::string answer_;       // the turn's last agent message so far
+    std::string approval_;     // a new approval policy for the next turn/start
 };
 
 class CodexBackend : public Backend {
@@ -67,6 +71,7 @@ public:
     std::string name() const override { return "codex"; }
     std::string title() const override { return "Codex"; }
     json models() const override { return models_; }
+    json modes() const override;
     bool available() const override { return !bin_.empty(); }
     void findProgram() override;
     void refreshLogin(std::function<void(bool changed)> done) override;

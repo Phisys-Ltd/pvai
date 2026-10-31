@@ -66,4 +66,10 @@ bool promptBox(const Screen &screen, std::string &text);
 // 2000 bytes): what an unknown dialog shows.
 std::string screenSnapshot(const Screen &screen);
 
+// Claude Code's permission mode as its footer shows it ("⏵⏵ accept edits
+// on", "⏸ plan mode on", "⏵⏵ auto mode on", "bypass permissions on"):
+// acceptEdits, plan, auto, bypassPermissions; default when the prompt box
+// shows and none of them; empty when the screen does not tell.
+std::string screenMode(const Screen &screen);
+
 } // namespace pvai

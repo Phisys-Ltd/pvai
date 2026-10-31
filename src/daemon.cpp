@@ -459,6 +459,16 @@ private:
             }
     }
 
+    void onMode(Peer *peer, const json &message)
+    {
+        const json ref = message.value("ref", json());
+        const std::string id = message.value("session", "");
+        Session *session = this->session(id);
+        const std::string reason = !session ? "unknown-session" : session->setMode(message.value("mode", ""), ref);
+        if (!reason.empty())
+            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"session", id}, {"reason", reason}});
+    }
+
     // ---- Install and login from the app (setup.h) ----
 
     void onInstall(Peer *peer, const json &message)
@@ -618,7 +628,8 @@ private:
                 session->onExited(message.value("status", 0), message.value("screen", json()).is_string() ? message["screen"].get<std::string>() : "");
             else if (type == "screen")
                 session->onScreen(message.value("dialog", json()).is_string() ? message["dialog"].get<std::string>() : "",
-                                  message.value("prompt", false));
+                                  message.value("prompt", false),
+                                  message.value("mode", json()).is_string() ? message["mode"].get<std::string>() : "");
             else if (type == "typed")
                 session->onTyped(message.value("ok", false), message.value("screen", json()).is_string() ? message["screen"].get<std::string>() : "");
             else if (type == "snapshot")
@@ -635,6 +646,8 @@ private:
             onConversations(peer, message);
         else if (type == "install")
             onInstall(peer, message);
+        else if (type == "mode")
+            onMode(peer, message);
         else if (type == "login" || type == "login-code" || type == "login-cancel")
             onLogin(peer, message);
         else if (type == "update")

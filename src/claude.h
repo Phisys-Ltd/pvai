@@ -38,7 +38,8 @@ public:
     void onInput(bool escape);
     void onDraft(bool dirty);
     void onDialog(const std::string &kind);
-    void onScreen(const std::string &text, bool prompt);
+    void onScreen(const std::string &text, bool prompt, const std::string &mode = {});
+    std::string setMode(const std::string &mode, const json &ref) override;
     void onExited(int status, const std::string &screen);
     void onTyped(bool ok, const std::string &screen);
     void onSnapshot(const std::string &screen);
@@ -58,6 +59,9 @@ private:
     void remember() const;
     void openScreenDialog();
     bool ours(const std::string &claudeSession, const std::string &source) const;
+    void noteMode(const std::string &mode);
+    void pressModeKey();
+    void modeDone(const std::string &state, const std::string &error = {});
     void delivered();
     void notDelivered(const std::string &screen, bool retry);
     void unblock();
@@ -107,6 +111,13 @@ private:
     bool promptFree_ = false;
     bool sendUnchecked_ = false; // answer `send`: the next prompt without the check
     std::optional<Clock::time_point> retryAt_;
+    // A mode change under way: Shift+Tab until the footer shows the mode,
+    // at most once round the cycle.
+    bool screenModes_ = false; // the wrapper reports the footer's mode (0.5.25)
+    std::string modeTarget_, modeFrom_, modeSeen_;
+    json modeRef_;
+    int modePresses_ = 0;
+    std::optional<Clock::time_point> modeDeadline_;
     // Subagents, from <transcript without .jsonl>/subagents/agent-<id>.meta.json:
     // by id, the meta file's mtime when last read and the protocol entry
     // (null once finished or given up).
@@ -146,6 +157,8 @@ public:
     bool available() const override { return true; }
     bool installedHere() const override { return !binary().empty(); }
     void refreshLogin(std::function<void(bool changed)> done) override;
+    json modes() const override;
+    static json claudeModes();
 
     void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) override;
     void start(const StartRequest &request, Started done) override;

@@ -24,6 +24,7 @@ public:
     bool detached() const override { return true; }
 
     std::string answer(const std::string &choice) override;
+    std::string setMode(const std::string &mode, const json &ref) override;
     std::string stop() override;
     void interrupt() override;
     json history(int limit) override;
@@ -71,6 +72,7 @@ public:
     std::string name() const override { return "kimi"; }
     std::string title() const override { return "Kimi Code"; }
     json models() const override { return models_; }
+    json modes() const override { return modes_; }
     bool available() const override { return !bin_.empty(); }
     void update(std::function<void(const UpdateResult &)> done) override;
     void findProgram() override;
@@ -105,6 +107,7 @@ private:
     void onRequest(const json &id, const std::string &method, const json &params);
     KimiSession *addSession(const std::string &id, const std::string &cwd);
     void setModels(const json &result);
+    void setModes(const json &result);
 
     std::string bin_;
     std::unique_ptr<Conn> conn_;
@@ -114,6 +117,9 @@ private:
     std::map<long long, Done> pending_;
     Clock::time_point nextTry_ = Clock::now();
     json models_ = json::array();
+    // Kimi's modes until a session tells better (modes.ts in kimi-code).
+    json modes_ = json::array({{{"id", "default"}, {"name", "Default"}}, {{"id", "plan"}, {"name", "Plan"}},
+                               {{"id", "auto"}, {"name", "Auto"}}, {{"id", "yolo"}, {"name", "YOLO"}}});
     std::string agentVersion_;
 };
 

@@ -338,6 +338,11 @@ void KimiSession::onUpdate(const json &update)
             usage_["context"] = context;
             usageChanged();
         }
+    } else if (kind == "current_mode_update") {
+        if (const std::string mode = str(update, "currentModeId"); !mode.empty() && mode_ != json(mode)) {
+            mode_ = mode;
+            changed();
+        }
     } else if (kind == "config_option_update") {
         setConfig(update);
     } else if (kind == "session_info_update") {
@@ -372,8 +377,32 @@ void KimiSession::onPermission(const json &requestId, const json &params)
 
 // The model from the session's config options (session/new, load,
 // config_option_update): the `model` option's current value, by name.
+std::string KimiSession::setMode(const std::string &mode, const json &ref)
+{
+    bool known = false;
+    for (const auto &m : backend_.modes())
+        known = known || str(m, "id") == mode;
+    if (!known)
+        return "unknown-mode";
+    Host &host = host_;
+    const std::string id = id_;
+    backend_.call("session/set_mode", {{"sessionId", id_}, {"modeId", mode}}, [&host, id, mode, ref](const json &, const json &error) {
+        auto *self = dynamic_cast<KimiSession *>(host.session(id));
+        if (!self)
+            return;
+        if (!error.is_null())
+            return self->modeEvent(ref, "failed", str(error, "message"));
+        self->mode_ = mode;
+        self->changed();
+        self->modeEvent(ref, "done");
+    });
+    return {};
+}
+
 void KimiSession::setConfig(const json &result)
 {
+    if (const json modes = result.value("modes", json()); modes.is_object() && !str(modes, "currentModeId").empty())
+        mode_ = str(modes, "currentModeId");
     const json options = result.value("configOptions", json());
     if (!options.is_array())
         return;
@@ -655,6 +684,20 @@ KimiSession *KimiBackend::addSession(const std::string &id, const std::string &c
     return session;
 }
 
+// The modes a session can be in, as Kimi lists them (session/new, load).
+void KimiBackend::setModes(const json &result)
+{
+    const json modes = result.value("modes", json());
+    if (!modes.is_object() || !modes.contains("availableModes") || !modes["availableModes"].is_array())
+        return;
+    json list = json::array();
+    for (const auto &m : modes["availableModes"])
+        if (!str(m, "id").empty())
+            list.push_back({{"id", str(m, "id")}, {"name", str(m, "name").empty() ? str(m, "id") : str(m, "name")}});
+    if (!list.empty())
+        modes_ = list;
+}
+
 // The models `start` can ask for: the values of the `model` option.
 void KimiBackend::setModels(const json &result)
 {
@@ -732,6 +775,7 @@ void KimiBackend::start(const StartRequest &request, Started done)
                 return failed(error, "bad-start");
             noteAuth(error);
             setModels(result);
+            setModes(result);
             KimiSession *session = addSession(id, cwd);
             session->setLabel(label);
             session->setConfig(result);
@@ -763,6 +807,7 @@ void KimiBackend::start(const StartRequest &request, Started done)
                  return done({}, "unknown-conversation");
              noteAuth(error);
              setModels(result);
+             setModes(result);
              self->setConfig(result);
              self->loaded();
              withModel(self);
