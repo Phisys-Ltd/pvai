@@ -1,2 +1,4 @@
 contrib/ufw/pvai etc/ufw/applications.d/
 contrib/firewalld/pvai.xml usr/lib/firewalld/services/
+contrib/fail2ban/filter.d/pvai.conf etc/fail2ban/filter.d/
+contrib/fail2ban/jail.d/pvai.conf etc/fail2ban/jail.d/

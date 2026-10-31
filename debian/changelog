@@ -1,3 +1,12 @@
+pvai (0.5.17-1) trixie; urgency=medium
+
+  * Each refused direct access goes to the system log (ident pvai,
+    facility auth): "rejected <address>: <reason>" with a fixed reason,
+    for fail2ban; "blocked <address>" when pvai's own lockout starts.
+  * A fail2ban filter and jail (off) in /etc/fail2ban, see INSTALL.md.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 31 Oct 2026 13:10:00 +0100
+
 pvai (0.5.16-1) trixie; urgency=medium
 
   * Kimi Code as a third assistant ("kimi"): the daemon runs one kimi acp

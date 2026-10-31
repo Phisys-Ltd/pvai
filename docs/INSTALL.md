@@ -52,8 +52,9 @@ older sources.) pvai is in `testing` for now; once it moves on to
 `stable`, the same line with `stable` instead of `testing` follows only
 released versions.
 
-The package installs `/usr/bin/pvai` and two firewall profiles for direct
-access (ufw and firewalld, see "Connect the app"; they open nothing): no
+The package installs `/usr/bin/pvai`, two firewall profiles for direct
+access (ufw and firewalld, see "Connect the app"; they open nothing) and a
+fail2ban filter and jail that are off (see "fail2ban"): no
 service, nothing in anyone's home directory. The daemon starts on demand, and each user sets pvai up
 once (see "Set up per user").
 
@@ -198,7 +199,41 @@ sudo nft add rule inet filter input ip saddr 192.168.1.0/24 tcp dport 7471 accep
 sudo iptables -A INPUT -p tcp -s 192.168.1.0/24 --dport 7471 -j ACCEPT
 ```
 
-The package only describes the port; it opens nothing by itself.
+The package only describes the port; it opens nothing by itself. Open
+it only for networks you know (your LAN, a VPN), not for the whole
+internet: a device that is not paired never gets past the TLS handshake,
+but every open port draws scanners.
+
+### fail2ban
+
+Each refused direct access goes to the system log (ident `pvai`, facility
+`auth`), one line with the client's address and a fixed reason, nothing
+the client sent:
+
+```
+pvai[1234]: rejected 203.0.113.7: unknown device
+```
+
+The reasons: `unknown device`, `no client certificate`, `handshake
+failed`, `handshake timed out`, `no pairing window`, `bad proof`,
+`pairing timed out`. pvai itself drops an address for a minute after 5
+failures within a minute (`blocked <address>: repeated failures`, doubling
+up to an hour). fail2ban bans it at the firewall for longer: the Debian
+package brings `/etc/fail2ban/filter.d/pvai.conf` and
+`/etc/fail2ban/jail.d/pvai.conf` (port 7471, the journal, 5 failures in
+10 minutes, banned for an hour), off until you turn it on:
+
+```
+sudo apt install fail2ban
+sudo sed -i 's/^enabled = false/enabled = true/' /etc/fail2ban/jail.d/pvai.conf
+sudo systemctl reload fail2ban
+sudo fail2ban-client status pvai
+```
+
+With `pvai listen` on another port, change `port` there. Without the
+journal (rsyslog writing auth messages to a file), use the `backend =
+auto` and `logpath` lines in the jail instead. Without the package, copy
+both files from `contrib/fail2ban/` in the source.
 
 On macOS with the firewall on (System Settings → Network → Firewall),
 allow incoming connections for pvai when macOS asks, or beforehand:

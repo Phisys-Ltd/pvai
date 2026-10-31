@@ -30,6 +30,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <syslog.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -1102,11 +1103,18 @@ private:
         handshakes_.push_back({std::make_unique<TlsAccept>(tls_->context(), fd), address, now + kPreAuth});
     }
 
-    void directFailure(const std::string &address, const std::string &what)
+    // A refused direct access: the daemon's log, and one line for fail2ban
+    // in the system log (ident pvai, facility auth):
+    // "rejected <address>: <reason>", the reason one of a fixed few words,
+    // never a fingerprint or anything the client sent.
+    void directFailure(const std::string &address, const std::string &reason, const std::string &detail = {})
     {
-        logLine(address + ": " + what);
-        if (lockout_.fail(address, Clock::now()))
+        logLine(address + ": rejected: " + reason + (detail.empty() ? "" : " (" + detail + ")"));
+        ::syslog(LOG_NOTICE, "rejected %s: %s", address.c_str(), reason.c_str());
+        if (lockout_.fail(address, Clock::now())) {
             logLine(address + ": blocked after repeated failures");
+            ::syslog(LOG_NOTICE, "blocked %s: repeated failures", address.c_str());
+        }
     }
 
     void stepHandshake(Handshake &h)
@@ -1114,10 +1122,18 @@ private:
         switch (h.accept->step()) {
         case TlsAccept::Step::Again:
             return;
-        case TlsAccept::Step::Failed:
-            directFailure(h.address, "handshake failed (" + h.accept->error() + ")");
+        case TlsAccept::Step::Failed: {
+            // Our verify callback refused the certificate: not a paired
+            // device (and no window open); none at all; else TLS itself.
+            const std::string error = h.accept->error();
+            const char *reason = error.find("certificate verify failed") != std::string::npos ? "unknown device"
+                               : error.find("did not return a certificate") != std::string::npos || error.find("certificate required") != std::string::npos
+                                   ? "no client certificate"
+                                   : "handshake failed";
+            directFailure(h.address, reason, error);
             h.done = true;
             return;
+        }
         case TlsAccept::Step::Done:
             break;
         }
@@ -1141,7 +1157,7 @@ private:
             peer->conn->setMaxLine(kPairLineMax);
             logLine(h.address + ": pairing attempt");
         } else {
-            directFailure(h.address, "unknown device after the window closed");
+            directFailure(h.address, "unknown device", "the pairing window closed");
             return;
         }
         peers_.push_back(std::move(peer));
@@ -1156,7 +1172,7 @@ private:
         };
         if (!window_ || Clock::now() >= window_->until) {
             reject("no-window");
-            directFailure(peer->address, "pairing without a window");
+            directFailure(peer->address, "no pairing window");
             return;
         }
         const auto request = parsePair(message);
@@ -1168,7 +1184,7 @@ private:
         window_.reset();
         if (!good) {
             reject("bad-proof");
-            directFailure(peer->address, "pairing failed: bad proof");
+            directFailure(peer->address, "bad proof");
             notifyWaiter(waiter, {{"type", "pair-closed"}, {"reason", "bad-proof"}});
             return;
         }
@@ -1264,7 +1280,7 @@ private:
         for (auto &peer : peers_)
             if (!peer->pairing.empty() && peer->deadline && now >= *peer->deadline) {
                 peer->deadline.reset();
-                directFailure(peer->address, "no pairing line in time");
+                directFailure(peer->address, "pairing timed out");
                 dead_.push_back(peer.get());
             }
         if (window_ && now >= window_->until) {
@@ -1327,6 +1343,7 @@ private:
 
 int runDaemon(int port)
 {
+    ::openlog("pvai", LOG_PID, LOG_AUTH);
     // One daemon per user and host: whoever holds the lock owns the socket.
     const std::string lockPath = runtimeDir() + "/daemon.lock";
     const int lock = ::open(lockPath.c_str(), O_RDWR | O_CREAT, 0600);
