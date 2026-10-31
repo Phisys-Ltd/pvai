@@ -613,6 +613,35 @@ int main(int argc, char **argv)
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }, 6000).empty(),
           "without an interrupt in the transcript it is idle after about 4 s");
 
+    // A dialog no hook reports, read off the screen by the wrapper.
+    const std::string teach = "Teach auto mode about your environment?\n\xE2\x9D\xAF 1. Yes\n  2. No\n\n"
+                              "\xE2\x86\x90/\xE2\x86\x92 to change \xC2\xB7 Enter to continue \xC2\xB7 Esc to cancel";
+    wrapper.send({{"type", "screen"}, {"dialog", teach}});
+    const json asks = a.next("attention");
+    check(asks.value("kind", "") == "screen" && asks.value("text", "") == "Teach auto mode about your environment?",
+          "a screen dialog asks the owner with its first line: " + asks.dump());
+    term = waitSession(a, "wterm", [](const json &s) { return s.value("dialog", "") == "screen"; });
+    check(term.value("state", "") == "waiting" && sub(term, "dialogInfo").value("text", "") == teach,
+          "a screen dialog at the prompt: waiting, its text in dialogInfo: " + term.dump());
+    a.send({{"type", "prompt"}, {"ref", 15}, {"session", "wterm"}, {"text", "three"}});
+    check(a.next("accepted", [](const json &m) { return m.value("ref", 0) == 15; }).value("delivery", "") == "queued",
+          "a prompt waits while it is open");
+    a.send({{"type", "answer"}, {"ref", 16}, {"session", "wterm"}, {"choice", "key:down"}});
+    check(wrapper.next("keys").value("data", "") == "\x1b[B", "key:down is the arrow");
+    a.send({{"type", "answer"}, {"ref", 17}, {"session", "wterm"}, {"choice", "key:2"}});
+    check(wrapper.next("keys").value("data", "") == "2", "key:2 the digit");
+    a.send({{"type", "answer"}, {"ref", 18}, {"session", "wterm"}, {"choice", "key:f12"}});
+    check(a.next("rejected").value("reason", "") == "bad-choice", "an unknown key is a bad choice");
+    a.send({{"type", "answer"}, {"ref", 19}, {"session", "wterm"}, {"choice", "allow"}});
+    check(wrapper.next("keys").value("data", "") == "\r", "allow is Return");
+    check(waitSession(a, "wterm", [](const json &s) { return s.value("dialog", "") != "screen"; }, 600).empty(),
+          "and the dialog stays until the screen says it is gone");
+    wrapper.send({{"type", "screen"}, {"dialog", nullptr}});
+    check(wrapper.next("type").value("text", "") == "three", "then it is idle and the queued prompt goes in");
+    hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "three"}});
+    hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "Ok."}});
+    check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle again");
+
     // Subagents: running while their meta file has no `finished`; a task
     // notification starts a turn without UserPromptSubmit.
     const std::string run2 = home + "/elsewhere/run-2.jsonl";

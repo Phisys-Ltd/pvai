@@ -3,6 +3,7 @@
 // only does while Claude's prompt is free (the daemon knows from the hooks).
 #include "common.h"
 #include "run.h"
+#include "screen.h"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -400,6 +401,14 @@ int runWrapper(const WrapperOptions &options)
     ModeTracker modes;
     TrustSpotter trust;
     bool trustAsked = false;
+    // A dialog no hook reports (a picker, a notice to confirm): read off
+    // the screen once the output has paused.
+    Screen screen(size.ws_row, size.ws_col);
+    std::string screenShown;
+    std::optional<Clock::time_point> screenCheckAt;
+    auto sendScreen = [&] {
+        daemon->send({{"type", "screen"}, {"dialog", screenShown.empty() ? json() : json(screenShown)}});
+    };
     bool registered = false;
     auto registerSelf = [&] {
         daemon->send({{"type", "register"}, {"id", id}, {"label", options.label}, {"cwd", cwd},
@@ -409,6 +418,8 @@ int runWrapper(const WrapperOptions &options)
             daemon->send({{"type", "draft"}, {"dirty", true}});
         if (trustAsked)
             daemon->send({{"type", "dialog"}, {"kind", "trust"}});
+        if (!screenShown.empty())
+            sendScreen();
         registered = true;
     };
     if (daemon)
@@ -448,6 +459,7 @@ int runWrapper(const WrapperOptions &options)
             return;
         size.ws_row = rows;
         size.ws_col = cols;
+        screen.resize(rows, cols);
         if (nudge) {
             winsize smaller = size;
             --smaller.ws_col;
@@ -472,6 +484,13 @@ int runWrapper(const WrapperOptions &options)
         modes = ModeTracker();
         trust = TrustSpotter();
         trustAsked = false;
+        screen.reset();
+        screenCheckAt.reset();
+        if (daemon && !screenShown.empty()) {
+            screenShown.clear();
+            sendScreen();
+        }
+        screenShown.clear();
         toMaster.clear();
         returnAt.reset();
         if (daemon && wasDirty)
@@ -495,6 +514,8 @@ int runWrapper(const WrapperOptions &options)
             soonest(msUntil(*returnAt));
         if (resizeBackAt)
             soonest(msUntil(*resizeBackAt));
+        if (screenCheckAt)
+            soonest(msUntil(*screenCheckAt));
         if (!daemon)
             soonest(msUntil(nextReconnect));
         if (!restartWith.empty())
@@ -513,6 +534,8 @@ int runWrapper(const WrapperOptions &options)
                     if (viewer->out.size() < 8 * 1024 * 1024)
                         viewer->out += frame('d', chunk);
                 modes.feed(buffer, static_cast<std::size_t>(n));
+                screen.feed(buffer, static_cast<std::size_t>(n));
+                screenCheckAt = Clock::now() + std::chrono::milliseconds(250);
                 if (trust.feed(buffer, static_cast<std::size_t>(n))) {
                     trustAsked = true;
                     if (daemon)
@@ -642,6 +665,14 @@ int runWrapper(const WrapperOptions &options)
         if (resizeBackAt && Clock::now() >= *resizeBackAt) {
             ::ioctl(master, TIOCSWINSZ, &size);
             resizeBackAt.reset();
+        }
+        if (screenCheckAt && Clock::now() >= *screenCheckAt) {
+            screenCheckAt.reset();
+            if (std::string shown = screenDialog(screen); shown != screenShown) {
+                screenShown = std::move(shown);
+                if (daemon)
+                    sendScreen();
+            }
         }
         if (returnAt && Clock::now() >= *returnAt) {
             toMaster += "\r";

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <set>
 
 namespace pvai {
@@ -162,8 +163,26 @@ std::string ClaudeSession::answer(const std::string &choice)
 {
     if (state_ != "waiting" || dialog_.empty())
         return "no-dialog";
+    // Single keys move through a dialog; it stays open until the screen
+    // or a hook says otherwise.
+    if (choice.rfind("key:", 0) == 0 && dialog_ != "trust") {
+        static const std::map<std::string, std::string> keys = {
+            {"up", "\x1b[A"}, {"down", "\x1b[B"}, {"right", "\x1b[C"}, {"left", "\x1b[D"}, {"enter", "\r"},
+            {"esc", "\x1b"},  {"tab", "\t"},      {"space", " "},
+        };
+        const std::string key = choice.substr(4);
+        const auto it = keys.find(key);
+        if (it == keys.end() && !(key.size() == 1 && ((key[0] >= '0' && key[0] <= '9') || (key[0] >= 'a' && key[0] <= 'z'))))
+            return "bad-choice";
+        wrapper_.send({{"type", "keys"}, {"data", it != keys.end() ? it->second : key}});
+        return {};
+    }
     if (choice != "allow" && choice != "deny")
         return "bad-choice";
+    if (dialog_ == "screen") {
+        wrapper_.send({{"type", "keys"}, {"data", choice == "deny" ? "\x1b" : "\r"}});
+        return {};
+    }
     const bool trustDialog = dialog_ == "trust";
     wrapper_.send({{"type", "keys"}, {"data", choice == "deny" ? "\x1b" : trustDialog ? "\x1b[B\r" : "\r"}});
     dialog_.clear();
@@ -186,6 +205,8 @@ void ClaudeSession::interrupt()
     if (state_ != "busy" && !(state_ == "waiting" && dialog_ != "trust"))
         return;
     wrapper_.send({{"type", "keys"}, {"data", "\x1b"}});
+    if (dialog_ == "screen") // Esc closes it; the screen says when
+        return;
     if (state_ == "waiting") {
         state_ = "busy";
         dialog_.clear();
@@ -296,7 +317,7 @@ void ClaudeSession::onHook(const json &event)
         const std::string description = tool == "Bash" && input.is_object() ? input.value("description", "") : "";
         const json message = dialogInfo_.is_object() && !dialog_.empty() ? dialogInfo_.value("message", json()) : json();
         dialogInfo_ = dialogInfo(asks ? "" : tool, text, message.is_string() ? message.get<std::string>() : "", description);
-        if (state_ == "waiting" && !dialog_.empty()) {
+        if (state_ == "waiting" && !dialog_.empty() && dialog_ != "screen") {
             changed();
             return;
         }
@@ -310,7 +331,7 @@ void ClaudeSession::onHook(const json &event)
         if (idleNudge || state_ == "idle")
             return;
         // PermissionRequest came first: only its words are new.
-        if (state_ == "waiting" && !dialog_.empty() && dialogInfo_.is_object()) {
+        if (state_ == "waiting" && !dialog_.empty() && dialog_ != "screen" && dialogInfo_.is_object()) {
             dialogInfo_["message"] = text.empty() ? json() : json(cut(text, kDialogTextMax));
             changed();
             return;
@@ -383,7 +404,7 @@ void ClaudeSession::onInput(bool escape)
 {
     if (escape && state_ != "idle")
         armEscapeCheck();
-    if (state_ == "waiting" && dialog_ != "trust") {
+    if (state_ == "waiting" && dialog_ != "trust" && dialog_ != "screen") {
         state_ = "busy";
         dialog_.clear();
         changed();
@@ -412,6 +433,40 @@ void ClaudeSession::onDialog(const std::string &kind)
     changed();
 }
 
+// A dialog no hook reports, read off the screen by the wrapper (empty: it
+// is gone). At a free prompt it counts at once; in a turn only after a
+// moment, since a permission dialog's hook may still be on its way.
+void ClaudeSession::onScreen(const std::string &text)
+{
+    screenText_ = text;
+    screenAt_.reset();
+    if (dialog_ == "screen") {
+        if (text.empty()) {
+            state_ = screenFrom_;
+            dialog_.clear();
+            deliver();
+        } else {
+            dialogInfo_ = dialogInfo("", text, "");
+        }
+        changed();
+    } else if (!text.empty() && dialog_.empty() && (state_ == "idle" || state_ == "busy")) {
+        if (state_ == "idle")
+            openScreenDialog();
+        else
+            screenAt_ = Clock::now() + std::chrono::seconds(1);
+    }
+}
+
+void ClaudeSession::openScreenDialog()
+{
+    screenFrom_ = state_;
+    state_ = "waiting";
+    dialog_ = "screen";
+    dialogInfo_ = dialogInfo("", screenText_, "");
+    attention("screen", screenText_.substr(0, screenText_.find('\n')));
+    changed();
+}
+
 void ClaudeSession::armEscapeCheck(bool forceIdle)
 {
     forceIdle_ = forceIdle;
@@ -425,6 +480,11 @@ void ClaudeSession::armEscapeCheck(bool forceIdle)
 void ClaudeSession::tick(Clock::time_point now)
 {
     runEscapeChecks(now);
+    if (screenAt_ && now >= *screenAt_) {
+        screenAt_.reset();
+        if (!screenText_.empty() && dialog_.empty() && state_ == "busy")
+            openScreenDialog();
+    }
     if (now >= nextTail_) {
         pollTranscript();
         nextTail_ = now + kTailEvery;
@@ -442,6 +502,8 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
         next = std::min(next, at);
     if (submitDeadline_)
         next = std::min(next, *submitDeadline_);
+    if (screenAt_)
+        next = std::min(next, *screenAt_);
     return next;
 }
 

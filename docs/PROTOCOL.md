@@ -154,9 +154,11 @@ daemon knows every live one on its host.
   wrappers keep running after an update of pvai and cannot); never Codex
   threads, whose `usage.version` is the app server's.
 - `dialog`: while `waiting`, `permission` (Claude asks to use a tool),
-  `question` (any other notification that waits on the owner) or `trust`
+  `question` (any other notification that waits on the owner), `trust`
   (a new session asks whether to trust its folder; state `waiting` before
-  Claude Code has started), else `null`.
+  Claude Code has started) or `screen` (since 0.5.13: a dialog no hook
+  reports, such as a picker or a notice to confirm, read off the
+  terminal of a `pvai run` of 0.5.13 or later), else `null`.
 - `dialogInfo`: while `dialog` is set, what it is about, else `null`:
   ```json
   {"tool": "Bash", "text": "git push origin main", "description": "Push the branch",
@@ -164,10 +166,20 @@ daemon knows every live one on its host.
   ```
   `tool` the tool that asks (`null` for a question); `text` what it would
   do: the command, the file path, the URL or pattern, the questions (one
-  per line), the folder for `trust`, else the tool's input as JSON;
+  per line), the folder for `trust`, the dialog as the screen shows it for
+  `screen` (title, options with the `❯` at the selected one, footer, one
+  line each, common indent removed), else the tool's input as JSON;
   `description` only for a shell command that has one; `message` the
   assistant's own words (Claude Code's notification, Codex's `reason`).
-  Each is cut to 2000 bytes, any may be `null`. Claude Code: from its
+  Each is cut to 2000 bytes, any may be `null`. A `screen` dialog is one
+  whose footer ("Enter to confirm", "Enter to continue", "Enter to
+  select", "Enter to submit", "Esc to cancel", "Esc to exit", "Esc to go
+  back", "Esc to close") is in the last two lines of the screen; it counts
+  at once at the prompt, in a turn after a second without a hook's dialog
+  (a permission dialog shows such a footer too). `text` follows the
+  screen while it is open (a `sessions` update for each change); when it
+  is gone the session is back in the state it had before (`idle`: the
+  queue goes on). Claude Code: from its
   `PermissionRequest` hook (tool name and input; `AskUserQuestion` makes a
   `question`), the words from the `Notification` that follows or comes
   first; an older Claude Code without that hook gets the last tool call
@@ -239,7 +251,7 @@ App to daemon:
 | `start` | `ref`, `cwd`, `label`, `args`, `assistant`, `resume` | start a session in `cwd` (absolute) without a terminal; `label` optional; `assistant` one of `welcome.assistants` (default `claude`); `args` optional strings: extra arguments for `claude`; for Codex only `-m`/`--model <model>` is read; `resume` optional: an id from `conversations`, to go on with that conversation instead of a new one (see "Ended conversations") |
 | `conversations` | `assistant`, `cwd` | the ended conversations of that assistant in `cwd` (see "Ended conversations") |
 | `update` | `ref` | update every assistant on this host to its latest version (see "Versions and updates") |
-| `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits) |
+| `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust; Return for `screen`) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits; for `screen` it closes the dialog). Since 0.5.13 also `key:NAME`, one key into any dialog but `trust`: `up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `space`, or a digit or lower-case letter (an option's number, a shortcut such as `s`); the dialog stays open until the screen or a hook says otherwise |
 | `interrupt` | `ref`, `session` | stop the running turn, like Esc in the terminal (into a dialog: deny); nothing happens while `idle`, `starting` or on the trust dialog |
 | `stop` | `ref`, `session` | end a `stoppable` session |
 | `restart` | `ref`, `session` | end the session's process and start it again, going on with the same conversation (see "Restart") |
@@ -268,7 +280,7 @@ Daemon to app:
 | `projects` | `dirs: [path]` | most recently used first |
 | `browse` | `path`, `dirs: [name]`, `ok` | sorted, hidden ones left out; `ok: false` when `path` cannot be read |
 | `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn's prompt was spoken |
-| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder) |
+| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the dialog's first line) |
 | `history` | `session`, `entries: [Entry]` | answer to `subscribe`, oldest first; sent again, to every subscriber, when the session moves to another transcript (`/clear`): the view starts over |
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
 | `conversations` | `assistant`, `cwd`, `conversations: [Conversation]` | answer to `conversations` |

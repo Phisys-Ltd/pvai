@@ -38,6 +38,7 @@ public:
     void onInput(bool escape);
     void onDraft(bool dirty);
     void onDialog(const std::string &kind);
+    void onScreen(const std::string &text);
 
 protected:
     void submit(const Prompt &prompt) override;
@@ -50,6 +51,7 @@ private:
     void scanSubagents(Clock::time_point now);
     void catchUp();
     void remember() const;
+    void openScreenDialog();
 
     Conn &wrapper_;
     bool canRestart_ = false;
@@ -74,6 +76,11 @@ private:
     std::optional<Clock::time_point> submitDeadline_;
     // Turns Claude Code started on its own, seen so far (see wakeTurns()).
     std::size_t wakeMark_ = 0;
+    // The dialog the screen shows now (see onScreen), when a turn's one
+    // counts, and the state it interrupted.
+    std::string screenText_;
+    std::optional<Clock::time_point> screenAt_;
+    std::string screenFrom_ = "idle";
     // Subagents, from <transcript without .jsonl>/subagents/agent-<id>.meta.json:
     // by id, the meta file's mtime when last read and the protocol entry
     // (null once finished or given up).

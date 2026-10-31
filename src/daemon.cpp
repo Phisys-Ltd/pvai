@@ -512,6 +512,8 @@ private:
                 session->onDraft(message.value("dirty", false));
             else if (type == "dialog")
                 session->onDialog(message.value("kind", ""));
+            else if (type == "screen")
+                session->onScreen(message.value("dialog", json()).is_string() ? message["dialog"].get<std::string>() : "");
             return;
         }
         if (type == "ping")
