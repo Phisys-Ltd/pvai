@@ -54,6 +54,26 @@ int main()
     check(got == "command:! ssh pi5 uptime|output:up 3 days\nwarn\n|prompt:<div>mine</div>|", "the entries: " + got);
     check(tail.localOutputs() == 0, "! output is no slash command's");
     check(!pvai::turnRunning(path), "! input starts no turn");
+
+    // An idle compaction after a finished turn (Claude Code 2.1.31x): the
+    // summary is no prompt, and no turn runs.
+    const std::string idle = std::string(dir) + "/idle.jsonl";
+    pvai::json summary = pvai::json::parse(userLine(12, "This session is being continued from a previous conversation"));
+    summary["isCompactSummary"] = true;
+    summary["isVisibleInTranscriptOnly"] = true;
+    std::ofstream(idle) << userLine(10, "hello")
+                        << R"({"type":"assistant","uuid":"u11","message":{"content":[{"type":"text","text":"hi"}]}})" "\n"
+                        << R"({"type":"system","subtype":"turn_duration","uuid":"s1"})" "\n"
+                        << R"({"type":"system","subtype":"compact_boundary","uuid":"s2","compactMetadata":{"trigger":"auto"}})" "\n"
+                        << summary.dump() << "\n"
+                        << R"({"type":"system","subtype":"informational","uuid":"s3","content":"Compacted while idle"})" "\n";
+    check(!pvai::turnRunning(idle), "an idle compaction starts no turn");
+    tail.follow(idle);
+    got.clear();
+    for (const auto &e : tail.poll())
+        got += e.value("kind", "") + ":" + e.value("text", "") + "|";
+    check(got == "prompt:hello|text:hi|command:/compact|", "a compaction is a /compact entry, its summary none: " + got);
+    std::remove(idle.c_str());
     std::remove(path.c_str());
     ::rmdir(dir);
     return failures ? 1 : 0;

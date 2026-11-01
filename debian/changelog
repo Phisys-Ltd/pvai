@@ -1,3 +1,12 @@
+pvai (0.5.29-1) trixie; urgency=medium
+
+  * A compaction's summary (isCompactSummary) is no prompt: it started no
+    turn, so a daemon restarted after an idle compaction showed the idle
+    session busy for good, and it reached the history as a prompt. A
+    compaction Claude Code starts itself is now a /compact command entry.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 01 Nov 2026 13:15:00 +0100
+
 pvai (0.5.28-1) trixie; urgency=medium
 
   * Shell commands typed with ! in Claude Code reach the history: the

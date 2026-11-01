@@ -94,6 +94,11 @@ bool element(const std::string &text, const std::string &tag, std::string &inner
 
 } // namespace
 
+bool isBookkeeping(const json &line)
+{
+    return line.value("isMeta", false) || line.value("isCompactSummary", false) || line.value("isVisibleInTranscriptOnly", false);
+}
+
 bool isMachinePrompt(const std::string &text)
 {
     static const char *const kTags[] = {
@@ -159,7 +164,7 @@ bool turnRunning(const std::string &path)
         if (type == "system" && (entry.value("subtype", "") == "turn_duration" || entry.value("subtype", "") == "stop_hook_summary")) {
             running = false;
             ends = true;
-        } else if (type == "user" && !entry.value("isMeta", false) && entry.contains("message") && entry["message"].is_object()) {
+        } else if (type == "user" && !isBookkeeping(entry) && entry.contains("message") && entry["message"].is_object()) {
             const json content = entry["message"].value("content", json());
             const std::string text = content.is_string() ? content.get<std::string>()
                                    : content.is_array() && !content.empty() && content[0].is_object() ? content[0].value("text", "") : "";
@@ -270,11 +275,23 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
             wakePending_ = false; // the owner's prompt takes the notification along
         }
     }
+    // A compaction Claude Code started itself (the context ran full, or idle
+    // before the prompt cache expired); /compact typed by the owner shows as
+    // its command line already.
+    if (type == "system" && line.value("subtype", "") == "compact_boundary" && !line.value("isSidechain", false)) {
+        const json meta = line.value("compactMetadata", json());
+        if (!meta.is_object() || meta.value("trigger", "") != "manual") {
+            json entry = {{"kind", "command"}, {"text", "/compact"}};
+            entry.update(json{{"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}});
+            out.push_back(std::move(entry));
+        }
+        return;
+    }
     // Local slash commands and their output: a system line of their own in
-    // newer Claude Code versions, a user message in older ones.
+    // newer Claude Code versions, a user message in older ones. The summary
+    // a compaction leaves is no prompt of the owner's.
     const bool localCommand = type == "system" && line.value("subtype", "") == "local_command";
-    if ((type != "user" && type != "assistant" && !localCommand) || line.value("isSidechain", false)
-        || line.value("isMeta", false))
+    if ((type != "user" && type != "assistant" && !localCommand) || line.value("isSidechain", false) || isBookkeeping(line))
         return;
     if (!localCommand && (!line.contains("message") || !line["message"].is_object()))
         return;

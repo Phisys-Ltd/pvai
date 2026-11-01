@@ -24,6 +24,9 @@ std::string commandFile(const std::string &command);
 // command echoes and output, ! shell input and output), by its known
 // leading tag; an owner's prompt that starts with another tag is none.
 bool isMachinePrompt(const std::string &text);
+// A line Claude Code keeps for itself: meta lines, and the summary a
+// compaction leaves as a user line (isCompactSummary).
+bool isBookkeeping(const json &line);
 
 // Whether a turn runs now, from the end of a transcript: a prompt or an
 // answer of Claude's after the last turn end (Claude Code writes a

@@ -78,7 +78,7 @@ std::string firstPrompt(const std::string &path)
         if (line.find("\"type\":\"user\"") == std::string::npos)
             continue;
         const json entry = json::parse(line, nullptr, false);
-        if (!entry.is_object() || entry.value("isMeta", false) || entry.value("isSidechain", false))
+        if (!entry.is_object() || isBookkeeping(entry) || entry.value("isSidechain", false))
             continue;
         const json content = entry.value("message", json()).value("content", json());
         std::string text;
