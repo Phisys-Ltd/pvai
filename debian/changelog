@@ -4,6 +4,9 @@ pvai (0.5.31-1) trixie; urgency=medium
     Claude Code conversation for good, its transcript and the folder beside
     it, so the list to go on with gets shorter. Not a running one; Codex and
     Kimi answer not-supported for now. welcome says `forget: true`.
+  * The app command `clear` of 0.5.30 is now `clearInput` (answer
+    `inputCleared`, session field `inputClearable`, CLI `pvai clear-input`),
+    so it is not mistaken for Claude Code's /clear. The old names are gone.
 
  -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 01 Nov 2026 19:00:00 +0100
 

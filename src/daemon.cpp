@@ -666,7 +666,7 @@ private:
             onInterrupt(peer, message);
         else if (type == "restart")
             onRestart(peer, message);
-        else if (type == "clear")
+        else if (type == "clearInput")
             onClear(peer, message);
         else if (type == "unsubscribe")
             peer->subscriptions.erase(message.value("session", ""));
@@ -923,7 +923,7 @@ private:
             return reject(peer, ref, id, "unknown-session");
         if (const std::string reason = session->clear(); !reason.empty())
             return reject(peer, ref, id, reason);
-        peer->conn->send({{"type", "cleared"}, {"ref", ref}, {"session", id}});
+        peer->conn->send({{"type", "inputCleared"}, {"ref", ref}, {"session", id}});
     }
 
     void onRestart(Peer *peer, const json &message)

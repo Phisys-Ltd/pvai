@@ -996,31 +996,31 @@ int main(int argc, char **argv)
     // clear (0.5.30): empties the prompt box, a draft or a command left in
     // shell mode, and the queue goes on.
     {
-        a.send({{"type", "clear"}, {"ref", 40}, {"session", "wver"}});
+        a.send({{"type", "clearInput"}, {"ref", 40}, {"session", "wver"}});
         check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 40; }).value("reason", "") == "not-supported",
               "an older wrapper cannot clear");
         Client clr;
         clr.send({{"type", "register"}, {"id", "wclr"}, {"cwd", project}, {"label", "clr"}, {"restart", true}, {"verify", true}, {"clear", true}});
         hook("wclr", {{"hook_event_name", "SessionStart"}, {"session_id", "c-1"}, {"source", "startup"}});
         json idle = waitSession(a, "wclr", [](const json &s) { return s.value("state", "") == "idle"; });
-        check(idle.value("clearable", false), "an idle session under a new wrapper is clearable: " + idle.dump());
+        check(idle.value("inputClearable", false), "an idle session under a new wrapper is clearable: " + idle.dump());
         clr.send({{"type", "draft"}, {"dirty", true}}); // the box in shell mode
         check(!waitSession(a, "wclr", [](const json &s) { return s.value("draft", false); }).empty(), "a shell box counts as a draft");
         a.send({{"type", "prompt"}, {"ref", 41}, {"session", "wclr"}, {"text", "drei"}});
         check(clr.next("type", {}, 800).empty(), "nothing is typed into it");
-        a.send({{"type", "clear"}, {"ref", 42}, {"session", "wclr"}});
-        check(!a.next("cleared", [](const json &m) { return m.value("ref", 0) == 42; }).empty(), "clear is acknowledged");
+        a.send({{"type", "clearInput"}, {"ref", 42}, {"session", "wclr"}});
+        check(!a.next("inputCleared", [](const json &m) { return m.value("ref", 0) == 42; }).empty(), "clear is acknowledged");
         check(!clr.next("clear").empty(), "the wrapper is asked to clear the box");
         clr.send({{"type", "draft"}, {"dirty", false}});
         json typing = clr.next("type");
         check(typing.value("text", "") == "drei", "an empty box: the prompt goes in");
-        a.send({{"type", "clear"}, {"ref", 43}, {"session", "wclr"}});
+        a.send({{"type", "clearInput"}, {"ref", 43}, {"session", "wclr"}});
         check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 43; }).value("reason", "") == "busy",
               "not while a prompt is going in");
         clr.send({{"type", "typed"}, {"ok", false}, {"screen", "!  echo old"}});
         json blocked = waitSession(a, "wclr", [](const json &s) { return s.value("dialog", json()) == "screen"; });
-        check(blocked.value("clearable", false), "blocked by the box: clearable: " + blocked.dump());
-        a.send({{"type", "clear"}, {"ref", 44}, {"session", "wclr"}});
+        check(blocked.value("inputClearable", false), "blocked by the box: clearable: " + blocked.dump());
+        a.send({{"type", "clearInput"}, {"ref", 44}, {"session", "wclr"}});
         check(!clr.next("clear").empty(), "clear while blocked");
         clr.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
         check(clr.next("type").value("text", "") == "drei", "the box is free again: it goes in");

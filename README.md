@@ -59,7 +59,7 @@ pvai listen 192.168.1.10            # direct access without ssh (TLS, port 7471)
 pvai pair                           # a link and QR code for one device, 10 minutes
 pvai devices / pvai revoke <name>   # paired devices
 pvai answer <session> allow|deny     # the dialog it waits on
-pvai clear <session>                 # empty its prompt box (a draft, a command left in shell mode)
+pvai clear-input <session>           # empty its prompt box (a draft, a command left in shell mode)
 pvai forget <dir> <id>               # delete an ended Claude Code conversation for good
 pvai sessions                        # what runs on this host
 pvai watch                           # what an app would see, for checks

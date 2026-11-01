@@ -65,7 +65,7 @@ json Session::describe() const
             {"detached", detached()},
             {"stoppable", stoppable()},
             {"restartable", restartable()},
-            {"clearable", clearable()},
+            {"inputClearable", clearable()},
             {"dialog", dialog_.empty() ? json() : json(dialog_)},
             {"dialogInfo", dialog_.empty() || !dialogInfo_.is_object() ? json() : dialogInfo_},
             {"usage", usage_},
