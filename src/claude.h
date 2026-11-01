@@ -28,6 +28,10 @@ public:
     // only under a wrapper that can (pvai 0.5.0 and later).
     bool restartable() const override { return canRestart_ && !claudeSession_.empty(); }
     std::string restart() override;
+    // At the prompt (idle, or blocked by what the box holds), under a
+    // wrapper that can (pvai 0.5.30 and later).
+    bool clearable() const override { return canClear_ && (state_ == "idle" || (state_ == "waiting" && blocked_)); }
+    std::string clear() override;
     json history(int limit) override;
     void tick(Clock::time_point now) override;
     std::optional<Clock::time_point> deadline() const override;
@@ -76,6 +80,8 @@ private:
     // not with a Stop.
     bool slashPending_ = false;
     std::size_t slashMark_ = 0;
+    bool slashShell_ = false; // the pending command is a shell command (!): its output ends it
+    std::size_t localDone() const { return slashShell_ ? tail_.shellOutputs() : tail_.localOutputs(); }
     std::string lastEvent_; // the last hook event, to drop one that comes twice
     // After an Esc in the terminal: where the transcript ended then, and
     // when to look whether Claude Code wrote an interrupt behind it.
@@ -103,6 +109,7 @@ private:
     // screen, until the prompt box is free again (retryOnPrompt_: at once,
     // else only after the owner answered from the app).
     bool verify_ = false;
+    bool canClear_ = false;
     std::optional<Prompt> inFlight_;
     std::optional<Clock::time_point> typedDeadline_;
     bool snapshotPending_ = false;

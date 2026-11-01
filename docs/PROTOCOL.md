@@ -106,7 +106,7 @@ daemon knows every live one on its host.
 
 ```json
 {"id": "w1a2b3c4d", "assistant": "claude", "label": "phi-core", "cwd": "/root/projects/phi-core",
- "state": "idle", "queued": 0, "draft": false, "detached": false, "stoppable": false, "restartable": true,
+ "state": "idle", "queued": 0, "draft": false, "detached": false, "stoppable": false, "restartable": true, "clearable": true,
  "dialog": null, "dialogInfo": null, "usage": null, "claudeSession": "4f3b744c-...", "subagents": []}
 ```
 
@@ -143,7 +143,8 @@ daemon knows every live one on its host.
 - Delivery under a `pvai run` of 0.5.15 or later: the wrapper pastes a
   prompt only into Claude Code's prompt box when the screen shows it free
   (the lines between two rules, starting with `❯`, no dialog's footer
-  below), and presses Return only once the box shows the text. If it
+  below; since 0.5.30 a box in shell mode, starting with `!`, is not free
+  and counts as a `draft`), and presses Return only once the box shows the text. If it
   cannot, nothing more is typed, the prompt goes back to the front of
   `queued`, and the session is `waiting` with `dialog` `screen` and the
   lower part of the screen as `dialogInfo.text`; it goes on by itself
@@ -156,13 +157,20 @@ daemon knows every live one on its host.
   (the owner sees that the prompt is free and the box was not
   recognised). Older wrappers type as before.
 - `draft`: the owner has typed into the session's prompt in the terminal and
-  not sent it. Prompts wait until the prompt is empty again (Return, Ctrl+C,
+  not sent it, or (since 0.5.30) the prompt box is in shell mode (it starts
+  with `!`, as after `!` or a command called back from the history: what is
+  typed there runs as a shell command). Prompts wait until the prompt is empty again (Return, Ctrl+C,
   Ctrl+U or deleting the text), so they never land in the middle of the
   owner's words. Worked out from the keys; it errs towards `true`.
 - `detached`: started by the daemon.
 - `stoppable`: `stop` can end it: detached sessions, and Codex threads that
   no `pvai codex` TUI holds (see "Codex sessions"). A Claude Code session
   in a terminal is the owner's to end there.
+- `clearable`: `clear` can empty the session's prompt box now (since
+  0.5.30): a Claude Code session under a `pvai run` of 0.5.30 or later,
+  `idle` (with or without a `draft`) or `waiting` on a `screen` dialog that
+  a prompt which did not go in opened. The app offers it where the box
+  holds something: a `draft`, or the box as `dialogInfo.text` shows it.
 - `restartable`: `restart` can start this session again in place, going on
   with the same conversation: Claude Code sessions (in a terminal or
   detached) once Claude Code's own session id is known (`claudeSession`,
@@ -285,6 +293,7 @@ App to daemon:
 | `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust; Return for `screen`) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits; for `screen` it closes the dialog). Since 0.5.13 also `key:NAME`, one key into any dialog but `trust`: `up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `space`, or a digit or lower-case letter (an option's number, a shortcut such as `s`); the dialog stays open until the screen or a hook says otherwise. `send`: see "Delivery" under the session fields. Kimi: also `always` and `option:<id>`, see "Kimi sessions" |
 | `interrupt` | `ref`, `session` | stop the running turn, like Esc in the terminal (into a dialog: deny); nothing happens while `idle`, `starting` or on the trust dialog |
 | `stop` | `ref`, `session` | end a `stoppable` session |
+| `clear` | `ref`, `session` | empty the session's prompt box, wherever its cursor is, and leave shell mode (Ctrl+K and Ctrl+U to each line, then Backspace; Esc does not empty it); queued prompts go on once the box is free. Only while `clearable` |
 | `restart` | `ref`, `session` | end the session's process and start it again, going on with the same conversation (see "Restart") |
 | `projects` | | the directories Claude Code has run in on this host |
 | `browse` | `path` | the subdirectories of `path` |
@@ -303,9 +312,10 @@ Daemon to app:
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `clear`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `clearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
+| `cleared` | `ref`, `session` | the keys for `clear` went in; `draft` and the state follow from the screen |
 | `interrupting` | `ref`, `session` | the Esc went in; the session turns `idle` when the transcript shows the interrupt, or after about 4 s anyway, then with its queue dropped (a hung session, such as one without a login) |
 | `restarting` | `ref`, `session` | the session is ending for a restart; it goes `starting`, then `idle` again with the same `id` |
 | `stopping` | `ref`, `session` | the session is told to end; it leaves `sessions` when it has |

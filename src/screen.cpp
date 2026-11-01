@@ -439,7 +439,7 @@ std::string screenDialog(const Screen &screen)
     return joinLines(lines);
 }
 
-bool promptBox(const Screen &screen, std::string &text)
+bool promptBox(const Screen &screen, std::string &text, bool *shell)
 {
     static const std::string mark = "\xE2\x9D\xAF"; // ❯
     int below = -1;
@@ -452,10 +452,15 @@ bool promptBox(const Screen &screen, std::string &text)
         }
         const std::string first = screen.row(r + 1);
         const auto from = first.find_first_not_of(' ');
-        if (from == std::string::npos || first.compare(from, mark.size(), mark) != 0) {
+        // "!" and a space; Claude Code draws a no-break space there.
+        const bool bang = from != std::string::npos
+            && (first.compare(from, 2, "! ") == 0 || first.compare(from, 3, "!\xC2\xA0") == 0);
+        if (from == std::string::npos || (!bang && first.compare(from, mark.size(), mark) != 0)) {
             below = r;
             continue;
         }
+        if (shell)
+            *shell = bang;
         text.clear();
         for (int k = r + 1; k < below; ++k)
             text += (k > r + 1 ? "\n" : "") + screen.row(k);

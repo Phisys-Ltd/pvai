@@ -53,6 +53,7 @@ int main()
         got += e.value("kind", "") + ":" + e.value("text", "") + "|";
     check(got == "command:! ssh pi5 uptime|output:up 3 days\nwarn\n|prompt:<div>mine</div>|", "the entries: " + got);
     check(tail.localOutputs() == 0, "! output is no slash command's");
+    check(tail.shellOutputs() == 2, "each ! output counts, also an empty one: " + std::to_string(tail.shellOutputs()));
     check(!pvai::turnRunning(path), "! input starts no turn");
 
     // An idle compaction after a finished turn (Claude Code 2.1.31x): the

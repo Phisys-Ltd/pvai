@@ -59,8 +59,10 @@ private:
 std::string screenDialog(const Screen &screen);
 
 // Claude Code's prompt box: the lines between the last two rules on the
-// screen, the first starting with "❯". False when the screen shows none.
-bool promptBox(const Screen &screen, std::string &text);
+// screen, the first starting with "❯", or with "!" in shell mode (`shell`
+// set then: what is typed there runs as a command, no prompt may go in).
+// False when the screen shows none.
+bool promptBox(const Screen &screen, std::string &text, bool *shell = nullptr);
 
 // The lower part of the screen as text (the last 20 lines with text, up to
 // 2000 bytes): what an unknown dialog shows.

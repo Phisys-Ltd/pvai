@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <deque>
 #include <optional>
 #include <thread>
 #include <cctype>
@@ -410,13 +411,30 @@ int runWrapper(const WrapperOptions &options)
     Screen screen(size.ws_row, size.ws_col);
     std::string screenShown;
     bool promptShown = false; // the prompt box is on the screen, no dialog over it
+    bool shellShown = false;  // that box is in shell mode ("!"): taken, like a draft
+    bool draftSent = false;   // what the daemon last heard as `draft`
     std::string modeShown;    // the permission mode the footer shows
     std::optional<Clock::time_point> screenCheckAt;
     auto sendScreen = [&] {
         daemon->send({{"type", "screen"}, {"dialog", screenShown.empty() ? json() : json(screenShown)}, {"prompt", promptShown},
                       {"mode", modeShown.empty() ? json() : json(modeShown)}});
     };
-    auto promptFree = [&](std::string &box) { return promptBox(screen, box) && screenDialog(screen).empty(); };
+    auto promptFree = [&](std::string &box) {
+        bool shell = false;
+        return promptBox(screen, box, &shell) && !shell && screenDialog(screen).empty();
+    };
+    // Keys that go in one small group at a time: Claude Code drops control
+    // keys that arrive in one large chunk.
+    std::deque<std::string> paced;
+    std::optional<Clock::time_point> pacedAt;
+    // The owner's unsent words, a box in shell mode, or one being emptied:
+    // no prompt goes in.
+    auto reportDraft = [&](bool force) {
+        const bool dirty = draft.dirty() || shellShown || !paced.empty();
+        if (daemon && (force || dirty != draftSent))
+            daemon->send({{"type", "draft"}, {"dirty", dirty}});
+        draftSent = dirty;
+    };
     // A prompt typed with `verify`: pasted only into a free prompt box, and
     // Return only once the box shows it; else it did not go in.
     struct Typing {
@@ -432,9 +450,9 @@ int runWrapper(const WrapperOptions &options)
     auto registerSelf = [&] {
         daemon->send({{"type", "register"}, {"id", id}, {"label", options.label}, {"cwd", cwd},
                       {"pid", static_cast<int>(::getpid())}, {"running", registered}, {"detached", detached},
-                      {"restart", true}, {"verify", true}, {"modes", true}});
-        if (draft.dirty())
-            daemon->send({{"type", "draft"}, {"dirty", true}});
+                      {"restart", true}, {"verify", true}, {"modes", true}, {"clear", true}});
+        if (draft.dirty() || shellShown)
+            reportDraft(true);
         if (trustAsked)
             daemon->send({{"type", "dialog"}, {"kind", "trust"}});
         if (!screenShown.empty())
@@ -455,12 +473,10 @@ int runWrapper(const WrapperOptions &options)
     // Keys from the owner, from the terminal or an attached viewer.
     auto userBytes = [&](const char *data, std::size_t n) {
         toMaster.append(data, n);
-        const bool wasDirty = draft.dirty();
         draft.feed(data, n);
         if (!daemon)
             return;
-        if (draft.dirty() != wasDirty)
-            daemon->send({{"type", "draft"}, {"dirty", draft.dirty()}});
+        reportDraft(false);
         // A lone Esc (not the start of a key sequence) may interrupt the turn.
         if (n == 1 && data[0] == '\x1b') {
             daemon->send({{"type", "input"}, {"escape", true}});
@@ -498,7 +514,6 @@ int runWrapper(const WrapperOptions &options)
         restartKillAt.reset();
         if (!spawn())
             return false;
-        const bool wasDirty = draft.dirty();
         draft = Draft();
         modes = ModeTracker();
         trust = TrustSpotter();
@@ -511,6 +526,7 @@ int runWrapper(const WrapperOptions &options)
         }
         screenShown.clear();
         promptShown = false;
+        shellShown = false;
         modeShown.clear();
         if (typing) {
             typing.reset();
@@ -518,8 +534,9 @@ int runWrapper(const WrapperOptions &options)
         }
         toMaster.clear();
         returnAt.reset();
-        if (daemon && wasDirty)
-            daemon->send({{"type", "draft"}, {"dirty", false}});
+        paced.clear();
+        pacedAt.reset();
+        reportDraft(false);
         return true;
     };
 
@@ -537,6 +554,8 @@ int runWrapper(const WrapperOptions &options)
         auto soonest = [&](long long ms) { timeout = timeout < 0 ? ms : std::min(timeout, ms); };
         if (returnAt)
             soonest(msUntil(*returnAt));
+        if (pacedAt)
+            soonest(msUntil(*pacedAt));
         if (resizeBackAt)
             soonest(msUntil(*resizeBackAt));
         if (screenCheckAt)
@@ -606,7 +625,7 @@ int runWrapper(const WrapperOptions &options)
                 if (type == "type") {
                     std::string text = message.value("text", "");
                     std::string box;
-                    if (message.value("verify", false) && (typing || !promptFree(box))) {
+                    if (message.value("verify", false) && (typing || !paced.empty() || !promptFree(box))) {
                         typed(false);
                         continue;
                     }
@@ -626,6 +645,16 @@ int runWrapper(const WrapperOptions &options)
                         returnAt = Clock::now() + std::chrono::milliseconds(150);
                 } else if (type == "keys") {
                     toMaster += message.value("data", "");
+                } else if (type == "clear") {
+                    // Empties the prompt box wherever the cursor is, also a
+                    // long or multi-line one, and leaves shell mode: Ctrl+K
+                    // and Ctrl+U each take one line, Backspace into an empty
+                    // box ends shell mode. Esc does neither.
+                    paced.assign(40, "\x0b\x15");
+                    paced.insert(paced.end(), 3, "\x7f");
+                    pacedAt = Clock::now();
+                    draft = Draft();
+                    reportDraft(false);
                 } else if (type == "snapshot") {
                     daemon->send({{"type", "snapshot"}, {"screen", screenSnapshot(screen)}});
                 } else if (type == "terminate") {
@@ -717,9 +746,14 @@ int runWrapper(const WrapperOptions &options)
         if (screenCheckAt && Clock::now() >= *screenCheckAt) {
             screenCheckAt.reset();
             std::string box;
+            bool shell = false;
             std::string shown = screenDialog(screen);
-            const bool prompt = shown.empty() && promptBox(screen, box);
+            const bool prompt = shown.empty() && promptBox(screen, box, &shell);
             const std::string mode = shown.empty() ? screenMode(screen) : modeShown;
+            if (prompt && shell != shellShown) {
+                shellShown = shell;
+                reportDraft(false);
+            }
             if (shown != screenShown || prompt != promptShown || mode != modeShown) {
                 screenShown = std::move(shown);
                 promptShown = prompt;
@@ -727,6 +761,15 @@ int runWrapper(const WrapperOptions &options)
                 if (daemon)
                     sendScreen();
             }
+        }
+        if (pacedAt && Clock::now() >= *pacedAt) {
+            toMaster += paced.front();
+            paced.pop_front();
+            if (paced.empty()) {
+                pacedAt.reset();
+                reportDraft(false); // the screen says when shell mode is gone
+            } else
+                pacedAt = Clock::now() + std::chrono::milliseconds(20);
         }
         if (returnAt && Clock::now() >= *returnAt) {
             toMaster += "\r";

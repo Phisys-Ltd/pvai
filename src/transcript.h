@@ -49,6 +49,8 @@ public:
     // finished: each ends with an output entry, even an empty one. No hook
     // fires for them.
     std::size_t localOutputs() const { return localOutputs_; }
+    // Output lines of shell commands (!), one each, also when empty.
+    std::size_t shellOutputs() const { return shellOutputs_; }
     // How many turns Claude Code started on its own: a task notification
     // (a background task or agent finished) followed by an answer of
     // Claude's, with no prompt of the owner's in between. Such a turn has
@@ -74,6 +76,7 @@ private:
     std::deque<json> recent_;
     std::map<std::string, std::string> toolNames_; // tool_use id -> name
     std::size_t localOutputs_ = 0;
+    std::size_t shellOutputs_ = 0;
     std::size_t wakeTurns_ = 0;
     bool wakePending_ = false; // a task notification, no answer yet
     json cache_;

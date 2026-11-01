@@ -1,3 +1,24 @@
+pvai (0.5.30-1) trixie; urgency=medium
+
+  * A prompt box in shell mode (it starts with "!", for example a command
+    called back from the history) was taken for an unknown dialog: the
+    session waited on a "screen" dialog that Esc could not close, and every
+    new prompt only queued behind it. The wrapper now knows the shell box,
+    reports it as a draft and never types a prompt into it.
+  * Claude Code draws a no-break space after the "!" of shell mode; a box
+    in shell mode is now recognised as the prompt box.
+  * A prompt that starts with "!" (a shell command from the app) is
+    delivered like a slash command: in once the box shows it, done with
+    its output. Before, the box in shell mode looked like no prompt box,
+    the prompt was taken back and pasted again on every retry.
+  * New app command `clear` (and `pvai clear SESSION`): empties the prompt
+    box wherever the cursor is and leaves shell mode (Ctrl+K, Ctrl+U,
+    Backspace, a few at a time: Claude Code drops control keys that come
+    in one large chunk); queued prompts go on once it is empty. Sessions
+    say `clearable`.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 01 Nov 2026 18:20:00 +0100
+
 pvai (0.5.29-1) trixie; urgency=medium
 
   * A compaction's summary (isCompactSummary) is no prompt: it started no

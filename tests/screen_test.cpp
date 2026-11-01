@@ -47,6 +47,23 @@ int main()
     feed(screen, "\x1b[2A\x1b[3Ghi");
     check(pvai::promptBox(screen, box) && box == "\xE2\x9D\xAF hi", "typing into the box changes it: [" + box + "]");
 
+    // Shell mode: the box starts with "!", a command in it is no free prompt.
+    {
+        pvai::Screen shell(8, 40);
+        bool bang = false;
+        feed(shell, "\x1b[2J\x1b[H" + rule + "\r\n!  cd /tmp && ls\r\n  -la\r\n" + rule + "\r\n  ! for shell mode");
+        std::string text;
+        check(pvai::promptBox(shell, text, &bang) && bang && text == "!  cd /tmp && ls\n  -la",
+              "a box in shell mode: [" + text + "]");
+        check(pvai::screenDialog(shell).empty(), "shell mode is no dialog");
+        feed(shell, "\x1b[2;1H\x1b[J\xE2\x9D\xAF \r\n" + rule);
+        check(pvai::promptBox(shell, text, &bang) && !bang, "back to the prompt: not shell mode");
+        feed(shell, "\x1b[2;1H\x1b[J!important\r\n" + rule);
+        check(!pvai::promptBox(shell, text, &bang), "\"!\" without a space is no shell box");
+        feed(shell, "\x1b[2;1H\x1b[J!\xC2\xA0" "echo\x1b[8Gzwei\r\n" + rule);
+        check(pvai::promptBox(shell, text, &bang) && bang, "as Claude Code draws it, with a no-break space: [" + text + "]");
+    }
+
     // The permission mode in the footer under the prompt box.
     check(pvai::screenMode(screen) == "default", "no mode in the footer: default");
     feed(screen, "\r\x1b[K  \xE2\x8F\xB8 plan mode on (shift+tab to cycle)");

@@ -113,6 +113,7 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
     , verify_(registration.value("verify", false))
     , screenModes_(registration.value("modes", false))
 {
+    canClear_ = registration.value("clear", false);
     // A wrapper that registers again after a daemon restart has a running
     // Claude Code: idle, unless its transcript shows a turn going on.
     if (registration.value("running", false)) {
@@ -154,7 +155,9 @@ json ClaudeSession::describe() const
 
 void ClaudeSession::submit(const Prompt &prompt)
 {
-    const bool slash = prompt.text[0] == '/';
+    // A slash command or a shell command (!): no UserPromptSubmit, it ends
+    // with its output in the transcript.
+    const bool slash = prompt.text[0] == '/' || prompt.text[0] == '!';
     const bool verify = verify_ && !sendUnchecked_;
     sendUnchecked_ = false;
     wrapper_.send({{"type", "type"}, {"text", (prompt.voice && !slash ? kMicMark : "") + prompt.text}, {"verify", verify}});
@@ -169,7 +172,8 @@ void ClaudeSession::submit(const Prompt &prompt)
     if (verify_ && slash) { // sent without the check: taken as delivered
         tail_.poll();
         slashPending_ = true;
-        slashMark_ = tail_.localOutputs();
+        slashShell_ = prompt.text[0] == '!';
+        slashMark_ = localDone();
         state_ = "busy";
         delivered();
         return;
@@ -177,7 +181,8 @@ void ClaudeSession::submit(const Prompt &prompt)
     if (slash) {
         tail_.poll();
         slashPending_ = true;
-        slashMark_ = tail_.localOutputs();
+        slashShell_ = prompt.text[0] == '!';
+        slashMark_ = localDone();
     } else {
         submitDeadline_ = Clock::now() + kSubmitTimeout;
     }
@@ -287,6 +292,22 @@ std::string ClaudeSession::restart()
     escapeChecks_.clear();
     submitDeadline_.reset();
     changed();
+    return {};
+}
+
+// The wrapper empties the box; its `draft` and `screen` say when it is
+// free, and the queue goes on from there.
+std::string ClaudeSession::clear()
+{
+    if (!canClear_)
+        return "not-supported";
+    if (!clearable())
+        return "busy";
+    wrapper_.send({{"type", "clear"}});
+    if (blocked_) {
+        retryOnPrompt_ = true;
+        retryAt_ = Clock::now() + kRetryAfter;
+    }
     return {};
 }
 
@@ -653,11 +674,12 @@ void ClaudeSession::onTyped(bool ok, const std::string &screen)
         notDelivered(screen, true);
         return;
     }
-    if (inFlight_->text[0] == '/') {
-        // No hook for a slash command: in is in. It ends with its output.
+    if (inFlight_->text[0] == '/' || inFlight_->text[0] == '!') {
+        // No hook for a slash or shell command: in is in. It ends with its output.
         tail_.poll();
         slashPending_ = true;
-        slashMark_ = tail_.localOutputs();
+        slashShell_ = inFlight_->text[0] == '!';
+        slashMark_ = localDone();
         delivered();
     } else {
         submitDeadline_ = Clock::now() + kSubmitTimeout;
@@ -855,7 +877,7 @@ void ClaudeSession::pollTranscript()
             changed();
         }
     }
-    if (slashPending_ && tail_.localOutputs() > slashMark_) {
+    if (slashPending_ && localDone() > slashMark_) {
         slashPending_ = false;
         if (state_ == "busy") {
             state_ = "idle";

@@ -328,6 +328,7 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
             // A shell command the owner typed with ! in Claude Code.
             emit({{"kind", "command"}, {"text", "! " + inner}});
         } else if (text.rfind("<bash-stdout>", 0) == 0 || text.rfind("<bash-stderr>", 0) == 0) {
+            ++shellOutputs_; // a shell command's end, also without output
             std::string out, err;
             element(text, "bash-stdout", out);
             element(text, "bash-stderr", err);

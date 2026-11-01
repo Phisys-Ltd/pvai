@@ -85,6 +85,10 @@ public:
     // keeps its id.
     virtual bool restartable() const { return false; }
     virtual std::string restart() { return "not-restartable"; }
+    // Empties the session's prompt box (the owner's draft, a command left
+    // in shell mode), so that queued prompts can go in.
+    virtual bool clearable() const { return false; }
+    virtual std::string clear() { return "not-supported"; }
     // Up to `limit` of the last conversation entries, oldest first.
     virtual json history(int limit) = 0;
 
