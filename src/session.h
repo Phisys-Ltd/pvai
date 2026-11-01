@@ -129,6 +129,14 @@ protected:
     std::deque<Prompt> queue_;
     bool draft_ = false;     // the owner has typed into the prompt and not sent it
     bool voiceTurn_ = false; // the running turn's prompt was spoken
+    bool spokenLast_ = false; // the owner's last own prompt was spoken
+    // A turn starts with `text` as its prompt: spoken when it has the 🎙
+    // mark; an agent message (`[Message `) goes on as the owner's last
+    // prompt did, any other text is the owner typing and ends that.
+    void promptVoice(const std::string &text);
+    // A turn without a prompt (a background task or agent came back): it
+    // is spoken when the owner's last prompt was.
+    void wakeVoice() { voiceTurn_ = spokenLast_; }
     json usage_;             // context window, rate limits, model, cost, version
     json mode_;              // the permission mode's id, null when unknown
 

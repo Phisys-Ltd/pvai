@@ -120,6 +120,15 @@ bool Session::deliver()
     return true;
 }
 
+void Session::promptVoice(const std::string &text)
+{
+    if (text.rfind(kMicMark, 0) == 0)
+        spokenLast_ = true;
+    else if (text.rfind("[Message ", 0) != 0)
+        spokenLast_ = false;
+    voiceTurn_ = spokenLast_;
+}
+
 void Session::say(const std::string &answer)
 {
     std::string text = speakLine(answer);

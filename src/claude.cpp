@@ -492,7 +492,7 @@ void ClaudeSession::onHook(const json &event)
             slashPending_ = false;
     } else if (name == "UserPromptSubmit") {
         state_ = "busy";
-        voiceTurn_ = event.value("prompt", "").rfind(kMicMark, 0) == 0;
+        promptVoice(event.value("prompt", ""));
     } else if (name == "Stop") {
         state_ = "idle";
         forceIdle_ = false;
@@ -979,7 +979,7 @@ void ClaudeSession::pollTranscript()
         wakeMark_ = tail_.wakeTurns();
         if (state_ == "idle") {
             state_ = "busy";
-            voiceTurn_ = false;
+            wakeVoice();
             changed();
         }
     }

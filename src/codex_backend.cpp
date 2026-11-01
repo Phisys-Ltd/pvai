@@ -180,7 +180,7 @@ void CodexSession::submit(const Prompt &prompt)
     const std::string text = (prompt.voice ? kMicMark : "") + prompt.text;
     state_ = "busy";
     turnPending_ = true;
-    voiceTurn_ = prompt.voice;
+    promptVoice(text);
     const std::string id = id_;
     Host &host = host_;
     // Codex's slash commands live in its TUI; /compact has a call of its own
@@ -546,7 +546,7 @@ void CodexSession::onNotification(const std::string &method, const json &params)
             answer_ = str(item, "text");
         else if (type == "userMessage")
             for (const auto &e : entries(item, 0))
-                voiceTurn_ = str(e, "text").rfind(kMicMark, 0) == 0;
+                promptVoice(str(e, "text"));
         pushEntries(entries(item, params.value("completedAtMs", 0LL)));
     } else if (method == "item/started") {
         // A file change's approval names only the item: its paths are here.

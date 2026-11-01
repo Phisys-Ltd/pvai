@@ -359,7 +359,7 @@ Daemon to app:
 | `stopping` | `ref`, `session` | the session is told to end; it leaves `sessions` when it has |
 | `projects` | `dirs: [path]` | most recently used first |
 | `browse` | `path`, `dirs: [name]`, `ok` | sorted, hidden ones left out; `ok: false` when `path` cannot be read |
-| `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn's prompt was spoken |
+| `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn counts as spoken (see "What gets spoken") |
 | `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the dialog's first line). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models") |
 | `history` | `session`, `entries: [Entry]` | answer to `subscribe`, oldest first; sent again, to every subscriber, when the session moves to another transcript (`/clear`): the view starts over |
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
@@ -856,6 +856,10 @@ a second.
   command, which must start with `/`). For such
   turns Claude ends its answer with one line that starts with `🔊 `: one or
   two plain sentences for the ear, in the chat language, no code, no paths.
+- (Since 0.5.36) A turn the owner did not type counts as spoken when the
+  owner's last own prompt was: a turn a finished background task or agent
+  started, and an agent message the owner released (`[Message …]`). A
+  prompt the owner typed ends that. The 🔊 convention says the same.
 - At the end of every turn the daemon sends `say`. `text` is the last `🔊 `
   line of the turn's final answer, without the marker. Without such a line:
   empty for a voice turn (the app speaks its own "done, details in the

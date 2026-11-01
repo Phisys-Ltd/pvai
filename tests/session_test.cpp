@@ -1256,6 +1256,21 @@ int main(int argc, char **argv)
     const std::string answerLine =
         R"({"type":"assistant","uuid":"u-a1","timestamp":"2026-10-31T12:00:05.250Z","message":{"content":[{"type":"text","text":"Noted."}],)"
         R"("usage":{"cache_creation":{"ephemeral_1h_input_tokens":343,"ephemeral_5m_input_tokens":0}}}})";
+    // A spoken prompt: what follows without the owner typing is spoken too.
+    // (Each Stop with its own text: the same event twice counts once.)
+    int turn = 0;
+    auto said = [&](const std::string &prompt) {
+        if (!prompt.empty())
+            hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", prompt}});
+        hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok " + std::to_string(++turn)}});
+        const json voice = a.next("say", [](const json &m) { return m.value("session", "") == "wterm"; }).value("voice", json());
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "Stop ends the turn");
+        a.drain(); // later checks read the states that follow, not these
+        return voice;
+    };
+    check(said("\xF0\x9F\x8E\x99 hör zu") == json(true), "a spoken turn is spoken");
+    check(said("[Message p1 from M4/w1, released by the owner. Answer with: ...]\nhi") == json(true),
+          "an agent message after it is spoken too");
     append(notification);
     check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 1200).empty(),
           "a task notification alone starts no turn");
@@ -1268,8 +1283,10 @@ int main(int argc, char **argv)
     writeFile(agentMeta, R"({"agentType":"build-runner","description":"Build it","requestShape":"background","finished":true})");
     check(!waitSession(a, "wterm", [&](const json &s) { return agents(s) == json::array(); }, 4000).empty(),
           "a finished subagent leaves the list");
-    hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok"}});
-    check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "Stop ends that turn");
+    { const json v = said(""); check(v == json(true), "and so is the turn a task notification started: " + v.dump()); }
+    check(said("typed") == json(false), "a typed prompt ends that");
+    check(said("[Message p2 from M4/w1, released by the owner. Answer with: ...]\nhi") == json(false),
+          "and an agent message after a typed prompt is not spoken");
     // A notification and its answer inside a turn, read only after its Stop:
     // no turn of its own.
     hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "go"}});

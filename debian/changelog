@@ -1,3 +1,12 @@
+pvai (0.5.36-1) trixie; urgency=medium
+
+  * A turn the owner did not type (a background task or agent came back,
+    a released agent message) is spoken when the owner's last own prompt
+    was; a typed prompt ends that. The voice context says so too.
+  * CodexBackend::forget(thread) is markStopped (it hid Backend::forget).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 00:31:34 +0100
+
 pvai (0.5.35-1) trixie; urgency=medium
 
   * welcome carries user, the login name the daemon runs as, so the app
