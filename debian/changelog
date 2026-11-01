@@ -1,3 +1,15 @@
+pvai (0.5.33-1) trixie; urgency=medium
+
+  * Claude Code's AskUserQuestion: dialogInfo.questions lists every question
+    with its choices (and `selected` for multi select), `current` the one on
+    the screen, the review after several. `answer` takes option:<n>, next
+    (Tab after a multi-select question), text:<words> (Claude Code's "Type
+    something") and allow/deny on the review, so the app can show the
+    choices as buttons instead of only a text field.
+  * The wrapper takes `paced` keys with a gap between them.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 01 Nov 2026 20:10:00 +0100
+
 pvai (0.5.32-1) trixie; urgency=medium
 
   * Claude Code's models: "fable" (Claude Code's alias for claude-fable-5-1)

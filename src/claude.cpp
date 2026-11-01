@@ -40,6 +40,27 @@ std::string toolText(const json &input)
     return input.dump();
 }
 
+// AskUserQuestion's questions with their choices, as dialogInfo.questions.
+json questionsOf(const json &input)
+{
+    json out = json::array();
+    if (!input.is_object() || !input.contains("questions") || !input["questions"].is_array())
+        return out;
+    for (const auto &question : input["questions"]) {
+        json options = json::array();
+        if (question.is_object() && question.contains("options") && question["options"].is_array())
+            for (const auto &option : question["options"])
+                options.push_back({{"label", str(option, "label")}, {"description", str(option, "description")}});
+        const bool multi = question.is_object() && question.value("multiSelect", false);
+        json entry = {{"question", str(question, "question")}, {"header", str(question, "header")},
+                      {"multiSelect", multi}, {"options", options}};
+        if (multi)
+            entry["selected"] = json::array();
+        out.push_back(std::move(entry));
+    }
+    return out;
+}
+
 // AskUserQuestion's questions, one per line.
 std::string questionOf(const json &input)
 {
@@ -114,6 +135,7 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
     , screenModes_(registration.value("modes", false))
 {
     canClear_ = registration.value("clear", false);
+    canPace_ = registration.value("paced", false);
     // A wrapper that registers again after a daemon restart has a running
     // Claude Code: idle, unless its transcript shows a turn going on.
     if (registration.value("running", false)) {
@@ -197,6 +219,9 @@ std::string ClaudeSession::answer(const std::string &choice)
 {
     if (state_ != "waiting" || dialog_.empty())
         return "no-dialog";
+    if (dialog_ == "question" && dialogInfo_.is_object() && dialogInfo_.contains("questions")
+        && (choice.rfind("option:", 0) == 0 || choice.rfind("text:", 0) == 0 || choice == "next"))
+        return answerQuestion(choice);
     // Single keys move through a dialog; it stays open until the screen
     // or a hook says otherwise.
     if (choice.rfind("key:", 0) == 0 && dialog_ != "trust") {
@@ -246,6 +271,74 @@ std::string ClaudeSession::answer(const std::string &choice)
     }
     changed();
     return {};
+}
+
+// Claude Code's question dialog: a digit picks a choice (single select:
+// on to the next question; multi select: toggles it), Tab goes on from a
+// multi-select question, the choice after the last opens a field for
+// typed words. With more than one question a review comes last, which
+// `allow` submits and `deny` cancels.
+std::string ClaudeSession::answerQuestion(const std::string &choice)
+{
+    json &questions = dialogInfo_["questions"];
+    const int count = static_cast<int>(questions.size());
+    const int current = dialogInfo_.value("current", 0);
+    if (current < 0 || current >= count)
+        return "bad-choice"; // the review: allow or deny
+    json &question = questions[static_cast<std::size_t>(current)];
+    const int options = static_cast<int>(question["options"].size());
+    const bool multi = question.value("multiSelect", false);
+    if (choice == "next") {
+        if (!multi)
+            return "bad-choice";
+        wrapper_.send({{"type", "keys"}, {"data", "\t"}});
+        questionAnswered(true);
+        return {};
+    }
+    if (choice.rfind("option:", 0) == 0) {
+        const std::string number = choice.substr(7);
+        if (number.empty() || number.size() > 1 || number[0] < '1' || number[0] - '0' > options)
+            return "bad-choice";
+        wrapper_.send({{"type", "keys"}, {"data", number}});
+        if (multi) {
+            json &selected = question["selected"];
+            const int n = number[0] - '0';
+            auto it = std::find(selected.begin(), selected.end(), json(n));
+            if (it != selected.end())
+                selected.erase(it);
+            else
+                selected.push_back(n);
+            changed();
+            return {};
+        }
+        questionAnswered(true);
+        return {};
+    }
+    // text:<words>: the field after the choices, the words, Return.
+    const std::string words = choice.substr(5);
+    if (multi || words.empty() || words.size() > 2000 || words.find_first_of("\r\n\x1b") != std::string::npos)
+        return "bad-choice";
+    if (!canPace_)
+        return "not-supported";
+    wrapper_.send({{"type", "paced"}, {"gapMs", 300},
+                   {"keys", {std::to_string(options + 1), "\x1b[200~" + words + "\x1b[201~", "\r"}}});
+    questionAnswered(true);
+    return {};
+}
+
+// One question done: the next one, the review after the last of several;
+// a single question is done with its answer and the turn goes on.
+void ClaudeSession::questionAnswered(bool advance)
+{
+    const int count = static_cast<int>(dialogInfo_["questions"].size());
+    const int next = dialogInfo_.value("current", 0) + (advance ? 1 : 0);
+    if (next >= count && count == 1) {
+        dialog_.clear();
+        state_ = "busy";
+    } else {
+        dialogInfo_["current"] = std::min(next, count);
+    }
+    changed();
 }
 
 // The app's stop button: Esc, as the owner would press it in the terminal.
@@ -406,6 +499,10 @@ void ClaudeSession::onHook(const json &event)
         const std::string description = tool == "Bash" && input.is_object() ? input.value("description", "") : "";
         const json message = dialogInfo_.is_object() && !dialog_.empty() ? dialogInfo_.value("message", json()) : json();
         dialogInfo_ = dialogInfo(asks ? "" : tool, text, message.is_string() ? message.get<std::string>() : "", description);
+        if (asks) {
+            dialogInfo_["questions"] = questionsOf(input);
+            dialogInfo_["current"] = 0;
+        }
         if (state_ == "waiting" && !dialog_.empty() && dialog_ != "screen") {
             changed();
             return;

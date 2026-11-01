@@ -1030,6 +1030,56 @@ int main(int argc, char **argv)
         hook("wclr", {{"hook_event_name", "Stop"}, {"session_id", "c-1"}, {"last_assistant_message", "Drei."}});
     }
 
+    // AskUserQuestion (0.5.33): the questions with their choices; option,
+    // next and text answer them, the review comes last.
+    {
+        Client qw;
+        qw.send({{"type", "register"}, {"id", "wq"}, {"cwd", project}, {"label", "q"}, {"restart", true}, {"verify", true}, {"clear", true}, {"paced", true}});
+        hook("wq", {{"hook_event_name", "SessionStart"}, {"session_id", "q-1"}, {"source", "startup"}});
+        check(!waitSession(a, "wq", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a question session");
+        hook("wq", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "q-1"}, {"prompt", "frag"}});
+        const json questions = json::array(
+            {{{"question", "Welche Früchte?"}, {"header", "Früchte"}, {"multiSelect", true},
+              {"options", json::array({{{"label", "Apfel"}, {"description", "rot"}}, {{"label", "Kiwi"}, {"description", "grün"}}})}},
+             {{"question", "Welche Stadt?"}, {"header", "Stadt"}, {"multiSelect", false},
+              {"options", json::array({{{"label", "Bern"}, {"description", ""}}, {{"label", "Zürich"}, {"description", ""}}})}}});
+        hook("wq", {{"hook_event_name", "PermissionRequest"}, {"session_id", "q-1"}, {"tool_name", "AskUserQuestion"},
+                    {"tool_input", {{"questions", questions}}}});
+        json asked = waitSession(a, "wq", [](const json &s) { return s.value("dialog", json()) == "question"; });
+        const json info = sub(asked, "dialogInfo");
+        check(info.value("current", -1) == 0 && info["questions"].size() == 2 && info["questions"][0]["options"][1].value("label", "") == "Kiwi"
+                  && info["questions"][0]["selected"] == json::array() && info["questions"][1].value("multiSelect", true) == false,
+              "dialogInfo.questions with their choices: " + info.dump());
+        auto answer = [&](int ref, const std::string &choice) {
+            a.send({{"type", "answer"}, {"ref", ref}, {"session", "wq"}, {"choice", choice}});
+            for (int i = 0; i < 50; ++i) {
+                const json m = a.next(2000);
+                if (m.empty())
+                    break;
+                if (m.is_object() && m.value("ref", json()) == json(ref))
+                    return m.value("type", "") == "rejected" ? m.value("reason", "") : m.value("type", "");
+            }
+            return std::string("none");
+        };
+        auto wrapperKeys = [](Client &w) { return w.next("keys").value("data", ""); };
+        check(answer(60, "option:2") == "answered" && wrapperKeys(qw) == "2", "option:2 is the digit");
+        check(!waitSession(a, "wq", [](const json &s) { return sub(s, "dialogInfo")["questions"][0]["selected"] == json::array({2}); }).empty(),
+              "a multi-select choice is toggled on");
+        check(answer(61, "text:frei") == "bad-choice", "no typed answer to a multi-select question");
+        check(answer(62, "option:3") == "bad-choice", "no third choice");
+        check(answer(63, "next") == "answered" && wrapperKeys(qw) == "\t", "next is Tab");
+        check(!waitSession(a, "wq", [](const json &s) { return sub(s, "dialogInfo").value("current", -1) == 1; }).empty(), "on to the second question");
+        check(answer(64, "text:Luzern am See") == "answered", "a typed answer");
+        const json paced = qw.next("paced");
+        check(paced["keys"] == json::array({"3", "\x1b[200~Luzern am See\x1b[201~", "\r"}), "paced: the field, the words, Return: " + paced.dump());
+        check(!waitSession(a, "wq", [](const json &s) { return sub(s, "dialogInfo").value("current", -1) == 2 && s.value("state", "") == "waiting"; }).empty(),
+              "then the review");
+        check(answer(65, "option:1") == "bad-choice", "the review takes allow or deny");
+        check(answer(66, "allow") == "answered" && wrapperKeys(qw) == "\r", "allow submits");
+        hook("wq", {{"hook_event_name", "Stop"}, {"session_id", "q-1"}, {"last_assistant_message", "Ok."}});
+        check(!waitSession(a, "wq", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "the turn ends");
+    }
+
     // A wrapper that registers again after a daemon restart: busy when its
     // transcript has a turn going on, idle when the last turn ended.
     {

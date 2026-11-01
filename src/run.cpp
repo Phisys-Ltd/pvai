@@ -21,6 +21,7 @@
 #include <pty.h>
 #endif
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <climits>
@@ -427,6 +428,7 @@ int runWrapper(const WrapperOptions &options)
     // keys that arrive in one large chunk.
     std::deque<std::string> paced;
     std::optional<Clock::time_point> pacedAt;
+    std::chrono::milliseconds pacedGap{20};
     // The owner's unsent words, a box in shell mode, or one being emptied:
     // no prompt goes in.
     auto reportDraft = [&](bool force) {
@@ -450,7 +452,7 @@ int runWrapper(const WrapperOptions &options)
     auto registerSelf = [&] {
         daemon->send({{"type", "register"}, {"id", id}, {"label", options.label}, {"cwd", cwd},
                       {"pid", static_cast<int>(::getpid())}, {"running", registered}, {"detached", detached},
-                      {"restart", true}, {"verify", true}, {"modes", true}, {"clear", true}});
+                      {"restart", true}, {"verify", true}, {"modes", true}, {"clear", true}, {"paced", true}});
         if (draft.dirty() || shellShown)
             reportDraft(true);
         if (trustAsked)
@@ -645,11 +647,24 @@ int runWrapper(const WrapperOptions &options)
                         returnAt = Clock::now() + std::chrono::milliseconds(150);
                 } else if (type == "keys") {
                     toMaster += message.value("data", "");
+                } else if (type == "paced") {
+                    // Keys for a dialog that needs a moment between them (a
+                    // choice, then text into the field it opens, then Return).
+                    const json keys = message.value("keys", json::array());
+                    if (keys.is_array() && paced.empty()) {
+                        for (const auto &k : keys)
+                            if (k.is_string())
+                                paced.push_back(k.get<std::string>());
+                        pacedGap = std::chrono::milliseconds(std::clamp(message.value("gapMs", 300), 20, 2000));
+                        if (!paced.empty())
+                            pacedAt = Clock::now();
+                    }
                 } else if (type == "clear") {
                     // Empties the prompt box wherever the cursor is, also a
                     // long or multi-line one, and leaves shell mode: Ctrl+K
                     // and Ctrl+U each take one line, Backspace into an empty
                     // box ends shell mode. Esc does neither.
+                    pacedGap = std::chrono::milliseconds(20);
                     paced.assign(40, "\x0b\x15");
                     paced.insert(paced.end(), 3, "\x7f");
                     pacedAt = Clock::now();
@@ -769,7 +784,7 @@ int runWrapper(const WrapperOptions &options)
                 pacedAt.reset();
                 reportDraft(false); // the screen says when shell mode is gone
             } else
-                pacedAt = Clock::now() + std::chrono::milliseconds(20);
+                pacedAt = Clock::now() + pacedGap;
         }
         if (returnAt && Clock::now() >= *returnAt) {
             toMaster += "\r";

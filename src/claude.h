@@ -110,6 +110,10 @@ private:
     // else only after the owner answered from the app).
     bool verify_ = false;
     bool canClear_ = false;
+    bool canPace_ = false; // the wrapper takes `paced` keys (0.5.33)
+    // An AskUserQuestion dialog: a choice, the next question, a typed answer.
+    std::string answerQuestion(const std::string &choice);
+    void questionAnswered(bool advance);
     std::optional<Prompt> inFlight_;
     std::optional<Clock::time_point> typedDeadline_;
     bool snapshotPending_ = false;

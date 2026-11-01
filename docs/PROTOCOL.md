@@ -205,8 +205,8 @@ daemon knows every live one on its host.
   is gone the session is back in the state it had before (`idle`: the
   queue goes on). Claude Code: from its
   `PermissionRequest` hook (tool name and input; `AskUserQuestion` makes a
-  `question`), the words from the `Notification` that follows or comes
-  first; an older Claude Code without that hook gets the last tool call
+  `question`, see "Claude Code's questions"), the words from the
+  `Notification` that follows or comes first; an older Claude Code without that hook gets the last tool call
   in the transcript (its short summary) instead. Codex: from the approval
   request; `tool` is `shell` for a command, `edit` for a patch (`text` its
   files, one per line), `permissions` for more permissions (`text` the
@@ -273,6 +273,42 @@ daemon knows every live one on its host.
   nickname; `name` its `agentNickname` (Codex only, may be empty);
   `background` always `true` (Codex does not tell); `startedAt` the
   thread's `createdAt`.
+
+### Claude Code's questions
+
+Since 0.5.33 a `question` from Claude Code's `AskUserQuestion` carries the
+questions with their choices, and `answer` takes them:
+
+```json
+"dialogInfo": {"tool": null, "text": "Welche Früchte?\nWelche Stadt?", "message": "...",
+  "current": 0,
+  "questions": [
+    {"question": "Welche Früchte?", "header": "Früchte", "multiSelect": true,
+     "options": [{"label": "Apfel", "description": "rot"}, {"label": "Kiwi", "description": "grün"}],
+     "selected": [2]},
+    {"question": "Welche Stadt?", "header": "Stadt", "multiSelect": false,
+     "options": [{"label": "Bern", "description": ""}, {"label": "Zürich", "description": ""}]}]}
+```
+
+Claude Code shows one question at a time; `current` is its index, and
+equals the number of questions on the review that comes after the last
+of several ("Submit answers" / "Cancel"). A single question has no review:
+its answer ends the dialog. `answer` choices:
+
+- `option:<n>`: the n-th choice (from 1) of the current question. Single
+  select: picked, on to the next question. Multi select: toggled, `selected`
+  lists the numbers that are on.
+- `next`: a multi-select question is done (Tab), on to the next.
+- `text:<words>`: the owner's own answer to a single-select question
+  (Claude Code's "Type something": the field after the choices, the words,
+  Return), at most 2000 bytes, no line breaks; needs a `pvai run` of
+  0.5.33 or later, else `not-supported`.
+- `allow` on the review submits; `deny` (Esc) cancels the whole dialog at
+  any point, as `interrupt` does.
+- `key:NAME` as before, for anything else; the daemon does not follow it.
+
+Wrong choices (no such option, `text:` or `next` where they do not fit,
+`option:` on the review) are `rejected` with `bad-choice`.
 
 ## Messages
 
