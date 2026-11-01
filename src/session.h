@@ -78,6 +78,9 @@ public:
     // Switches the session's mode (one of its backend's `modes`); the
     // result follows as a `mode` event to every app.
     virtual std::string setMode(const std::string &, const json &) { return "not-supported"; }
+    // Switches the session's model (one of its backend's `models`, or any
+    // name the assistant takes); the result follows as a `model` event.
+    virtual std::string setModel(const std::string &, const json &) { return "not-supported"; }
     virtual std::string stop() = 0;
     virtual void interrupt() = 0;
     // Ends the session's process and starts it again, going on with the
@@ -131,6 +134,11 @@ protected:
 
     // A mode change is done or failed (`error`): every app hears it.
     void modeEvent(const json &ref, const std::string &state, const std::string &error = {});
+    // A model change is done or failed: every app hears it.
+    void modelEvent(const json &ref, const std::string &model, const std::string &state, const std::string &error = {});
+    // usage.model moved: the new one, and when the assistant changed it on
+    // its own (a limit, a fallback), an `attention` of kind "model".
+    void noteModel(const std::string &model, const std::string &why = {});
 
 private:
     bool ended_ = false;

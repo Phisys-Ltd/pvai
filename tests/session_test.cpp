@@ -340,7 +340,8 @@ private:
                 data.push_back({{"item", {{"type", "agentMessage"}, {"id", "i1"}, {"text", "earlier answer"}}}, {"completedAtMs", 1000}});
             reply(id, {{"data", data}});
         } else if (method == "thread/start")
-            reply(id, {{"thread", thread("t-new", params.value("cwd", ""))}});
+            reply(id, {{"thread", thread("t-new", params.value("cwd", ""))}, {"approvalPolicy", "on-request"},
+                       {"sandbox", {{"type", "workspaceWrite"}, {"networkAccess", false}}}, {"model", "gpt-test"}});
         else if (method == "thread/list") {
             ++threadListCalls;
             const bool archived = params.value("archived", false);
@@ -741,15 +742,34 @@ int main(int argc, char **argv)
     check(!codex.call("thread/start", [](const json &p) { return p.value("model", "") == "gpt-test"; }).is_null(), "the model goes to thread/start");
     json fresh = waitSession(a, "t-new", [](const json &s) { return s.value("label", "") == "neu"; });
     check(fresh.value("detached", false), "a started thread is detached and labelled");
-    a.send({{"type", "mode"}, {"ref", 60}, {"session", "t-new"}, {"mode", "never"}});
+    check(fresh.value("mode", "") == "auto" && sub(fresh, "usage").value("model", "") == "gpt-test",
+          "on-request with a workspace-write sandbox is Auto, the model from thread/start: " + fresh.dump());
+    a.send({{"type", "mode"}, {"ref", 59}, {"session", "t-new"}, {"mode", "never"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 59; }).value("reason", "") == "unknown-mode",
+          "the old approval-only modes are gone");
+    a.send({{"type", "mode"}, {"ref", 60}, {"session", "t-new"}, {"mode", "full-access"}});
     const json codexMode = a.next("mode", [](const json &m) { return m.value("ref", 0) == 60; });
-    check(codexMode.value("state", "") == "done" && codexMode.value("mode", "") == "never", "a Codex mode is set: " + codexMode.dump());
+    check(codexMode.value("state", "") == "done" && codexMode.value("mode", "") == "full-access", "a Codex mode is set: " + codexMode.dump());
+    a.send({{"type", "model"}, {"ref", 61}, {"session", "t-new"}, {"model", "gpt-other"}});
+    const json codexModel = a.next("model", [](const json &m) { return m.value("ref", 0) == 61; });
+    check(codexModel.value("state", "") == "done" && codexModel.value("model", "") == "gpt-other", "a Codex model is set: " + codexModel.dump());
+    a.send({{"type", "model"}, {"ref", 62}, {"session", "t-new"}, {"model", "gpt other; rm"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 62; }).value("reason", "") == "bad-model", "a bad model name");
     a.send({{"type", "prompt"}, {"ref", 3}, {"session", "t-new"}, {"text", "hello"}});
     check(a.next("accepted").value("delivery", "") == "typed", "the prompt goes in");
     check(!codex.call("turn/start", [](const json &p) {
-              return p.dump().find("hello") != std::string::npos && p.value("approvalPolicy", "") == "never";
+              return p.dump().find("hello") != std::string::npos && p.value("approvalPolicy", "") == "never"
+                  && p.value("sandboxPolicy", json()) == json({{"type", "dangerFullAccess"}}) && p.value("model", "") == "gpt-other";
           }).is_null(),
-          "as turn/start, with the approval policy of the mode");
+          "as turn/start, with approval policy and sandbox of the mode and the model");
+    codex.send({{"method", "model/rerouted"},
+                {"params", {{"threadId", "t-new"}, {"turnId", "u1"}, {"fromModel", "gpt-other"}, {"toModel", "gpt-small"}, {"reason", "highRiskCyberActivity"}}}});
+    const json rerouted = a.next("attention", [](const json &m) { return m.value("kind", "") == "model"; });
+    check(rerouted.value("text", "").find("gpt-small") != std::string::npos, "Codex rerouting the model is an attention: " + rerouted.dump());
+    check(!waitSession(a, "t-new", [](const json &s) { return sub(s, "usage").value("model", "") == "gpt-small"; }).empty(), "and usage.model follows");
+    codex.send({{"method", "thread/settings/updated"},
+                {"params", {{"threadId", "t-new"}, {"threadSettings", {{"approvalPolicy", "on-request"}, {"sandboxPolicy", {{"type", "readOnly"}}}, {"model", "gpt-small"}}}}}});
+    check(!waitSession(a, "t-new", [](const json &s) { return s.value("mode", "") == "read-only"; }).empty(), "settings updates move the mode");
     codex.send({{"method", "turn/started"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u1"}}}}}});
     codex.send({{"method", "item/completed"},
                 {"params", {{"threadId", "t-new"}, {"item", {{"type", "agentMessage"}, {"id", "i2"}, {"text", "Answer.\n\xF0\x9F\x94\x8A Spoken."}}}}}});
@@ -1289,7 +1309,7 @@ int main(int argc, char **argv)
     check(found.size() == 1 && found[0].value("id", "") == "c0ffee00-1111-2222-3333-444455556666"
               && found[0].value("title", "") == "Erste Frage hier" && found[0].value("at", 0LL) > 0,
           "claude conversations: " + found.dump());
-    check(welcome.value("forget", false), "welcome.forget");
+    check(welcome.value("forget", false) && welcome.value("model", false), "welcome.forget and welcome.model");
     // forget: deletes an ended conversation and what lies beside it.
     writeFile(transcripts + "/feedface-2222-3333-4444-555566667777.jsonl", userLine("Weg damit"));
     writeFile(transcripts + "/feedface-2222-3333-4444-555566667777/subagents/agent-1.jsonl", userLine("sub"));

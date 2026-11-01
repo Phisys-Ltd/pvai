@@ -35,6 +35,27 @@ json dialogInfo(const std::string &tool, const std::string &text, const std::str
     return info;
 }
 
+void Session::modelEvent(const json &ref, const std::string &model, const std::string &state, const std::string &error)
+{
+    json event = {{"type", "model"}, {"ref", ref}, {"session", id_}, {"state", state}, {"model", model}};
+    if (!error.empty())
+        event["error"] = error;
+    host_.broadcast(event);
+}
+
+void Session::noteModel(const std::string &model, const std::string &why)
+{
+    if (model.empty() || (usage_.is_object() && usage_.value("model", json()) == json(model)))
+        return;
+    const std::string before = usage_.is_object() && usage_.value("model", json()).is_string() ? usage_["model"].get<std::string>() : "";
+    if (!usage_.is_object())
+        usage_ = json::object();
+    usage_["model"] = model;
+    if (!why.empty())
+        attention("model", (before.empty() ? "" : before + " \xE2\x86\x92 ") + model + " (" + why + ")");
+    changed();
+}
+
 void Session::modeEvent(const json &ref, const std::string &state, const std::string &error)
 {
     json event = {{"type", "mode"}, {"ref", ref}, {"session", id_}, {"state", state}, {"mode", mode_}};

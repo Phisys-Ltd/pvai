@@ -469,6 +469,23 @@ private:
             peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"session", id}, {"reason", reason}});
     }
 
+    void onModel(Peer *peer, const json &message)
+    {
+        const json ref = message.value("ref", json());
+        const std::string id = message.value("session", "");
+        const std::string model = message.value("model", "");
+        Session *session = this->session(id);
+        std::string reason = !session ? "unknown-session" : "";
+        // A model's name or alias: letters, digits, . - _ [ ] and no more than 80.
+        if (reason.empty() && (model.empty() || model.size() > 80
+                               || model.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_[]:/") != std::string::npos))
+            reason = "bad-model";
+        if (reason.empty())
+            reason = session->setModel(model, ref);
+        if (!reason.empty())
+            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"session", id}, {"reason", reason}});
+    }
+
     // ---- Install and login from the app (setup.h) ----
 
     void onInstall(Peer *peer, const json &message)
@@ -539,7 +556,7 @@ private:
         }
         return {{"type", "welcome"}, {"host", hostName()},       {"version", kVersion},
                 {"assistants", assistants}, {"installed", installed}, {"conversations", true},
-                {"peers", true}, {"forget", true}};
+                {"peers", true}, {"forget", true}, {"model", true}};
     }
 
     void handle(Peer *peer, const json &message)
@@ -648,6 +665,8 @@ private:
             onForget(peer, message);
         else if (type == "install")
             onInstall(peer, message);
+        else if (type == "model")
+            onModel(peer, message);
         else if (type == "mode")
             onMode(peer, message);
         else if (type == "login" || type == "login-code" || type == "login-cancel")

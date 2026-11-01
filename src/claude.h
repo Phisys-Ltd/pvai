@@ -44,6 +44,7 @@ public:
     void onDialog(const std::string &kind);
     void onScreen(const std::string &text, bool prompt, const std::string &mode = {});
     std::string setMode(const std::string &mode, const json &ref) override;
+    std::string setModel(const std::string &model, const json &ref) override;
     void onExited(int status, const std::string &screen);
     void onTyped(bool ok, const std::string &screen);
     void onSnapshot(const std::string &screen);

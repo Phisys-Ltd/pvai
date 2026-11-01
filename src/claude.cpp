@@ -388,6 +388,15 @@ std::string ClaudeSession::restart()
     return {};
 }
 
+// Claude Code's own /model, queued like a prompt: it goes in when the
+// prompt is free, and the status line shows the model from then on.
+std::string ClaudeSession::setModel(const std::string &model, const json &ref)
+{
+    prompt({"/model " + model, false, json()});
+    modelEvent(ref, model, "done");
+    return {};
+}
+
 // The wrapper empties the box; its `draft` and `screen` say when it is
 // free, and the queue goes on from there.
 std::string ClaudeSession::clear()

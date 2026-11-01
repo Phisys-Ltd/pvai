@@ -188,10 +188,19 @@ void CodexSession::submit(const Prompt &prompt)
     const bool compact = prompt.text == "/compact";
     json params = compact ? json{{"threadId", id}}
                           : json{{"threadId", id}, {"input", {{{"type", "text"}, {"text", text}, {"text_elements", json::array()}}}}};
-    // A mode set since the last turn: it holds for this one and the next.
+    // A mode or model set since the last turn: it holds for this one and
+    // the ones after.
     if (!compact && !approval_.empty()) {
         params["approvalPolicy"] = approval_;
         approval_.clear();
+    }
+    if (!compact && !sandbox_.is_null()) {
+        params["sandboxPolicy"] = sandbox_;
+        sandbox_ = nullptr;
+    }
+    if (!compact && !model_.empty()) {
+        params["model"] = model_;
+        model_.clear();
     }
     backend_.call(compact ? "thread/compact/start" : "turn/start", params,
                   [&host, id](const json &, const json &error) {
@@ -234,26 +243,63 @@ void CodexSession::reply(bool allow)
     }
 }
 
-void CodexSession::setApproval(const json &policy)
+namespace {
+
+// Codex's three permission presets (as its /permissions picker): approval
+// policy and sandbox together.
+struct CodexPreset {
+    const char *id, *name, *approval, *sandbox;
+};
+constexpr CodexPreset kCodexPresets[] = {
+    {"read-only", "Read only", "on-request", "readOnly"},
+    {"auto", "Auto", "on-request", "workspaceWrite"},
+    {"full-access", "Full access", "never", "dangerFullAccess"},
+};
+
+} // namespace
+
+void CodexSession::setSettings(const json &approval, const json &sandbox, const json &model)
 {
-    // A granular policy (an object) is none of the modes.
-    const json mode = policy.is_string() ? policy : json();
+    // Another combination (a granular policy, untrusted, an external
+    // sandbox) is none of the presets: no mode.
+    json mode;
+    const std::string type = sandbox.is_object() ? str(sandbox, "type") : "";
+    for (const auto &preset : kCodexPresets)
+        if (approval.is_string() && approval.get<std::string>() == preset.approval && type == preset.sandbox)
+            mode = preset.id;
+    if (!sandbox.is_object() && approval.is_string()) // no sandbox in the answer: keep what we know
+        mode = mode_;
     if (mode != mode_) {
         mode_ = mode;
         changed();
     }
+    if (model.is_string())
+        noteModel(model.get<std::string>());
 }
 
-// Codex's approval policies; the sandbox stays as configured. The new one
-// goes with the next turn/start (the app server takes it from there on).
+// A preset goes with the next turn/start, approval policy and sandbox
+// together; the app server keeps them from there on.
 std::string CodexSession::setMode(const std::string &mode, const json &ref)
 {
-    if (mode != "untrusted" && mode != "on-request" && mode != "never")
-        return "unknown-mode";
-    approval_ = mode;
-    mode_ = mode;
-    changed();
-    modeEvent(ref, "done");
+    for (const auto &preset : kCodexPresets) {
+        if (mode != preset.id)
+            continue;
+        approval_ = preset.approval;
+        sandbox_ = {{"type", preset.sandbox}};
+        mode_ = mode;
+        changed();
+        modeEvent(ref, "done");
+        return {};
+    }
+    return "unknown-mode";
+}
+
+// The model goes with the next turn/start and holds from there.
+std::string CodexSession::setModel(const std::string &model, const json &ref)
+{
+    model_ = model;
+    noteModel(model);
+    modelEvent(ref, model, "done");
     return {};
 }
 
@@ -455,6 +501,13 @@ void CodexSession::onNotification(const std::string &method, const json &params)
             dialogInfo_ = nullptr;
         deliver();
         changed();
+    } else if (method == "model/rerouted") {
+        // Codex moved the turn to another model on its own (a limit, a
+        // capacity problem): the app hears it.
+        noteModel(str(params, "toModel"), str(params, "reason").empty() ? "rerouted" : str(params, "reason"));
+    } else if (method == "thread/settings/updated") {
+        const json settings = params.value("threadSettings", json());
+        setSettings(settings.value("approvalPolicy", json()), settings.value("sandboxPolicy", json()), settings.value("model", json()));
     } else if (method == "turn/started") {
         turnId_ = str(params.value("turn", json()), "id");
         turnPending_ = false;
@@ -562,9 +615,10 @@ CodexBackend::CodexBackend(Host &host)
 
 json CodexBackend::modes() const
 {
-    return json::array({{{"id", "untrusted"}, {"name", "Ask always"}},
-                        {{"id", "on-request"}, {"name", "Ask"}},
-                        {{"id", "never"}, {"name", "Never ask"}}});
+    json modes = json::array();
+    for (const auto &preset : kCodexPresets)
+        modes.push_back({{"id", preset.id}, {"name", preset.name}});
+    return modes;
 }
 
 void CodexBackend::findProgram()
@@ -884,7 +938,7 @@ void CodexBackend::adopt(const std::string &id)
             return;
         if (result["thread"].value("parentThreadId", json()).is_null()) {
             if (CodexSession *session = addSession(result["thread"], false))
-                session->setApproval(result.value("approvalPolicy", json()));
+                session->setSettings(result.value("approvalPolicy", json()), result.value("sandbox", json()), result.value("model", json()));
         } else
             noteSubagent(result["thread"]);
     });
@@ -1001,7 +1055,7 @@ void CodexBackend::start(const StartRequest &request, Started done)
         if (!session)
             return done({}, failure);
         session->setLabel(label);
-        session->setApproval(result.value("approvalPolicy", json()));
+        session->setSettings(result.value("approvalPolicy", json()), result.value("sandbox", json()), result.value("model", json()));
         done(session->id(), {});
     };
     if (request.resume.empty()) {

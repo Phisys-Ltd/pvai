@@ -399,6 +399,25 @@ std::string KimiSession::setMode(const std::string &mode, const json &ref)
     return {};
 }
 
+// Kimi's `model` option; the answer has the options again, with the new
+// current value.
+std::string KimiSession::setModel(const std::string &model, const json &ref)
+{
+    Host &host = host_;
+    const std::string id = id_;
+    backend_.call("session/set_config_option", {{"sessionId", id_}, {"configId", "model"}, {"value", model}},
+                  [&host, id, model, ref](const json &result, const json &error) {
+                      auto *self = dynamic_cast<KimiSession *>(host.session(id));
+                      if (!self)
+                          return;
+                      if (!error.is_null())
+                          return self->modelEvent(ref, model, "failed", str(error, "message"));
+                      self->setConfig(result);
+                      self->modelEvent(ref, model, "done");
+                  });
+    return {};
+}
+
 void KimiSession::setConfig(const json &result)
 {
     if (const json modes = result.value("modes", json()); modes.is_object() && !str(modes, "currentModeId").empty())

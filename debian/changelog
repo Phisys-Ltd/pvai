@@ -1,3 +1,16 @@
+pvai (0.5.34-1) trixie; urgency=medium
+
+  * Codex's modes are its three permission presets, approval policy and
+    sandbox together: read-only, auto, full-access (Full access was not
+    reachable from the app before). The approval-only modes are gone.
+  * New app command `model`: switches a running session's model (Claude
+    Code with /model, Codex with the next turn, Kimi with its model
+    option); welcome says `model: true`.
+  * Codex's model/rerouted and thread/settings/updated: usage.model and the
+    mode follow, a reroute is an attention of kind "model".
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 01 Nov 2026 20:50:00 +0100
+
 pvai (0.5.33-1) trixie; urgency=medium
 
   * Claude Code's AskUserQuestion: dialogInfo.questions lists every question

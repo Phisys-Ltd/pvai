@@ -29,8 +29,10 @@ public:
 
     std::string answer(const std::string &choice) override;
     std::string setMode(const std::string &mode, const json &ref) override;
-    // The thread's approval policy (thread/start, resume): its mode.
-    void setApproval(const json &policy);
+    std::string setModel(const std::string &model, const json &ref) override;
+    // The thread's settings (thread/start and resume answers, settings
+    // updates): its mode from approval policy and sandbox, its model.
+    void setSettings(const json &approval, const json &sandbox, const json &model);
     std::string stop() override;
     void interrupt() override;
     json history(int limit) override;
@@ -62,6 +64,8 @@ private:
     std::map<std::string, std::string> files_;   // a file change's paths by item id, while it runs
     std::string answer_;       // the turn's last agent message so far
     std::string approval_;     // a new approval policy for the next turn/start
+    json sandbox_;             // a new sandbox policy for it
+    std::string model_;        // a new model for it
 };
 
 class CodexBackend : public Backend {

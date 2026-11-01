@@ -25,6 +25,7 @@ public:
 
     std::string answer(const std::string &choice) override;
     std::string setMode(const std::string &mode, const json &ref) override;
+    std::string setModel(const std::string &model, const json &ref) override;
     std::string stop() override;
     void interrupt() override;
     json history(int limit) override;

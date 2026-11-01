@@ -322,6 +322,7 @@ App to daemon:
 | `conversations` | `assistant`, `cwd` | the ended conversations of that assistant in `cwd` (see "Ended conversations") |
 | `forget` | `ref`, `assistant`, `cwd`, `id` | delete an ended conversation for good (see "Ended conversations") |
 | `update` | `ref` | update every assistant on this host to its latest version (see "Versions and updates") |
+| `model` | `ref`, `session`, `model` | (since 0.5.34) switch the session's model; a `model` event follows (see "Models") |
 | `mode` | `ref`, `session`, `mode` | (since 0.5.25) switch the session's permission mode to one of its assistant's `modes`; a `mode` event follows (see "Permission modes") |
 | `install` | `ref`, `assistant` | (since 0.5.24) install an assistant for the daemon's user, only on the owner's click (see "Install and login") |
 | `login` | `ref`, `assistant` | (since 0.5.24) log an assistant in on this host: a link and a code for the owner (see "Install and login") |
@@ -359,7 +360,7 @@ Daemon to app:
 | `projects` | `dirs: [path]` | most recently used first |
 | `browse` | `path`, `dirs: [name]`, `ok` | sorted, hidden ones left out; `ok: false` when `path` cannot be read |
 | `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn's prompt was spoken |
-| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the dialog's first line). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual |
+| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the dialog's first line). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models") |
 | `history` | `session`, `entries: [Entry]` | answer to `subscribe`, oldest first; sent again, to every subscriber, when the session moves to another transcript (`/clear`): the view starts over |
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
 | `conversations` | `assistant`, `cwd`, `conversations: [Conversation]` | answer to `conversations` |
@@ -367,6 +368,7 @@ Daemon to app:
 | `updated` | `ref`, `installed`, `changed`, `errors` | answer to `update` |
 | `install` | `ref`, `assistant`, `state`, `step`, `text`, `error` | an install's progress, to every app: `state` `running`, then `done` or `failed` (`error` why); `step` `download` (claude), `node`, `npm` (codex, kimi), `check`; `text` the last line of output |
 | `login` | `ref`, `assistant`, `state`, `url`, `code`, `text`, `error` | a login's progress, to every app: `state` `waiting` (show `url` and `code`; the owner signs in in a browser), `code-needed` (Claude Code: the page shows a code, send it with `login-code`), `done` or `failed` (`error`: why, also `cancelled` and `timed out`) |
+| `model` | `ref`, `session`, `model`, `state`, `error` | a model change ended, to every app: `done` or `failed` (see "Models"); `rejected` before (`unknown-session`, `bad-model`, `not-supported`) |
 | `mode` | `ref`, `session`, `state`, `mode`, `error` | a mode change ended, to every app: `state` `done` (`mode` the new one) or `failed` (`error`: `unavailable`, the mode is not in this session's cycle; `no change on the screen`; Kimi's own words); `rejected` before (`unknown-session`, `unknown-mode`, `not-supported`, `busy`) |
 | `assistants` | `assistants`, `installed` | (since 0.5.24) `welcome.assistants` and `welcome.installed` again, to every app, when an install or a login changed them |
 | `proposals` | `proposals: [Proposal]` | the agent messages waiting for the owner, sent after `welcome` and after every change (see "Agent messages") |
@@ -698,13 +700,41 @@ as `[{"id", "name"}]`, the session shows its current one as `mode`, and
   dialog is open (`busy`), and only under a `pvai run` of 0.5.25 or later
   (`not-supported`), which reports the footer. It holds for that session;
   Claude Code's settings stay as they are.
-- Codex: the approval policy, `untrusted` (Ask always), `on-request`
-  (Ask), `never` (Never ask); the sandbox stays as
-  configured. It goes with the next turn (`turn/start`) and holds from
-  there; `done` at once.
+- Codex (since 0.5.34): its three permission presets, approval policy and
+  sandbox together: `read-only` (Read only: `on-request`, read-only
+  sandbox), `auto` (Auto: `on-request`, writes in the workspace),
+  `full-access` (Full access: `never`, no sandbox). They go with the next
+  turn (`turn/start`) and hold from there; `done` at once. The session's
+  `mode` follows the thread's settings (start, resume,
+  `thread/settings/updated`); any other combination (`untrusted`, a
+  granular policy) shows as `null`. The approval-only modes of 0.5.25
+  (`untrusted`, `on-request`, `never`) are gone.
 - Kimi: its ACP modes as it lists them (`default` Ask, `plan` Plan,
   `auto` Auto, `yolo` YOLO; Kimi's own name for any other), with
   `session/set_mode`.
+
+## Models
+
+Since 0.5.34 (`welcome.model: true`) `{"type": "model", "ref", "session",
+"model"}` switches a running session's model; `model` is one of
+`welcome.assistants[].models` or any name the assistant takes (letters,
+digits, `.-_[]:/`, at most 80; else `rejected` with `bad-model`). The
+answer is `{"type": "model", "ref", "session", "model", "state": "done" |
+"failed", "error"?}` to every app; `usage.model` shows what runs.
+
+- Claude Code: its own `/model <name>`, queued like a prompt (it goes in
+  when the prompt is free); `done` once queued, `usage.model` follows from
+  the status line.
+- Codex: with the next turn (`turn/start` `model`), holding from there;
+  `done` at once and `usage.model` is the new one.
+- Kimi: its `model` option (`session/set_config_option`); `done` or
+  `failed` with Kimi's error.
+
+When the assistant changes the model on its own, `usage.model` follows and,
+where the assistant says so, the apps get `{"type": "attention", "session",
+"kind": "model", "text": "<old> → <new> (<reason>)"}`: Codex's
+`model/rerouted` (a limit, a capacity or safety reason). Claude Code's
+fallback shows in `usage.model` only (its status line).
 
 ## Install and login
 
