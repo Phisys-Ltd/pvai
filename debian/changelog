@@ -1,3 +1,10 @@
+pvai (0.5.35-1) trixie; urgency=medium
+
+  * welcome carries user, the login name the daemon runs as, so the app
+    can show user@host like ssh.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 01 Nov 2026 22:29:27 +0100
+
 pvai (0.5.34-1) trixie; urgency=medium
 
   * Codex's modes are its three permission presets, approval policy and

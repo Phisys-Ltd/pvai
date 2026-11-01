@@ -554,7 +554,7 @@ private:
             if (!backend->installed().empty())
                 installed[backend->name()] = backend->installed();
         }
-        return {{"type", "welcome"}, {"host", hostName()},       {"version", kVersion},
+        return {{"type", "welcome"}, {"host", hostName()}, {"user", userName()}, {"version", kVersion},
                 {"assistants", assistants}, {"installed", installed}, {"conversations", true},
                 {"peers", true}, {"forget", true}, {"model", true}};
     }

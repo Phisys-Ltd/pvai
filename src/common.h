@@ -27,6 +27,7 @@ std::string configDir();  // ~/.config/pvai, created when missing
 std::string token();      // created on first use, mode 0600
 std::string selfExe();
 std::string hostName();   // short, without the domain
+std::string userName();   // the user the process runs as
 std::string randomHex(std::size_t bytes);
 // `name` in PATH, ~/.local/bin, /usr/local/bin or /opt/homebrew/bin (the
 // daemon may run with a bare PATH); empty when there is none.

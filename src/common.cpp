@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <pwd.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -134,6 +135,13 @@ std::string hostName()
     if (const auto dot = name.find('.'); dot != std::string::npos)
         name.resize(dot);
     return name;
+}
+
+std::string userName()
+{
+    if (const passwd *entry = ::getpwuid(::geteuid()); entry && entry->pw_name)
+        return entry->pw_name;
+    return std::to_string(::geteuid());
 }
 
 const char *const kVoiceContext =

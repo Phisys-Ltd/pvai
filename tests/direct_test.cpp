@@ -222,6 +222,8 @@ struct Client {
         const json answer = json::parse(readLine(), nullptr, false);
         if (!answer.is_object() || answer.value("type", "") != "welcome")
             return false;
+        if (answer.value("user", "").empty()) // the user the daemon runs as
+            return false;
         readLine(); // the session list and the proposals that follow
         readLine();
         return true;

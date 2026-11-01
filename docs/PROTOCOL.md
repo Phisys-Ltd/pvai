@@ -346,7 +346,7 @@ Daemon to app:
 
 | type | fields | meaning |
 |---|---|---|
-| `welcome` | `host`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget` |
+| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget` |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
