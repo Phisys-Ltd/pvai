@@ -981,6 +981,30 @@ void ClaudeBackend::conversations(const std::string &cwd, std::function<void(std
     done(std::move(out));
 }
 
+// The transcript and what Claude Code keeps beside it under the same id
+// (a folder with subagents' transcripts and tool results); a running
+// session's conversation stays.
+void ClaudeBackend::forget(const std::string &cwd, const std::string &id, std::function<void(const std::string &)> done)
+{
+    if (!goodConversationId(id))
+        return done("unknown-conversation");
+    for (Session *session : host_.sessions())
+        if (const auto *claude = dynamic_cast<ClaudeSession *>(session); claude && claude->claudeSession() == id)
+            return done("running");
+    const std::filesystem::path dir = projectDir(cwd);
+    const std::filesystem::path transcript = dir / (id + ".jsonl");
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(transcript, ec))
+        return done("unknown-conversation");
+    if (!std::filesystem::remove(transcript, ec) || ec)
+        return done("failed");
+    const std::filesystem::path beside = dir / id;
+    if (std::filesystem::is_directory(std::filesystem::symlink_status(beside, ec)))
+        std::filesystem::remove_all(beside, ec);
+    host_.log("conversation " + id + " in " + cwd + " deleted");
+    done({});
+}
+
 // `pvai run --detached`, which registers like any other wrapper.
 json ClaudeBackend::claudeModes()
 {

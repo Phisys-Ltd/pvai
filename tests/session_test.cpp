@@ -1239,6 +1239,22 @@ int main(int argc, char **argv)
     check(found.size() == 1 && found[0].value("id", "") == "c0ffee00-1111-2222-3333-444455556666"
               && found[0].value("title", "") == "Erste Frage hier" && found[0].value("at", 0LL) > 0,
           "claude conversations: " + found.dump());
+    check(welcome.value("forget", false), "welcome.forget");
+    // forget: deletes an ended conversation and what lies beside it.
+    writeFile(transcripts + "/feedface-2222-3333-4444-555566667777.jsonl", userLine("Weg damit"));
+    writeFile(transcripts + "/feedface-2222-3333-4444-555566667777/subagents/agent-1.jsonl", userLine("sub"));
+    a.send({{"type", "forget"}, {"ref", 50}, {"assistant", "claude"}, {"cwd", project}, {"id", "feedface-2222-3333-4444-555566667777"}});
+    json forgotten = a.next("forgotten");
+    check(forgotten.value("ref", 0) == 50 && forgotten.value("id", "") == "feedface-2222-3333-4444-555566667777", "forgotten: " + forgotten.dump());
+    check(!fs::exists(transcripts + "/feedface-2222-3333-4444-555566667777.jsonl") && !fs::exists(transcripts + "/feedface-2222-3333-4444-555566667777"),
+          "the transcript and its folder are gone");
+    a.send({{"type", "forget"}, {"ref", 51}, {"assistant", "claude"}, {"cwd", project}, {"id", "running-1"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 51; }).value("reason", "") == "running", "not a running one");
+    check(fs::exists(transcripts + "/running-1.jsonl"), "which stays");
+    a.send({{"type", "forget"}, {"ref", 52}, {"assistant", "claude"}, {"cwd", project}, {"id", "../../etc/passwd"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 52; }).value("reason", "") == "unknown-conversation", "a bad id");
+    a.send({{"type", "forget"}, {"ref", 53}, {"assistant", "codex"}, {"cwd", project}, {"id", "t-arch"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 53; }).value("reason", "") == "not-supported", "Codex: not yet");
     a.send({{"type", "start"}, {"ref", 15}, {"assistant", "claude"}, {"cwd", project}, {"resume", "../../etc/passwd"}});
     check(a.next("rejected").value("reason", "") == "unknown-conversation", "a bad id is unknown-conversation");
     a.send({{"type", "start"}, {"ref", 16}, {"assistant", "claude"}, {"cwd", project}, {"resume", "c0ffee00-1111-2222-3333-444455556666"}});

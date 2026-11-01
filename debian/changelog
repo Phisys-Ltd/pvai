@@ -1,3 +1,12 @@
+pvai (0.5.31-1) trixie; urgency=medium
+
+  * New app command `forget` (and `pvai forget DIR ID`): deletes an ended
+    Claude Code conversation for good, its transcript and the folder beside
+    it, so the list to go on with gets shorter. Not a running one; Codex and
+    Kimi answer not-supported for now. welcome says `forget: true`.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 01 Nov 2026 19:00:00 +0100
+
 pvai (0.5.30-1) trixie; urgency=medium
 
   * A prompt box in shell mode (it starts with "!", for example a command

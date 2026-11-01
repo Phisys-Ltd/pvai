@@ -168,6 +168,7 @@ public:
     static json claudeModes();
 
     void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) override;
+    void forget(const std::string &cwd, const std::string &id, std::function<void(const std::string &)> done) override;
     void start(const StartRequest &request, Started done) override;
 
     // A wrapper registered: its session, of the kind it says.

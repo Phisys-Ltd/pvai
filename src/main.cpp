@@ -58,6 +58,7 @@ const char *kUsage =
     "       pvai attach SESSION                        a terminal onto such a session (Ctrl+\\ leaves it)\n"
     "       pvai sessions                              list this host's sessions\n"
     "       pvai answer SESSION allow|deny             answer the dialog a session waits on\n"
+    "       pvai forget DIR ID                         delete an ended Claude Code conversation in DIR for good\n"
     "       pvai clear SESSION                         empty a session's prompt box (a draft, a shell command)\n"
     "       pvai stop SESSION                          end a session started with start\n"
     "       pvai send [--voice] SESSION TEXT           type TEXT into a session (for tests)\n"
@@ -262,7 +263,7 @@ int localClient(const json &first, bool follow, bool startDaemon = false)
         for (const auto &message : messages) {
             std::cout << message.dump() << std::endl;
             const std::string type = message.is_object() ? message.value("type", "") : "";
-            if (!follow && (type == "accepted" || type == "answered" || type == "cleared" || type == "started" || type == "stopping"))
+            if (!follow && (type == "accepted" || type == "answered" || type == "cleared" || type == "forgotten" || type == "started" || type == "stopping"))
                 return 0;
             if (!follow && (type == "rejected" || (type == "sessions" && first.is_null())))
                 return type == "rejected" ? 1 : 0;
@@ -889,6 +890,8 @@ int main(int argc, char **argv)
             return localClient(nullptr, false);
         if (verb == "answer" && args.size() == 3)
             return localClient({{"type", "answer"}, {"ref", "cli"}, {"session", args[1]}, {"choice", args[2]}}, false);
+        if (verb == "forget" && args.size() == 3)
+            return localClient({{"type", "forget"}, {"ref", "cli"}, {"assistant", "claude"}, {"cwd", args[1]}, {"id", args[2]}}, false);
         if (verb == "clear" && args.size() == 2)
             return localClient({{"type", "clear"}, {"ref", "cli"}, {"session", args[1]}}, false);
         if (verb == "stop" && args.size() == 2)

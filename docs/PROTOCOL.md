@@ -284,6 +284,7 @@ App to daemon:
 | `prompt` | `ref`, `session`, `text`, `voice`, `from`, `fromLabel` | type `text` into that session; `ref` is the app's id for the answer; `voice: true` when the text was spoken; `from` and `fromLabel` only for an agent message the owner released (see "Agent messages") |
 | `start` | `ref`, `cwd`, `label`, `args`, `assistant`, `resume` | start a session in `cwd` (absolute) without a terminal; `label` optional; `assistant` one of `welcome.assistants` (default `claude`); `args` optional strings: extra arguments for `claude`; for Codex and Kimi only `-m`/`--model <model>` is read; `resume` optional: an id from `conversations`, to go on with that conversation instead of a new one (see "Ended conversations") |
 | `conversations` | `assistant`, `cwd` | the ended conversations of that assistant in `cwd` (see "Ended conversations") |
+| `forget` | `ref`, `assistant`, `cwd`, `id` | delete an ended conversation for good (see "Ended conversations") |
 | `update` | `ref` | update every assistant on this host to its latest version (see "Versions and updates") |
 | `mode` | `ref`, `session`, `mode` | (since 0.5.25) switch the session's permission mode to one of its assistant's `modes`; a `mode` event follows (see "Permission modes") |
 | `install` | `ref`, `assistant` | (since 0.5.24) install an assistant for the daemon's user, only on the owner's click (see "Install and login") |
@@ -308,7 +309,7 @@ Daemon to app:
 
 | type | fields | meaning |
 |---|---|---|
-| `welcome` | `host`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers` |
+| `welcome` | `host`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget` |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
@@ -326,6 +327,7 @@ Daemon to app:
 | `history` | `session`, `entries: [Entry]` | answer to `subscribe`, oldest first; sent again, to every subscriber, when the session moves to another transcript (`/clear`): the view starts over |
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
 | `conversations` | `assistant`, `cwd`, `conversations: [Conversation]` | answer to `conversations` |
+| `forgotten` | `ref`, `assistant`, `cwd`, `id` | answer to `forget`: the conversation is deleted |
 | `updated` | `ref`, `installed`, `changed`, `errors` | answer to `update` |
 | `install` | `ref`, `assistant`, `state`, `step`, `text`, `error` | an install's progress, to every app: `state` `running`, then `done` or `failed` (`error` why); `step` `download` (claude), `node`, `npm` (codex, kimi), `check`; `text` the last line of output |
 | `login` | `ref`, `assistant`, `state`, `url`, `code`, `text`, `error` | a login's progress, to every app: `state` `waiting` (show `url` and `code`; the owner signs in in a browser), `code-needed` (Claude Code: the page shows a code, send it with `login-code`), `done` or `failed` (`error`: why, also `cancelled` and `timed out`) |
@@ -633,6 +635,16 @@ closed, the host restarted):
    `detached`), Kimi with `session/load` (a detached session; Kimi plays
    the history back, its text only). An id that is not there is
    `rejected` with `unknown-conversation`.
+3. `{"type": "forget", "ref", "assistant", "cwd", "id"}` deletes an ended
+   conversation for good (since 0.5.31, `welcome.forget: true`), answered
+   with `{"type": "forgotten", "ref", "assistant", "cwd", "id"}`; the app
+   asks the owner first, nothing brings it back. Claude Code: the
+   transcript `<id>.jsonl` and the folder beside it with the same name
+   (subagents' transcripts, tool results). `rejected` (with `assistant`,
+   `cwd`, `id` echoed): `unknown-conversation` (no such id there),
+   `running` (a session goes on with it now), `not-supported` (Codex and
+   Kimi, for now), `unknown-assistant`, `bad-cwd`, `failed` (the file
+   could not be removed).
 
 ## Permission modes
 

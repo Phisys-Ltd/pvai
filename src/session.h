@@ -188,6 +188,12 @@ public:
     virtual void update(std::function<void(const UpdateResult &)> done);
 
     virtual void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) = 0;
+    // Deletes an ended conversation for good; `done` gets the reason for a
+    // `rejected`, or empty.
+    virtual void forget(const std::string &, const std::string &, std::function<void(const std::string &)> done)
+    {
+        done("not-supported");
+    }
     virtual void start(const StartRequest &request, Started done) = 0;
 
     // A process of this assistant that pvai started in the owner's terminal

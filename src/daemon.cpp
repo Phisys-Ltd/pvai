@@ -539,7 +539,7 @@ private:
         }
         return {{"type", "welcome"}, {"host", hostName()},       {"version", kVersion},
                 {"assistants", assistants}, {"installed", installed}, {"conversations", true},
-                {"peers", true}};
+                {"peers", true}, {"forget", true}};
     }
 
     void handle(Peer *peer, const json &message)
@@ -644,6 +644,8 @@ private:
             onStart(peer, message);
         else if (type == "conversations")
             onConversations(peer, message);
+        else if (type == "forget")
+            onForget(peer, message);
         else if (type == "install")
             onInstall(peer, message);
         else if (type == "mode")
@@ -749,6 +751,30 @@ private:
         if (!chosen || cwd.empty() || cwd[0] != '/')
             return answer({});
         chosen->conversations(cwd, answer);
+    }
+
+    void onForget(Peer *peer, const json &message)
+    {
+        const json ref = message.value("ref", json());
+        const std::string assistant = message.value("assistant", "claude");
+        const std::string cwd = message.value("cwd", "");
+        const std::string id = message.value("id", "");
+        const auto serial = peer->serial;
+        auto answer = [this, serial, ref, assistant, cwd, id](const std::string &reason) {
+            Peer *peer = peerBySerial(serial);
+            if (!peer)
+                return;
+            if (reason.empty())
+                peer->conn->send({{"type", "forgotten"}, {"ref", ref}, {"assistant", assistant}, {"cwd", cwd}, {"id", id}});
+            else
+                peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"assistant", assistant}, {"cwd", cwd}, {"id", id}, {"reason", reason}});
+        };
+        Backend *chosen = backend(assistant);
+        if (!chosen)
+            return answer("unknown-assistant");
+        if (cwd.empty() || cwd[0] != '/')
+            return answer("bad-cwd");
+        chosen->forget(cwd, id, answer);
     }
 
     // Updates every assistant installed here; running sessions keep the
