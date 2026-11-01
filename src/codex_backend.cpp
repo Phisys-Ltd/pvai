@@ -335,7 +335,7 @@ std::string CodexSession::stop()
         if (!error.is_null())
             backend.call("thread/unsubscribe", {{"threadId", id}});
     });
-    backend.forget(id);
+    backend.markStopped(id);
     end();
     return {};
 }

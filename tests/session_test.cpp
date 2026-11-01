@@ -1011,14 +1011,15 @@ int main(int argc, char **argv)
         hook("wver", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "v-1"}, {"prompt", "zwei"}});
         check(a.next("delivered").value("ref", 0) == 31, "and UserPromptSubmit delivers it");
         hook("wver", {{"hook_event_name", "Stop"}, {"session_id", "v-1"}, {"last_assistant_message", "Zwei."}});
+        // While its wrapper is still there: closing `ver` ends the session.
+        a.send({{"type", "clearInput"}, {"ref", 40}, {"session", "wver"}});
+        const json noClear = a.next("rejected", [](const json &m) { return m.value("ref", 0) == 40; });
+        check(noClear.value("reason", "") == "not-supported", "an older wrapper cannot clear: " + noClear.dump());
     }
 
     // clear (0.5.30): empties the prompt box, a draft or a command left in
     // shell mode, and the queue goes on.
     {
-        a.send({{"type", "clearInput"}, {"ref", 40}, {"session", "wver"}});
-        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 40; }).value("reason", "") == "not-supported",
-              "an older wrapper cannot clear");
         Client clr;
         clr.send({{"type", "register"}, {"id", "wclr"}, {"cwd", project}, {"label", "clr"}, {"restart", true}, {"verify", true}, {"clear", true}});
         hook("wclr", {{"hook_event_name", "SessionStart"}, {"session_id", "c-1"}, {"source", "startup"}});
