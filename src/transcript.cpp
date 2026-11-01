@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 
 #include <fstream>
@@ -91,13 +92,24 @@ bool element(const std::string &text, const std::string &tag, std::string &inner
     return true;
 }
 
-// Prompts Claude Code writes itself: command echoes, reminders, caveats.
+} // namespace
+
 bool isMachinePrompt(const std::string &text)
 {
-    return !text.empty() && text[0] == '<';
+    static const char *const kTags[] = {
+        "system-reminder", "task-notification", "local-command-caveat", "local-command-stdout",
+        "local-command-stderr", "command-name", "command-message", "command-args", "bash-input",
+        "bash-stdout", "bash-stderr", "artifact-content-authored-by-others", "user-prompt-submit-hook",
+    };
+    if (text.empty() || text[0] != '<')
+        return false;
+    for (const char *tag : kTags) {
+        const std::size_t n = std::strlen(tag);
+        if (text.compare(1, n, tag) == 0 && text.size() > n + 1 && std::strchr("> /\n", text[n + 1]))
+            return true;
+    }
+    return false;
 }
-
-} // namespace
 
 std::string commandFile(const std::string &command)
 {
@@ -153,7 +165,8 @@ bool turnRunning(const std::string &path)
                                    : content.is_array() && !content.empty() && content[0].is_object() ? content[0].value("text", "") : "";
             if (text.rfind("[Request interrupted by user", 0) == 0)
                 running = false;
-            else if (content.is_string() && text.rfind("<command-name>", 0) != 0 && text.rfind("<local-command", 0) != 0)
+            else if (content.is_string() && text.rfind("<command-name>", 0) != 0 && text.rfind("<local-command", 0) != 0
+                     && text.rfind("<bash-", 0) != 0)
                 running = true;
         } else if (type == "assistant") {
             running = true;
@@ -294,6 +307,22 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
             inner = stripAnsi(inner);
             if (inner.find_first_not_of(" \n") != std::string::npos)
                 emit({{"kind", "output"}, {"text", cut(inner, kMaxResult)}});
+        } else if (text.rfind("<bash-input>", 0) == 0 && element(text, "bash-input", inner)) {
+            // A shell command the owner typed with ! in Claude Code.
+            emit({{"kind", "command"}, {"text", "! " + inner}});
+        } else if (text.rfind("<bash-stdout>", 0) == 0 || text.rfind("<bash-stderr>", 0) == 0) {
+            std::string out, err;
+            element(text, "bash-stdout", out);
+            element(text, "bash-stderr", err);
+            out = stripAnsi(out);
+            err = stripAnsi(err);
+            const bool hasOut = out.find_first_not_of(" \n") != std::string::npos;
+            const bool hasErr = err.find_first_not_of(" \n") != std::string::npos;
+            std::string both = hasOut ? out : "";
+            if (hasErr)
+                both += (hasOut && both.back() != '\n' ? "\n" : "") + err;
+            if (hasOut || hasErr)
+                emit({{"kind", "output"}, {"text", cut(both, kMaxResult)}});
         } else if (!isMachinePrompt(text)) {
             emit({{"kind", "prompt"}, {"text", cut(text, kMaxText)}});
         }

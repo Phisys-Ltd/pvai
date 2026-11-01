@@ -20,6 +20,11 @@ namespace pvai {
 // several.
 std::string commandFile(const std::string &command);
 
+// A user line Claude Code wrote itself (reminders, task notifications,
+// command echoes and output, ! shell input and output), by its known
+// leading tag; an owner's prompt that starts with another tag is none.
+bool isMachinePrompt(const std::string &text);
+
 // Whether a turn runs now, from the end of a transcript: a prompt or an
 // answer of Claude's after the last turn end (Claude Code writes a
 // turn_duration line when a turn ends; an interrupt ends one too). False

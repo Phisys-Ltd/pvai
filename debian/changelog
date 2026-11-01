@@ -1,3 +1,14 @@
+pvai (0.5.28-1) trixie; urgency=medium
+
+  * Shell commands typed with ! in Claude Code reach the history: the
+    input as a command entry ("! ..."), stdout and stderr as an output
+    entry. They start no turn.
+  * Only Claude Code's own user lines are dropped, by their known leading
+    tags; an owner's prompt that starts with a tag of its own (XML, a
+    paste) is shown, and can title a conversation.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 01 Nov 2026 12:30:00 +0100
+
 pvai (0.5.27-1) trixie; urgency=medium
 
   * pvai install-service / uninstall-service: the daemon as a systemd user

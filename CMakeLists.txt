@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(pvai
-    VERSION 0.5.27
+    VERSION 0.5.28
     DESCRIPTION "pvai: Claude Code and Codex sessions reachable by voice from the PhiVoice AI app"
     LANGUAGES CXX
 )
@@ -63,6 +63,11 @@ if(BUILD_TESTING)
     add_executable(pvai-screen-test tests/screen_test.cpp src/screen.cpp)
     target_include_directories(pvai-screen-test PRIVATE src)
     add_test(NAME screen COMMAND pvai-screen-test)
+    add_executable(pvai-transcript-test tests/transcript_test.cpp src/transcript.cpp src/session.cpp src/common.cpp)
+    target_include_directories(pvai-transcript-test PRIVATE src)
+    target_compile_definitions(pvai-transcript-test PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
+    target_link_libraries(pvai-transcript-test PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
+    add_test(NAME transcript COMMAND pvai-transcript-test)
 endif()
 
 # libFuzzer on what a client may send before login (clang only):

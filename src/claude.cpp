@@ -89,7 +89,7 @@ std::string firstPrompt(const std::string &path)
                 if (str(part, "type") == "text")
                     text += str(part, "text");
         text = trim(text);
-        if (text.empty() || text[0] == '<')
+        if (text.empty() || isMachinePrompt(text))
             continue;
         if (text.rfind(kMicMark, 0) == 0)
             text = text.substr(std::string(kMicMark).size());

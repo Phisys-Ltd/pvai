@@ -753,8 +753,8 @@ a second.
 | `tool` | `tool`, `text`, `file` | a tool call; `text` is one line saying what it does; `file`, when present, names the file whose content the result shows (a `Read`, or a shell command that names exactly one file), so an app can colour it by its extension |
 | `result` | `tool`, `text`, `error` | what the tool returned, cut at 4 KiB |
 | `interrupted` | | the owner stopped the turn |
-| `command` | `text` | a slash command that ran in Claude Code itself (`/compact`, `/context`, `/model opus`) |
-| `output` | `text` | what such a command printed, terminal colours removed, cut at 4 KiB (empty output is not passed on) |
+| `command` | `text` | a slash command that ran in Claude Code itself (`/compact`, `/context`, `/model opus`), or a shell command the owner typed with `!` (`! git status`) |
+| `output` | `text` | what such a command printed (for `!`: stdout, then stderr), terminal colours removed, cut at 4 KiB (empty output is not passed on) |
 
 - `id` is unique per transcript; an app that reconnects and subscribes again
   replaces its view with the `history`.
