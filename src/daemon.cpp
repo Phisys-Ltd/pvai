@@ -1256,6 +1256,15 @@ private:
             setCloseOnExec(fd);
             const int one = 1;
             ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+            // At boot the address may not be up yet; bind to it anyway.
+#ifdef IP_FREEBIND
+            if (found->ai_family == AF_INET)
+                ::setsockopt(fd, IPPROTO_IP, IP_FREEBIND, &one, sizeof one);
+#endif
+#ifdef IPV6_FREEBIND
+            if (found->ai_family == AF_INET6)
+                ::setsockopt(fd, IPPROTO_IPV6, IPV6_FREEBIND, &one, sizeof one);
+#endif
             if (::bind(fd, found->ai_addr, found->ai_addrlen) != 0 || ::listen(fd, 16) != 0) {
                 const int saved = errno;
                 ::close(fd);

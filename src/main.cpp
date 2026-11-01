@@ -2,6 +2,7 @@
 #include "common.h"
 #include "pairing.h"
 #include "run.h"
+#include "service.h"
 #include "tls.h"
 
 #include <qrcodegen.hpp>
@@ -50,6 +51,8 @@ const char *kUsage =
     "       pvai install-hooks                         add the hooks and the status line to ~/.claude/settings.json\n"
     "                                                  (pvai run does that itself when they are missing)\n"
     "       pvai uninstall-hooks                       remove them again (a chained status line comes back)\n"
+    "       pvai install-service                       run the daemon as a systemd user service, also after a reboot\n"
+    "       pvai uninstall-service                     remove that service again (the running daemon stays)\n"
     "       pvai token                                 print the token the app needs (and start the daemon)\n"
     "       pvai start [--name LABEL] [DIR] [-- ARGS...] start Claude Code without a terminal\n"
     "       pvai attach SESSION                        a terminal onto such a session (Ctrl+\\ leaves it)\n"
@@ -906,6 +909,10 @@ int main(int argc, char **argv)
             return installHooks(false);
         if (verb == "uninstall-hooks")
             return uninstallHooks();
+        if (verb == "install-service" && args.size() == 1)
+            return installService();
+        if (verb == "uninstall-service" && args.size() == 1)
+            return uninstallService();
         if (verb == "token") {
             std::printf("%s\n", token().c_str());
             std::fflush(stdout);

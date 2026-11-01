@@ -55,7 +55,7 @@ released versions.
 The package installs `/usr/bin/pvai`, two firewall profiles for direct
 access (ufw and firewalld, see "Connect the app"; they open nothing) and a
 fail2ban filter and jail that are off (see "fail2ban"): no
-service, nothing in anyone's home directory. The daemon starts on demand, and each user sets pvai up
+service, nothing in anyone's home directory. The daemon starts on demand (or at boot, see "The daemon after a reboot"), and each user sets pvai up
 once (see "Set up per user").
 
 ### macOS with Homebrew
@@ -115,6 +115,25 @@ line you already had keeps printing: pvai calls it through
 changes. Before each change the previous file is kept as
 `~/.claude/settings.json.pvai-bak`. `pvai uninstall-hooks` takes the
 entries out again.
+
+**The daemon after a reboot.** On its own the daemon starts when something
+needs it (`pvai run`, `pvai token`), so after a reboot the app finds no
+host until then. On Linux with systemd,
+
+```
+pvai install-service
+```
+
+writes a user unit `~/.config/systemd/user/pvai.service` (with the pvai
+binary, `PATH` and locale of the shell it runs in), turns on lingering
+(`loginctl enable-linger`) so the user's systemd starts at boot without a
+login, and enables and starts the unit. It restarts the daemon when it
+fails; sessions outlive it as with `pvai daemon restart`, which then also
+goes through the service. A daemon that already runs outside the service
+moves in with `pvai daemon restart`. The direct-access address may come
+up after the daemon starts; it binds to it anyway. `pvai uninstall-service`
+removes the unit again and leaves lingering on. Logs: `journalctl --user
+-u pvai`.
 
 Then start Claude Code through pvai. With an alias in `~/.bashrc` or
 `~/.zshrc` nothing else changes for you:

@@ -1,3 +1,14 @@
+pvai (0.5.27-1) trixie; urgency=medium
+
+  * pvai install-service / uninstall-service: the daemon as a systemd user
+    service with lingering, so it runs after every boot; restarted on
+    failure, sessions outlive it. pvai run and pvai daemon restart start
+    it through the service when one is installed.
+  * Direct access binds its address even before the network brings it up
+    (IP_FREEBIND), so a daemon started at boot keeps it.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 01 Nov 2026 11:45:00 +0100
+
 pvai (0.5.26-1) trixie; urgency=medium
 
   * Short mode names, alike across assistants (Ask, Accept edits, Plan,

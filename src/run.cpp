@@ -4,6 +4,7 @@
 #include "common.h"
 #include "run.h"
 #include "screen.h"
+#include "service.h"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -66,6 +67,9 @@ void forwardSignal(int signal)
 
 void spawnDaemon()
 {
+    // Installed as a service: the daemon belongs to systemd, not to us.
+    if (startServiceDaemon())
+        return;
     const pid_t first = ::fork();
     if (first < 0)
         return;

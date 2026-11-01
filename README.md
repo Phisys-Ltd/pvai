@@ -51,6 +51,7 @@ The commands:
 ```
 pvai run -- claude                   # instead of plain `claude` (writes the hooks when needed)
 pvai install-hooks / uninstall-hooks # the hooks and status line in ~/.claude/settings.json
+pvai install-service                 # the daemon as a systemd user service, up after every boot
 pvai codex                           # instead of plain `codex`
 pvai start [--name L] DIR            # Claude Code without a terminal (as the app's +)
 pvai attach <session>                # look at / type into it; Ctrl+\ leaves it running

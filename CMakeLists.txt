@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(pvai
-    VERSION 0.5.26
+    VERSION 0.5.27
     DESCRIPTION "pvai: Claude Code and Codex sessions reachable by voice from the PhiVoice AI app"
     LANGUAGES CXX
 )
@@ -25,6 +25,7 @@ add_executable(pvai
     src/run.cpp
     src/screen.cpp
     src/setup.cpp
+    src/service.cpp
     src/hook.cpp
     src/pairing.cpp
     src/tls.cpp
