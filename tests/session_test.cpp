@@ -598,7 +598,7 @@ int main(int argc, char **argv)
     json welcome = a.next("welcome");
     const json assistants = welcome.value("assistants", json());
     check(assistants.size() == 3 && assistants[0].value("name", "") == "claude" && assistants[0].value("title", "") == "Claude Code"
-              && assistants[0].value("models", json()).size() == 3 && assistants[1].value("name", "") == "codex"
+              && assistants[0].value("models", json()).size() == 4 && assistants[1].value("name", "") == "codex"
               && assistants[2].value("name", "") == "kimi" && assistants[2].value("title", "") == "Kimi Code"
               && assistants[2].contains("loggedIn") && assistants[2]["loggedIn"].is_null()
               && assistants[0].value("installed", false) && assistants[1].value("installed", false) && assistants[2].value("installed", false),

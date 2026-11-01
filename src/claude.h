@@ -159,7 +159,7 @@ public:
 
     std::string name() const override { return "claude"; }
     std::string title() const override { return "Claude Code"; }
-    json models() const override { return {"opus", "sonnet", "haiku"}; }
+    json models() const override { return {"opus", "sonnet", "haiku", "fable"}; }
     // Sessions come from wrappers whatever the daemon's PATH says.
     bool available() const override { return true; }
     bool installedHere() const override { return !binary().empty(); }

@@ -1,3 +1,10 @@
+pvai (0.5.32-1) trixie; urgency=medium
+
+  * Claude Code's models: "fable" (Claude Code's alias for claude-fable-5-1)
+    joins opus, sonnet and haiku in welcome.assistants.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 01 Nov 2026 19:40:00 +0100
+
 pvai (0.5.31-1) trixie; urgency=medium
 
   * New app command `forget` (and `pvai forget DIR ID`): deletes an ended

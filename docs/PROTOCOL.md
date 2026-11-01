@@ -581,7 +581,7 @@ has open are Kimi's own and are not shown (Kimi locks them).
 order the app should offer them:
 
 ```json
-[{"name": "claude", "title": "Claude Code", "models": ["opus", "sonnet", "haiku"], "installed": true},
+[{"name": "claude", "title": "Claude Code", "models": ["opus", "sonnet", "haiku", "fable"], "installed": true},
  {"name": "codex", "title": "Codex", "models": ["<a Codex model>", "..."], "installed": true},
  {"name": "kimi", "title": "Kimi Code", "models": ["<a Kimi model>"], "installed": true, "loggedIn": false}]
 ```
