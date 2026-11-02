@@ -1,4 +1,5 @@
 #include "screen.h"
+#include "text.h"
 
 #include <algorithm>
 #include <cctype>
@@ -138,18 +139,10 @@ char32_t decode(const std::string &s)
     return cp;
 }
 
-std::string trim(const std::string &s)
-{
-    const auto from = s.find_first_not_of(' ');
-    if (from == std::string::npos)
-        return {};
-    return s.substr(from, s.find_last_not_of(' ') - from + 1);
-}
-
 // A row that is only a rule or a box edge: "────", "▔▔▔▔", "╭───╮", "╰───╯".
 bool isRule(const std::string &row)
 {
-    const std::string t = trim(row);
+    const std::string t = trim(row, " ");
     if (t.empty())
         return false;
     for (std::size_t i = 0; i < t.size();) {
@@ -195,10 +188,7 @@ std::string joinLines(std::vector<std::string> lines)
         out += it->empty() ? *it : it->substr(indent);
     }
     if (out.size() > 2000) {
-        std::size_t at = 2000;
-        while (at > 0 && (static_cast<unsigned char>(out[at]) & 0xc0) == 0x80)
-            --at;
-        out.resize(at);
+        out.resize(utf8Boundary(out, 2000));
     }
     return out;
 }
@@ -522,9 +512,9 @@ std::string screenDialog(const Screen &screen)
     int footer = -1, seen = 0;
     for (int r = screen.rows() - 1; r >= 0 && seen < 2 && footer < 0; --r) {
         const std::string row = screen.row(r);
-        if (trim(row).empty())
+        if (trim(row, " ").empty())
             continue;
-        if (++seen == 1 && trim(row) == "\xE2\x86\x93") { // ↓
+        if (++seen == 1 && trim(row, " ") == "\xE2\x86\x93") { // ↓
             footer = r - 1;
             break;
         }
@@ -599,7 +589,7 @@ std::string screenMode(const Screen &screen)
     int seen = 0;
     for (int r = screen.rows() - 1; r >= 0 && seen < 6; --r) {
         std::string row = screen.row(r);
-        if (trim(row).empty())
+        if (trim(row, " ").empty())
             continue;
         ++seen;
         for (char &c : row)
@@ -617,7 +607,7 @@ std::string screenSnapshot(const Screen &screen)
     std::vector<std::string> lines; // bottom up, as screenDialog collects them
     for (int r = screen.rows() - 1; r >= 0 && lines.size() < 20; --r) {
         const std::string row = screen.row(r);
-        if (trim(row).empty()) {
+        if (trim(row, " ").empty()) {
             if (!lines.empty() && !lines.back().empty())
                 lines.push_back({});
             continue;

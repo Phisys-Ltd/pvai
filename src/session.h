@@ -7,6 +7,7 @@
 #pragma once
 
 #include "common.h"
+#include "text.h"
 
 #include <chrono>
 #include <deque>
@@ -235,17 +236,11 @@ protected:
     bool updating_ = false;
 };
 
-// Shared text helpers.
-std::string trim(const std::string &s);
+// Shared text helpers (trim, cut, oneLine and str are in text.h).
 // The last line that starts with 🔊, without the marker.
 std::string speakLine(const std::string &answer);
 // The first sentence of an answer as plain text, at most about 200 bytes.
 std::string firstSentence(const std::string &answer);
-// Cut to `limit` bytes at a character boundary, with … when cut.
-std::string cut(std::string text, std::size_t limit);
-// One line of at most `limit` bytes: control characters dropped, trimmed.
-std::string oneLine(const std::string &text, std::size_t limit);
-std::string str(const json &object, const char *key);
 std::string basename(const std::string &path);
 std::string isoTime(long long ms);
 // The first word of a `--version` output that starts with a digit.
@@ -253,8 +248,6 @@ std::string versionIn(const std::string &output);
 
 extern const char *const kMicMark;   // 🎙 + space
 extern const char *const kSpeakMark; // 🔊
-constexpr std::size_t kMaxResult = 4 * 1024;
-constexpr std::size_t kMaxText = 64 * 1024;
 constexpr std::size_t kMaxConversations = 20;
 constexpr std::size_t kTitleMax = 80;
 constexpr std::size_t kDialogTextMax = 2000;

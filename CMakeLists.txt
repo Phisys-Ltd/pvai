@@ -30,6 +30,7 @@ add_executable(pvai
     src/pairing.cpp
     src/tls.cpp
     src/transcript.cpp
+    src/text.cpp
     third_party/qrcodegen/qrcodegen.cpp
 )
 target_include_directories(pvai PRIVATE third_party/qrcodegen)
@@ -45,7 +46,7 @@ install(TARGETS pvai RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # Tests: direct access against a real daemon (ctest). Off in the package.
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(pvai-direct-test tests/direct_test.cpp src/common.cpp src/pairing.cpp src/tls.cpp)
+    add_executable(pvai-direct-test tests/direct_test.cpp src/common.cpp src/pairing.cpp src/tls.cpp src/text.cpp)
     target_include_directories(pvai-direct-test PRIVATE src)
     target_compile_definitions(pvai-direct-test PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
     target_link_libraries(pvai-direct-test PRIVATE nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto)
@@ -60,10 +61,10 @@ if(BUILD_TESTING)
     target_compile_definitions(pvai-session-test PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
     target_link_libraries(pvai-session-test PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
     add_test(NAME sessions COMMAND pvai-session-test $<TARGET_FILE:pvai>)
-    add_executable(pvai-screen-test tests/screen_test.cpp src/screen.cpp)
+    add_executable(pvai-screen-test tests/screen_test.cpp src/screen.cpp src/text.cpp)
     target_include_directories(pvai-screen-test PRIVATE src)
     add_test(NAME screen COMMAND pvai-screen-test)
-    add_executable(pvai-transcript-test tests/transcript_test.cpp src/transcript.cpp src/session.cpp src/common.cpp)
+    add_executable(pvai-transcript-test tests/transcript_test.cpp src/transcript.cpp src/session.cpp src/common.cpp src/text.cpp)
     target_include_directories(pvai-transcript-test PRIVATE src)
     target_compile_definitions(pvai-transcript-test PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
     target_link_libraries(pvai-transcript-test PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
@@ -74,7 +75,7 @@ endif()
 #   cmake -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DPVAI_FUZZ=ON && cmake --build build-fuzz --target fuzz-pair
 option(PVAI_FUZZ "build the libFuzzer targets" OFF)
 if(PVAI_FUZZ)
-    add_executable(fuzz-pair tests/fuzz_pair.cpp src/common.cpp src/pairing.cpp)
+    add_executable(fuzz-pair tests/fuzz_pair.cpp src/common.cpp src/pairing.cpp src/text.cpp)
     target_include_directories(fuzz-pair PRIVATE src)
     target_compile_definitions(fuzz-pair PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
     target_compile_options(fuzz-pair PRIVATE -fsanitize=fuzzer,address,undefined -g)

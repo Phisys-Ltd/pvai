@@ -38,9 +38,8 @@ std::string toolText(const json &input)
 {
     if (!input.is_object())
         return {};
-    for (const char *key : {"command", "file_path", "notebook_path", "url", "pattern", "path", "query", "skill", "prompt"})
-        if (input.contains(key) && input[key].is_string())
-            return input[key].get<std::string>();
+    if (auto text = firstString(input, {"command", "file_path", "notebook_path", "url", "pattern", "path", "query", "skill", "prompt"}))
+        return *text;
     return input.dump();
 }
 
@@ -63,17 +62,6 @@ json questionsOf(const json &input)
         out.push_back(std::move(entry));
     }
     return out;
-}
-
-// AskUserQuestion's questions, one per line.
-std::string questionOf(const json &input)
-{
-    std::string text;
-    if (input.is_object() && input.contains("questions") && input["questions"].is_array())
-        for (const auto &question : input["questions"])
-            if (const std::string q = str(question, "question"); !q.empty())
-                text += (text.empty() ? "" : "\n") + q;
-    return text;
 }
 
 off_t fileSize(const std::string &path)

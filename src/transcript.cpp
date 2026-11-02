@@ -1,4 +1,5 @@
 #include "transcript.h"
+#include "text.h"
 
 #include <sys/stat.h>
 
@@ -15,42 +16,15 @@ namespace pvai {
 
 namespace {
 
-constexpr std::size_t kMaxText = 64 * 1024;
-constexpr std::size_t kMaxResult = 4 * 1024;
 constexpr std::size_t kMaxSummary = 300;
-
-std::string cut(std::string text, std::size_t limit)
-{
-    if (text.size() <= limit)
-        return text;
-    std::size_t at = limit;
-    while (at > 0 && (static_cast<unsigned char>(text[at]) & 0xC0) == 0x80)
-        --at;
-    text.resize(at);
-    return text + "\xE2\x80\xA6"; // …
-}
-
-// Unix seconds of a transcript timestamp ("2026-10-28T19:20:28.623Z"), 0 if
-// it is none.
-long long unixTime(const std::string &stamp)
-{
-    std::tm tm{};
-    if (std::sscanf(stamp.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min,
-                    &tm.tm_sec) != 6)
-        return 0;
-    tm.tm_year -= 1900;
-    tm.tm_mon -= 1;
-    return static_cast<long long>(timegm(&tm));
-}
 
 // One line that says what a tool call does.
 std::string toolSummary(const json &input)
 {
     if (!input.is_object())
         return {};
-    for (const char *key : {"description", "command", "file_path", "pattern", "url", "query", "skill", "prompt"})
-        if (input.contains(key) && input[key].is_string())
-            return cut(input[key].get<std::string>(), kMaxSummary);
+    if (const auto text = firstString(input, {"description", "command", "file_path", "pattern", "url", "query", "skill", "prompt"}))
+        return cut(*text, kMaxSummary);
     return cut(input.dump(), kMaxSummary);
 }
 

@@ -1,4 +1,5 @@
 #include "common.h"
+#include "text.h"
 
 #include <filesystem>
 
@@ -424,9 +425,7 @@ void cutStrings(json &value, std::size_t max)
         const std::string &text = value.get_ref<const std::string &>();
         if (text.size() <= max)
             return;
-        std::size_t at = max;
-        while (at > 0 && (static_cast<unsigned char>(text[at]) & 0xC0) == 0x80) // not inside a character
-            --at;
+        const std::size_t at = utf8Boundary(text, max);
         value = text.substr(0, at) + "\n[... cut by pvai, " + std::to_string(text.size() - at) + " bytes more]";
     } else if (value.is_array() || value.is_object()) {
         for (auto &item : value)

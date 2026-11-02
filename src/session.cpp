@@ -228,15 +228,6 @@ void Backend::update(std::function<void(const UpdateResult &)> done)
     });
 }
 
-std::string trim(const std::string &s)
-{
-    const auto a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos)
-        return {};
-    const auto b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
-
 // The last line that starts with 🔊 (after blanks, quote marks and markdown
 // emphasis), without the marker.
 std::string speakLine(const std::string &answer)
@@ -293,45 +284,10 @@ std::string firstSentence(const std::string &answer)
         }
     }
     if (plain.size() > 200) {
-        std::size_t cut = 200;
-        while (cut > 0 && (static_cast<unsigned char>(plain[cut]) & 0xC0) == 0x80)
-            --cut;
-        plain.resize(cut);
+        plain.resize(utf8Boundary(plain, 200));
         plain += "...";
     }
     return plain;
-}
-
-std::string cut(std::string text, std::size_t limit)
-{
-    if (text.size() <= limit)
-        return text;
-    std::size_t at = limit;
-    while (at > 0 && (static_cast<unsigned char>(text[at]) & 0xC0) == 0x80)
-        --at;
-    text.resize(at);
-    return text + "\xE2\x80\xA6"; // …
-}
-
-std::string oneLine(const std::string &text, std::size_t limit)
-{
-    std::string out;
-    for (const char c : text)
-        if (static_cast<unsigned char>(c) >= 0x20 && c != 0x7f)
-            out += c;
-    if (out.size() > limit) {
-        std::size_t at = limit;
-        while (at > 0 && (static_cast<unsigned char>(out[at]) & 0xC0) == 0x80)
-            --at;
-        out.resize(at);
-    }
-    return trim(out);
-}
-
-std::string str(const json &object, const char *key)
-{
-    return object.is_object() && object.contains(key) && object[key].is_string() ? object[key].get<std::string>()
-                                                                                 : std::string();
 }
 
 std::string basename(const std::string &path)

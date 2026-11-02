@@ -118,12 +118,7 @@ json infoOf(const std::string &method, const json &params)
     if (method == "item/permissions/requestApproval")
         return dialogInfo("permissions", params.value("permissions", json()).dump(), reason);
     if (method == "item/tool/requestUserInput") {
-        std::string questions;
-        if (params.contains("questions") && params["questions"].is_array())
-            for (const auto &question : params["questions"])
-                if (const std::string q = str(question, "question"); !q.empty())
-                    questions += (questions.empty() ? "" : "\n") + q;
-        return dialogInfo("", questions, "");
+        return dialogInfo("", questionOf(params), "");
     }
     return dialogInfo("", "", str(params, "message"));
 }

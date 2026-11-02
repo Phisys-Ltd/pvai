@@ -40,13 +40,7 @@ long long unixTimeOf(const json &value)
         return value.get<long long>() > 100000000000LL ? value.get<long long>() / 1000 : value.get<long long>();
     if (!value.is_string())
         return 0;
-    std::tm tm{};
-    if (std::sscanf(value.get<std::string>().c_str(), "%4d-%2d-%2dT%2d:%2d:%2d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour,
-                    &tm.tm_min, &tm.tm_sec) != 6)
-        return 0;
-    tm.tm_year -= 1900;
-    tm.tm_mon -= 1;
-    return static_cast<long long>(timegm(&tm));
+    return unixTime(value.get<std::string>());
 }
 
 // The text of a content block, or of a list of tool call contents.
@@ -86,12 +80,8 @@ std::string toolName(const json &call)
 // What a tool call does, in one line: the command, else its title.
 std::string toolText(const json &call)
 {
-    const json input = call.value("rawInput", json());
-    if (input.is_object()) {
-        for (const char *key : {"command", "cmd", "path", "file_path", "url", "pattern", "query"})
-            if (input.contains(key) && input[key].is_string())
-                return input[key].get<std::string>();
-    }
+    if (auto text = firstString(call.value("rawInput", json()), {"command", "cmd", "path", "file_path", "url", "pattern", "query"}))
+        return *text;
     return str(call, "title");
 }
 

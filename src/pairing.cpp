@@ -1,4 +1,5 @@
 #include "pairing.h"
+#include "text.h"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -40,20 +41,8 @@ std::string percentEncode(const std::string &text)
 
 std::string cleanName(std::string_view name)
 {
-    std::string out;
-    for (const char c : name)
-        if (static_cast<unsigned char>(c) >= 0x20 && c != 0x7f)
-            out += c;
-    if (out.size() > kDeviceNameMax) {
-        std::size_t cut = kDeviceNameMax;
-        while (cut > 0 && (static_cast<unsigned char>(out[cut]) & 0xC0) == 0x80)
-            --cut;
-        out.resize(cut);
-    }
-    const auto a = out.find_first_not_of(' ');
-    if (a == std::string::npos)
-        return "device";
-    return out.substr(a, out.find_last_not_of(' ') - a + 1);
+    const std::string out = oneLine(name, kDeviceNameMax);
+    return out.empty() ? "device" : out;
 }
 
 std::optional<PairRequest> parsePair(std::string_view line)
