@@ -1,3 +1,11 @@
+pvai (0.5.37-1) trixie; urgency=medium
+
+  * Read a panel taller than the screen (/usage at 40 rows) as a screen
+    dialog: the session no longer stays busy without a dialog in the app.
+  * Log every say with its voice flag and the speak line's size.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 01:44:04 +0100
+
 pvai (0.5.36-1) trixie; urgency=medium
 
   * A turn the owner did not type (a background task or agent came back,
