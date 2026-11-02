@@ -7,6 +7,9 @@
 #include <pwd.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#if defined(__linux__)
+#include <sys/random.h>
+#endif
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -202,9 +205,26 @@ std::string claudeBinary()
 std::string randomHex(std::size_t bytes)
 {
     std::string raw(bytes, '\0');
-    std::ifstream urandom("/dev/urandom", std::ios::binary);
-    if (!urandom.read(raw.data(), static_cast<std::streamsize>(bytes)))
-        throw std::runtime_error("cannot read /dev/urandom");
+#if defined(__APPLE__)
+    arc4random_buf(raw.data(), raw.size());
+#else
+    std::size_t got = 0;
+#if defined(__linux__)
+    while (got < raw.size()) {
+        const ssize_t n = ::getrandom(raw.data() + got, raw.size() - got, 0);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            break;
+        got += static_cast<std::size_t>(n);
+    }
+#endif
+    if (got < raw.size()) {
+        std::ifstream urandom("/dev/urandom", std::ios::binary);
+        if (!urandom.read(raw.data(), static_cast<std::streamsize>(bytes)))
+            throw std::runtime_error("cannot read /dev/urandom");
+    }
+#endif
     static const char digits[] = "0123456789abcdef";
     std::string hex;
     for (const unsigned char c : raw) {
@@ -328,9 +348,14 @@ void setCloseOnExec(int fd)
 
 bool writeAll(int fd, const std::string &data)
 {
+    return writeAll(fd, data.data(), data.size());
+}
+
+bool writeAll(int fd, const char *data, std::size_t size)
+{
     std::size_t done = 0;
-    while (done < data.size()) {
-        const ssize_t n = ::write(fd, data.data() + done, data.size() - done);
+    while (done < size) {
+        const ssize_t n = ::write(fd, data + done, size - done);
         if (n < 0 && errno == EINTR)
             continue;
         if (n <= 0)
@@ -429,10 +454,21 @@ void cutHookEvent(json &event)
         cutStrings(event["last_assistant_message"], kHookStringMax);
 }
 
+std::string Conn::line(const json &message)
+{
+    std::string text = message.dump(-1, ' ', false, json::error_handler_t::replace);
+    text += '\n';
+    return text;
+}
+
 void Conn::send(const json &message)
 {
-    out_ += message.dump(-1, ' ', false, json::error_handler_t::replace);
-    out_ += '\n';
+    out_ += line(message);
+}
+
+void Conn::sendRaw(const std::string &line)
+{
+    out_ += line;
 }
 
 bool Conn::readMessages(std::vector<json> &messages)

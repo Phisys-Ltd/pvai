@@ -33,12 +33,29 @@ json rolloutContext(const std::string &path)
         return nullptr;
     in.seekg(0, std::ios::end);
     const std::streamoff size = in.tellg();
-    const std::streamoff from = std::max<std::streamoff>(0, size - 4 * 1024 * 1024);
-    in.seekg(from);
-    std::string line, found;
-    while (std::getline(in, line))
-        if (line.find("\"token_count\"") != std::string::npos)
-            found = line;
+    // From the end, in growing steps: the last token count is usually near it.
+    std::string found;
+    for (std::streamoff window = 256 * 1024; window <= 16 * 1024 * 1024 && found.empty(); window *= 4) {
+        const std::streamoff want = std::min<std::streamoff>(window, 4 * 1024 * 1024);
+        const std::streamoff from = std::max<std::streamoff>(0, size - want);
+        std::string data(static_cast<std::size_t>(size - from), '\0');
+        in.clear();
+        in.seekg(from);
+        in.read(data.data(), static_cast<std::streamsize>(data.size()));
+        data.resize(static_cast<std::size_t>(in.gcount()));
+        const auto hit = data.rfind("\"token_count\"");
+        if (hit != std::string::npos) {
+            const auto begin = data.rfind('\n', hit);
+            // A line cut by the window's start is read from a longer one.
+            if (begin != std::string::npos || from == 0) {
+                const auto end = data.find('\n', hit);
+                const auto lineStart = begin == std::string::npos ? 0 : begin + 1;
+                found = data.substr(lineStart, end == std::string::npos ? std::string::npos : end - lineStart);
+            }
+        }
+        if (from == 0 || want >= 4 * 1024 * 1024)
+            break;
+    }
     const json event = json::parse(found, nullptr, false);
     if (!event.is_object())
         return nullptr;
@@ -680,6 +697,8 @@ void CodexBackend::tick(Clock::time_point now)
         return;
     nextTry_ = now + kRetry;
     if (!link_.open()) {
+        // A server that keeps failing is asked less often: 10 s, 20 s, 30 s.
+        nextTry_ = now + kRetry * std::min(++openFailures_, 3);
         if (!lastStart_ || now - *lastStart_ > std::chrono::minutes(1)) {
             lastStart_ = now;
             const char *home = std::getenv("HOME");
@@ -688,6 +707,7 @@ void CodexBackend::tick(Clock::time_point now)
         }
         return;
     }
+    openFailures_ = 0;
     ready_ = false;
     call("initialize",
          {{"clientInfo", {{"name", "pvai"}, {"title", "PhiVoice AI"}, {"version", kVersion}}},
@@ -754,9 +774,10 @@ void CodexBackend::service()
         // Codex's messages are the app server's to shape: anything not an
         // object where one belongs reads as an empty one, and a surprise in
         // one message costs that message, not the daemon.
-        auto object = [&](const char *key) {
-            const json value = message.contains(key) ? message[key] : json();
-            return value.is_object() ? value : json::object();
+        auto object = [&](const char *key) -> const json & {
+            static const json empty = json::object();
+            const auto it = message.find(key);
+            return it != message.end() && it->is_object() ? *it : empty;
         };
         try {
             if (method.empty()) {
@@ -769,11 +790,11 @@ void CodexBackend::service()
                 const json error = message.contains("error") && !message["error"].is_null() ? object("error") : json();
                 done(object("result"), error);
             } else if (message.contains("id")) {
-                const json params = object("params");
+                const json &params = object("params");
                 if (auto *session = dynamic_cast<CodexSession *>(host_.session(str(params, "threadId"))))
                     session->onRequest(message["id"], method, params);
             } else {
-                const json params = object("params");
+                const json &params = object("params");
                 if (method == "account/rateLimits/updated") {
                     setLimits(params.value("rateLimits", json()));
                 } else if (method == "thread/started") {

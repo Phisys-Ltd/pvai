@@ -198,13 +198,20 @@ long long msUntil(Clock::time_point at)
 // Frames between `pvai attach` and a detached wrapper: a type byte, a
 // big-endian 32-bit length, the data. 'd' is terminal data both ways, 'r'
 // a resize from the viewer ("rows cols"), 'x' the end of the session.
-std::string frame(char type, const std::string &data)
+void appendFrame(std::string &out, char type, const char *data, std::size_t size)
 {
-    std::string out(1, type);
-    const auto n = static_cast<std::uint32_t>(data.size());
+    out += type;
+    const auto n = static_cast<std::uint32_t>(size);
     for (int shift = 24; shift >= 0; shift -= 8)
         out += static_cast<char>((n >> shift) & 0xff);
-    return out + data;
+    out.append(data, size);
+}
+
+std::string frame(char type, const std::string &data)
+{
+    std::string out;
+    appendFrame(out, type, data.data(), data.size());
+    return out;
 }
 
 bool nextFrame(std::string &buffer, char &type, std::string &data)
@@ -228,16 +235,18 @@ class ModeTracker {
 public:
     void feed(const char *data, std::size_t n)
     {
-        std::string text = tail_ + std::string(data, n);
-        for (std::size_t at = 0; (at = text.find("\x1b[?", at)) != std::string::npos; ++at) {
-            std::size_t end = at + 3;
-            while (end < text.size() && (std::isdigit(static_cast<unsigned char>(text[end])) || text[end] == ';'))
-                ++end;
-            if (end >= text.size() || (text[end] != 'h' && text[end] != 'l') || end == at + 3)
-                continue;
-            modes_[text.substr(at + 3, end - at - 3)] = text[end];
+        // A sequence cut by the chunk's start: the kept tail and the first bytes of the chunk.
+        if (!tail_.empty()) {
+            const std::string joined = tail_ + std::string(data, std::min<std::size_t>(n, 24));
+            scan(joined, tail_.size());
         }
-        tail_ = text.size() > 24 ? text.substr(text.size() - 24) : text;
+        scan(std::string_view(data, n), n);
+        // What may still become a sequence: the stream's last bytes from an ESC on.
+        std::string last = tail_ + std::string(data + (n > 24 ? n - 24 : 0), std::min<std::size_t>(n, 24));
+        if (last.size() > 24)
+            last.erase(0, last.size() - 24);
+        const auto esc = last.find('\x1b');
+        tail_ = esc == std::string::npos ? std::string() : last.substr(esc);
     }
     bool on(const std::string &mode) const
     {
@@ -253,6 +262,19 @@ public:
     }
 
 private:
+    // The sequences that start before `limit` in `text`.
+    void scan(std::string_view text, std::size_t limit)
+    {
+        for (std::size_t at = 0; at < limit && (at = text.find("\x1b[?", at)) != std::string_view::npos && at < limit; ++at) {
+            std::size_t end = at + 3;
+            while (end < text.size() && (std::isdigit(static_cast<unsigned char>(text[end])) || text[end] == ';'))
+                ++end;
+            if (end >= text.size() || (text[end] != 'h' && text[end] != 'l') || end == at + 3)
+                continue;
+            modes_[std::string(text.substr(at + 3, end - at - 3))] = text[end];
+        }
+    }
+
     std::string tail_;
     std::map<std::string, char> modes_;
 };
@@ -264,6 +286,8 @@ class TrustSpotter {
 public:
     bool feed(const char *data, std::size_t n)
     {
+        if (seen_)
+            return false; // asked once; no more scanning
         for (std::size_t i = 0; i < n; ++i) {
             const unsigned char c = static_cast<unsigned char>(data[i]);
             switch (state_) {
@@ -288,7 +312,7 @@ public:
         }
         if (letters_.size() > 400)
             letters_.erase(0, letters_.size() - 200);
-        if (seen_ || letters_.find("Itrustthisfolder") == std::string::npos)
+        if (letters_.find("Itrustthisfolder") == std::string::npos)
             return false;
         seen_ = true;
         return true;
@@ -589,12 +613,11 @@ int runWrapper(const WrapperOptions &options)
             char buffer[65536];
             const ssize_t n = ::read(master, buffer, sizeof buffer);
             if (n > 0) {
-                const std::string chunk(buffer, static_cast<std::size_t>(n));
                 if (!detached)
-                    writeAll(STDOUT_FILENO, chunk);
+                    writeAll(STDOUT_FILENO, buffer, static_cast<std::size_t>(n));
                 for (auto &viewer : viewers)
                     if (viewer->out.size() < 8 * 1024 * 1024)
-                        viewer->out += frame('d', chunk);
+                        appendFrame(viewer->out, 'd', buffer, static_cast<std::size_t>(n));
                 modes.feed(buffer, static_cast<std::size_t>(n));
                 screen.feed(buffer, static_cast<std::size_t>(n));
                 screenCheckAt = Clock::now() + std::chrono::milliseconds(250);

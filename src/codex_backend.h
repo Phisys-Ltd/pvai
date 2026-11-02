@@ -126,6 +126,7 @@ private:
     bool ready_ = false; // initialized
     std::map<long long, Done> pending_;
     Clock::time_point nextTry_ = Clock::now();
+    int openFailures_ = 0;
     Clock::time_point nextRescan_ = Clock::now();
     std::optional<Clock::time_point> lastStart_;
     json limits_ = {{"fiveHour", nullptr}, {"sevenDay", nullptr}};

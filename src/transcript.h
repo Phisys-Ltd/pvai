@@ -9,6 +9,7 @@
 #include <sys/types.h>
 
 #include <deque>
+#include <optional>
 #include <map>
 #include <string>
 #include <vector>
@@ -37,7 +38,8 @@ bool turnRunning(const std::string &path);
 class TranscriptTail {
 public:
     static constexpr std::size_t kKeep = 500;           // entries kept for `history`
-    static constexpr off_t kFirstRead = 8 * 1024 * 1024; // a long transcript is read from its last 8 MiB
+    static constexpr off_t kFirstRead = 8 * 1024 * 1024;   // a long transcript is read from its last 8 MiB at most
+    static constexpr off_t kFirstWindow = 2 * 1024 * 1024; // first try: the last 2 MiB; more when that gives too few entries
 
     // Starts over on another file (a new session, or /clear).
     void follow(const std::string &path);
@@ -68,8 +70,12 @@ public:
     // a request wrote to the cache (a read alone keeps the TTL it was
     // written with).
     const json &cache() const { return cache_; }
+    // turnRunning() as far as the first read saw it; nullopt when the window
+    // held no turn end and the file may have one further back.
+    std::optional<bool> turnRunningSeen() const;
 
 private:
+    void resetState();
     void take(const json &line, std::vector<json> &out);
 
     std::string path_;
@@ -84,6 +90,8 @@ private:
     std::size_t wakeTurns_ = 0;
     bool wakePending_ = false; // a task notification, no answer yet
     json cache_;
+    off_t window_ = kFirstWindow;
+    bool turnRunning_ = false, turnEnds_ = false, windowed_ = false;
 };
 
 } // namespace pvai

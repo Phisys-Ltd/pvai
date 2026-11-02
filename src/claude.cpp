@@ -21,6 +21,10 @@ constexpr auto kTypedTimeout = std::chrono::seconds(5); // the wrapper checks fo
 constexpr auto kRetryAfter = std::chrono::milliseconds(600);
 constexpr auto kTailEvery = std::chrono::milliseconds(300);
 constexpr auto kSubagentsEvery = std::chrono::seconds(1);
+// An idle session with nothing queued polls slower; a hook (a turn
+// starting) brings the fast rhythm back at once.
+constexpr auto kTailIdleEvery = std::chrono::milliseconds(1500);
+constexpr auto kSubagentsIdleEvery = std::chrono::seconds(3);
 // An unfinished subagent from before this session object (a daemon restart,
 // an earlier run of a resumed conversation) counts only while its
 // transcript still moves: one Claude Code killed never gets `finished`.
@@ -150,7 +154,8 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
                 tail_.poll();
                 wakeMark_ = tail_.wakeTurns();
                 // A daemon restarted during a turn: the turn goes on.
-                if (turnRunning(transcript_))
+                const auto seen = tail_.turnRunningSeen();
+                if (seen ? *seen : turnRunning(transcript_))
                     state_ = "busy";
             }
         }
@@ -473,6 +478,8 @@ void ClaudeSession::onHook(const json &event)
     const std::string fingerprint = name + '\n' + field("session_id") + '\n' + field("tool_use_id") + '\n' + field("tool_name")
                                   + '\n' + field("message") + '\n' + field("timestamp") + '\n' + field("source");
     const auto now = Clock::now();
+    nextTail_ = std::min(nextTail_, now + kTailEvery);
+    nextSubagents_ = std::min(nextSubagents_, now + kSubagentsEvery);
     const bool twice = fingerprint == lastEvent_ && now - lastEventAt_ < std::chrono::milliseconds(500);
     lastEvent_ = fingerprint;
     lastEventAt_ = now;
@@ -925,19 +932,33 @@ void ClaudeSession::tick(Clock::time_point now)
         if (!screenText_.empty() && dialog_.empty() && state_ == "busy")
             openScreenDialog();
     }
-    if (now >= nextTail_) {
+    if (now >= nextTail_ || (!quiet() && now >= lastTail_ + kTailEvery)) {
         pollTranscript();
-        nextTail_ = now + kTailEvery;
+        lastTail_ = now;
+        nextTail_ = now + (quiet() ? kTailIdleEvery : kTailEvery);
     }
-    if (now >= nextSubagents_) {
+    if (now >= nextSubagents_ || (!quiet() && now >= lastSubagents_ + kSubagentsEvery)) {
         scanSubagents(now);
-        nextSubagents_ = now + kSubagentsEvery;
+        lastSubagents_ = now;
+        nextSubagents_ = now + (quiet() && !hasRunningSubagent() ? kSubagentsIdleEvery : kSubagentsEvery);
     }
+}
+
+bool ClaudeSession::quiet() const
+{
+    return state_ == "idle" && queue_.empty() && !slashPending_ && !inFlight_;
+}
+
+bool ClaudeSession::hasRunningSubagent() const
+{
+    return std::any_of(subagents_.begin(), subagents_.end(), [](const auto &agent) { return !agent.second.entry.is_null(); });
 }
 
 std::optional<Clock::time_point> ClaudeSession::deadline() const
 {
     Clock::time_point next = std::min(nextTail_, nextSubagents_);
+    if (!quiet())
+        next = std::min({next, lastTail_ + kTailEvery, lastSubagents_ + kSubagentsEvery});
     for (const auto &at : escapeChecks_)
         next = std::min(next, at);
     if (submitDeadline_)
@@ -1070,6 +1091,7 @@ void ClaudeSession::scanSubagents(Clock::time_point)
     const auto fileNow = fs::file_time_type::clock::now();
     bool news = false;
     std::error_code ec;
+    std::set<std::string> seen;
     for (const auto &file : fs::directory_iterator(dir, ec)) {
         const std::string name = file.path().filename().string();
         const std::string prefix = "agent-", metaSuffix = ".meta.json";
@@ -1077,6 +1099,7 @@ void ClaudeSession::scanSubagents(Clock::time_point)
             || name.compare(name.size() - metaSuffix.size(), metaSuffix.size(), metaSuffix) != 0)
             continue;
         const std::string id = name.substr(prefix.size(), name.size() - prefix.size() - metaSuffix.size());
+        seen.insert(id);
         std::error_code timeError;
         const auto mtime = fs::last_write_time(file.path(), timeError);
         if (timeError)
@@ -1108,6 +1131,18 @@ void ClaudeSession::scanSubagents(Clock::time_point)
             news = true;
         subagents_[id] = {mtime, entry};
     }
+    // Agents whose files are gone (and finished ones of a vanished folder)
+    // are dropped; a running one that vanished ends.
+    if (!ec) {
+        for (auto it = subagents_.begin(); it != subagents_.end();) {
+            if (seen.count(it->first)) {
+                ++it;
+                continue;
+            }
+            news = news || !it->second.entry.is_null();
+            it = subagents_.erase(it);
+        }
+    }
     if (news)
         changed();
 }
@@ -1130,10 +1165,15 @@ void ClaudeBackend::conversations(const std::string &cwd, std::function<void(std
         if (const auto *claude = dynamic_cast<ClaudeSession *>(session); claude && !claude->claudeSession().empty())
             running.insert(claude->claudeSession());
     std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> files;
+    std::map<std::filesystem::path, std::uintmax_t> sizes;
     std::error_code ec;
     for (const auto &file : std::filesystem::directory_iterator(projectDir(cwd), ec))
-        if (file.path().extension() == ".jsonl" && !running.count(file.path().stem().string()))
+        if (file.path().extension() == ".jsonl" && !running.count(file.path().stem().string())) {
             files.emplace_back(file.last_write_time(ec), file.path());
+            sizes[file.path()] = file.file_size(ec);
+        }
+    if (titles_.size() > 5000)
+        titles_.clear();
     std::sort(files.begin(), files.end(), [](const auto &x, const auto &y) { return x.first > y.first; });
     std::vector<Conversation> out;
     for (const auto &[time, path] : files) {
@@ -1141,7 +1181,12 @@ void ClaudeBackend::conversations(const std::string &cwd, std::function<void(std
             break;
         // A transcript without a prompt of the owner's (only a /model, say)
         // is no conversation to go back to.
-        std::string title = firstPrompt(path.string());
+        // A title is read once per (mtime, size) of the file.
+        auto &cached = titles_[path.string()];
+        if (cached.size != sizes[path] || cached.mtime != time || !cached.known) {
+            cached = {time, sizes[path], firstPrompt(path.string()), true};
+        }
+        std::string title = cached.title;
         if (title.empty())
             continue;
         const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(

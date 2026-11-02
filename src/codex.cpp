@@ -58,7 +58,7 @@ bool CodexLink::open()
     const std::string upgrade = "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
     // A server that accepts and then hangs must not hang the daemon.
-    timeval limit{2, 0};
+    timeval limit{0, 500 * 1000};
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof limit);
     ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, sizeof limit);
     std::string reply;

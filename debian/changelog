@@ -1,3 +1,24 @@
+pvai (0.5.45-1) trixie; urgency=medium
+
+  * Performance. The first transcript read skips sidechain lines and
+    lines of types nobody reads before parsing, starts with 2 MiB and
+    widens to 8 MiB only when that gives fewer than 500 entries, and a
+    taken-over session reads its turn state from that same pass (P1).
+    Conversation titles are cached per file by mtime and size (P2).
+    The project list caches per folder and parses only lines with a cwd
+    (P3). An idle session with nothing queued polls its transcript every
+    1.5 s and its subagents every 3 s, a hook brings back the fast
+    rhythm, and subagents of deleted files are dropped (P4). Broadcasts
+    dump the JSON once (P5). The Codex and Kimi message accessors no
+    longer copy params and results (P6). WebSocket masks use getrandom
+    (P7). The Codex socket handshake times out after 500 ms, retries back
+    off to 30 s, and the rollout context is read from the file's end
+    (P8). A TLS login parses devices.json once and writes lastSeen at
+    most once a minute (P9). The wrapper copies PTY chunks less and stops
+    scanning for the trust question once seen (P10).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 19:45:00 +0100
+
 pvai (0.5.44-1) trixie; urgency=medium
 
   * Logic fixes from an audit. A prompt the wrapper could not type is

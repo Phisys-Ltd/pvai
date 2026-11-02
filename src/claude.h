@@ -144,9 +144,12 @@ private:
         std::filesystem::file_time_type mtime;
         json entry;
     };
+    bool quiet() const;
+    bool hasRunningSubagent() const;
     std::map<std::string, Subagent> subagents_;
     std::filesystem::file_time_type created_ = std::filesystem::file_time_type::clock::now();
     Clock::time_point nextSubagents_ = Clock::now();
+    Clock::time_point lastTail_ = Clock::now(), lastSubagents_ = Clock::now();
 };
 
 // `pvai run` in the owner's terminal: theirs to end.
@@ -191,6 +194,16 @@ public:
 
 protected:
     std::string binary() const override;
+
+private:
+    // Conversation titles by transcript path, read once per (mtime, size).
+    struct Title {
+        std::filesystem::file_time_type mtime;
+        std::uintmax_t size = 0;
+        std::string title;
+        bool known = false;
+    };
+    std::map<std::string, Title> titles_;
 };
 
 } // namespace pvai

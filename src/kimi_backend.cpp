@@ -647,9 +647,10 @@ void KimiBackend::service()
         if (!message.is_object())
             continue;
         const std::string method = str(message, "method");
-        auto object = [&](const char *key) {
-            const json value = message.contains(key) ? message[key] : json();
-            return value.is_object() ? value : json::object();
+        auto object = [&](const char *key) -> const json & {
+            static const json empty = json::object();
+            const auto it = message.find(key);
+            return it != message.end() && it->is_object() ? *it : empty;
         };
         try {
             if (method.empty()) {
@@ -664,7 +665,7 @@ void KimiBackend::service()
             } else if (message.contains("id")) {
                 onRequest(message["id"], method, object("params"));
             } else if (method == "session/update") {
-                const json params = object("params");
+                const json &params = object("params");
                 if (auto *session = dynamic_cast<KimiSession *>(host_.session(str(params, "sessionId"))))
                     session->onUpdate(params.value("update", json::object()));
             }

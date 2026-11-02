@@ -60,6 +60,7 @@ void keepAlive(int fd); // SO_KEEPALIVE: a dead network path ends the connection
 void setNonBlocking(int fd);
 void setCloseOnExec(int fd);
 bool writeAll(int fd, const std::string &data);
+bool writeAll(int fd, const char *data, std::size_t size);
 void sendLine(int fd, const json &message); // blocking, errors ignored
 // A log above 8 MB moves to <path>.old before it is opened for appending
 // (the runtime directory is RAM on Linux).
@@ -109,6 +110,9 @@ public:
     bool wantsWrite() const { return !out_.empty(); }
     std::size_t pending() const { return out_.size(); } // bytes not yet written
     void send(const json &message);
+    // The wire form of a message (JSON and a newline), to dump once for many peers.
+    static std::string line(const json &message);
+    void sendRaw(const std::string &line);
     // Reads what is there and appends whole lines; a line that is not JSON
     // becomes a null value. False on EOF, error or an overlong line.
     bool readMessages(std::vector<json> &messages);

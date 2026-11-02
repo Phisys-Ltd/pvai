@@ -269,18 +269,26 @@ public:
 
     void broadcast(const json &message) override
     {
+        std::string wire;
         for (auto &peer : peers_)
-            if (peer->kind == Kind::App)
-                peer->conn->send(message);
+            if (peer->kind == Kind::App) {
+                if (wire.empty())
+                    wire = Conn::line(message);
+                peer->conn->sendRaw(wire);
+            }
     }
 
     void sessionsChanged() override { sessionsDirty_ = true; }
 
     void toSubscribers(const std::string &id, const json &message) override
     {
+        std::string wire;
         for (auto &peer : peers_)
-            if (peer->subscriptions.count(id))
-                peer->conn->send(message);
+            if (peer->subscriptions.count(id)) {
+                if (wire.empty())
+                    wire = Conn::line(message);
+                peer->conn->sendRaw(wire);
+            }
     }
 
     Session *session(const std::string &id) override
@@ -890,32 +898,58 @@ private:
         const std::filesystem::path root = std::filesystem::path(home ? home : "/") / ".claude" / "projects";
         std::vector<std::pair<std::filesystem::file_time_type, std::string>> found;
         std::error_code ec;
-        for (const auto &folder : std::filesystem::directory_iterator(root, ec)) {
+        // Per folder: its mtime, the newest transcript and the cwd read from
+        // it. While the folder is unchanged only that transcript is statted.
+        struct Known {
+            std::filesystem::file_time_type folderTime{};
             std::filesystem::path newest;
+            std::string cwd;
+        };
+        static std::map<std::string, Known> cache;
+        std::set<std::string> present;
+        for (const auto &folder : std::filesystem::directory_iterator(root, ec)) {
+            const std::string key = folder.path().string();
+            present.insert(key);
+            const auto folderTime = folder.last_write_time(ec);
+            Known &known = cache[key];
             std::filesystem::file_time_type newestTime{};
-            for (const auto &file : std::filesystem::directory_iterator(folder.path(), ec)) {
-                if (file.path().extension() != ".jsonl")
+            if (!known.newest.empty() && known.folderTime == folderTime) {
+                newestTime = std::filesystem::last_write_time(known.newest, ec);
+                if (ec)
+                    known = {};
+            }
+            if (known.newest.empty() || known.folderTime != folderTime) {
+                known = {};
+                known.folderTime = folderTime;
+                for (const auto &file : std::filesystem::directory_iterator(folder.path(), ec)) {
+                    if (file.path().extension() != ".jsonl")
+                        continue;
+                    const auto t = file.last_write_time(ec);
+                    if (known.newest.empty() || t > newestTime) {
+                        known.newest = file.path();
+                        newestTime = t;
+                    }
+                }
+                if (known.newest.empty())
                     continue;
-                const auto t = file.last_write_time(ec);
-                if (newest.empty() || t > newestTime) {
-                    newest = file.path();
-                    newestTime = t;
+                std::ifstream in(known.newest);
+                std::string line;
+                // The cwd sits in the first lines that have one; a line
+                // without the key is not parsed.
+                for (int i = 0; i < 50 && std::getline(in, line); ++i) {
+                    if (line.find("\"cwd\"") == std::string::npos)
+                        continue;
+                    const json entry = json::parse(line, nullptr, false);
+                    known.cwd = entry.is_object() ? entry.value("cwd", "") : "";
+                    if (!known.cwd.empty())
+                        break;
                 }
             }
-            if (newest.empty())
-                continue;
-            std::ifstream in(newest);
-            std::string line;
-            for (int i = 0; i < 50 && std::getline(in, line); ++i) {
-                const json entry = json::parse(line, nullptr, false);
-                const std::string cwd = entry.is_object() ? entry.value("cwd", "") : "";
-                if (cwd.empty())
-                    continue;
-                if (std::filesystem::is_directory(cwd, ec))
-                    found.emplace_back(newestTime, cwd);
-                break;
-            }
+            if (!known.cwd.empty() && std::filesystem::is_directory(known.cwd, ec))
+                found.emplace_back(newestTime, known.cwd);
         }
+        for (auto it = cache.begin(); it != cache.end();)
+            it = present.count(it->first) ? std::next(it) : cache.erase(it);
         std::sort(found.begin(), found.end(), [](const auto &x, const auto &y) { return x.first > y.first; });
         json dirs = json::array();
         std::set<std::string> seen;
@@ -1384,11 +1418,20 @@ private:
         return fd;
     }
 
+    struct Admitted {
+        std::string print;
+        Device device;
+        Clock::time_point at;
+    };
+    std::optional<Admitted> admitted_;
+
     // In the handshake: a paired device, or anyone while a window is open.
     bool admit(const std::string &print)
     {
-        if (Devices(devicesPath()).find(print))
+        if (const auto device = Devices(devicesPath()).find(print)) {
+            admitted_ = {print, *device, Clock::now()};
             return true;
+        }
         return window_ && Clock::now() < window_->until;
     }
 
@@ -1462,10 +1505,20 @@ private:
         auto stream = h.accept->take();
         peer->ssl = stream->ssl();
         peer->conn = std::make_unique<Conn>(std::move(stream));
-        if (const auto device = Devices(devicesPath()).find(print)) {
+        // The handshake just looked the device up: that answer counts, so
+        // the file is parsed once per login.
+        std::optional<Device> device;
+        if (admitted_ && admitted_->print == print && Clock::now() - admitted_->at < std::chrono::seconds(10))
+            device = admitted_->device;
+        else
+            device = Devices(devicesPath()).find(print);
+        admitted_.reset();
+        if (device) {
             peer->device = print;
             peer->deviceName = device->name;
-            Devices(devicesPath()).seen(print, unixNow());
+            // lastSeen is written at most once a minute per device.
+            if (unixNow() - device->lastSeen >= 60)
+                Devices(devicesPath()).seen(print, unixNow());
             logLine(h.address + ": login of \"" + device->name + "\"");
         } else if (window_ && Clock::now() < window_->until) {
             peer->pairing = print;

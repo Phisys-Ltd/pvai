@@ -9,6 +9,7 @@
 #include <ctime>
 
 #include <fstream>
+#include <string_view>
 
 namespace pvai {
 
@@ -144,6 +145,47 @@ std::string commandFile(const std::string &command)
     return found;
 }
 
+namespace {
+
+// The turn state machine of turnRunning, one transcript line at a time.
+void turnStep(const json &entry, bool &running, bool &ends)
+{
+    if (!entry.is_object() || entry.value("isSidechain", false))
+        return;
+    const std::string type = entry.value("type", "");
+    if (type == "system" && (entry.value("subtype", "") == "turn_duration" || entry.value("subtype", "") == "stop_hook_summary")) {
+        running = false;
+        ends = true;
+    } else if (type == "user" && !isBookkeeping(entry) && entry.contains("message") && entry["message"].is_object()) {
+        const json content = entry["message"].value("content", json());
+        const std::string text = content.is_string() ? content.get<std::string>()
+                               : content.is_array() && !content.empty() && content[0].is_object() ? content[0].value("text", "") : "";
+        if (text.rfind("[Request interrupted by user", 0) == 0)
+            running = false;
+        else if (content.is_string() && text.rfind("<command-name>", 0) != 0 && text.rfind("<local-command", 0) != 0
+                 && text.rfind("<bash-", 0) != 0 && text.rfind("<task-notification", 0) != 0)
+            running = true;
+    } else if (type == "assistant") {
+        running = true;
+    }
+}
+
+// A line that cannot produce an entry or move the turn state: a sidechain
+// line, or one of a type nothing reads. Cheap, before the JSON parse.
+bool skippable(const char *line, std::size_t n)
+{
+    const std::string_view view(line, n);
+    if (view.find("\"isSidechain\":true") != std::string_view::npos || view.find("\"isSidechain\": true") != std::string_view::npos)
+        return true;
+    static const char *const kTypes[] = {"\"user\"", "\"assistant\"", "\"system\"", "\"attachment\""};
+    for (const char *type : kTypes)
+        if (view.find(type) != std::string_view::npos)
+            return false;
+    return true;
+}
+
+} // namespace
+
 bool turnRunning(const std::string &path)
 {
     std::ifstream in(path, std::ios::binary);
@@ -157,27 +199,20 @@ bool turnRunning(const std::string &path)
     if (size > 4 * 1024 * 1024)
         std::getline(in, line); // a partial first line
     while (std::getline(in, line)) {
-        const json entry = json::parse(line, nullptr, false);
-        if (!entry.is_object() || entry.value("isSidechain", false))
+        if (skippable(line.data(), line.size()))
             continue;
-        const std::string type = entry.value("type", "");
-        if (type == "system" && (entry.value("subtype", "") == "turn_duration" || entry.value("subtype", "") == "stop_hook_summary")) {
-            running = false;
-            ends = true;
-        } else if (type == "user" && !isBookkeeping(entry) && entry.contains("message") && entry["message"].is_object()) {
-            const json content = entry["message"].value("content", json());
-            const std::string text = content.is_string() ? content.get<std::string>()
-                                   : content.is_array() && !content.empty() && content[0].is_object() ? content[0].value("text", "") : "";
-            if (text.rfind("[Request interrupted by user", 0) == 0)
-                running = false;
-            else if (content.is_string() && text.rfind("<command-name>", 0) != 0 && text.rfind("<local-command", 0) != 0
-                     && text.rfind("<bash-", 0) != 0 && text.rfind("<task-notification", 0) != 0)
-                running = true;
-        } else if (type == "assistant") {
-            running = true;
-        }
+        turnStep(json::parse(line, nullptr, false), running, ends);
     }
     return ends && running;
+}
+
+std::optional<bool> TranscriptTail::turnRunningSeen() const
+{
+    if (turnEnds_)
+        return turnRunning_;
+    if (windowed_)
+        return std::nullopt; // no turn end in the window: the file may have one further back
+    return false;
 }
 
 void TranscriptTail::follow(const std::string &path)
@@ -189,6 +224,19 @@ void TranscriptTail::follow(const std::string &path)
     recent_.clear();
     toolNames_.clear();
     cache_ = nullptr;
+    window_ = kFirstWindow;
+    resetState();
+}
+
+void TranscriptTail::resetState()
+{
+    toolNames_.clear();
+    localOutputs_ = shellOutputs_ = wakeTurns_ = 0;
+    lastLocalOutput_.clear();
+    wakePending_ = false;
+    cache_ = nullptr;
+    turnRunning_ = turnEnds_ = windowed_ = false;
+    recent_.clear();
 }
 
 std::vector<json> TranscriptTail::poll()
@@ -205,9 +253,11 @@ std::vector<json> TranscriptTail::poll()
         return out;
     std::ifstream in(path_, std::ios::binary);
     bool skipFirstLine = false;
-    if (first_ && st.st_size > kFirstRead) {
-        offset_ = st.st_size - kFirstRead;
+    const bool firstRead = first_;
+    if (first_ && st.st_size > window_) {
+        offset_ = st.st_size - window_;
         skipFirstLine = true;
+        windowed_ = true;
     }
     first_ = false;
     if (!in.seekg(offset_))
@@ -224,14 +274,24 @@ std::vector<json> TranscriptTail::poll()
         start = nl == std::string::npos ? partial_.size() : nl + 1;
     }
     for (std::size_t end; (end = partial_.find('\n', start)) != std::string::npos; start = end + 1) {
+        if (skippable(partial_.data() + start, end - start))
+            continue;
         const json line = json::parse(partial_.begin() + static_cast<long>(start), partial_.begin() + static_cast<long>(end), nullptr, false);
         if (!line.is_object())
             continue;
+        turnStep(line, turnRunning_, turnEnds_);
         try {
             take(line, out);
         } catch (const json::exception &) {
             // A line of the wrong shape: skipped.
         }
+    }
+    // A short window that gave less history than `history` keeps: read more.
+    if (firstRead && skipFirstLine && out.size() < kKeep && window_ < kFirstRead) {
+        const std::string path = path_;
+        follow(path);
+        window_ = std::min<off_t>(kFirstRead, window_ * 4);
+        return poll();
     }
     partial_.erase(0, start);
     for (const auto &entry : out) {
