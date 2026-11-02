@@ -73,6 +73,34 @@ int main()
                             << R"({"type":"system","subtype":"turn_duration","uuid":"s20"})" "\n"
                             << userLine(22, "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>");
     check(!pvai::turnRunning(notified), "an old task notification starts no turn");
+    // A turn Claude Code starts on a task notification (a sub-agent's
+    // hand-back) is a turn once it answers; before that it is not.
+    const std::string asst = R"({"type":"assistant","uuid":"u31","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}})" "\n";
+    const std::string done = R"({"type":"system","subtype":"turn_duration","uuid":"s30"})" "\n";
+    const std::string prev = userLine(30, "hello")
+                           + R"({"type":"assistant","uuid":"u30","message":{"content":[{"type":"text","text":"hi"}]}})" "\n" + done;
+    const std::string note = userLine(32, "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>");
+    const std::string noteAttachment =
+        R"({"type":"attachment","isSidechain":false,"attachment":{"type":"queued_command","prompt":"<task-notification>\n<status>completed</status>\n</task-notification>"}})" "\n";
+    const std::string toolResult =
+        R"({"type":"user","uuid":"u33","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}})" "\n";
+    auto turnOf = [&](const std::string &name, const std::string &body) {
+        const std::string file = home.path + "/" + name + ".jsonl";
+        std::ofstream(file) << body;
+        pvai::TranscriptTail t;
+        t.follow(file);
+        t.poll();
+        const auto seen = t.turnRunningSeen();
+        check(seen && *seen == pvai::turnRunning(file), name + ": the file and the tail agree");
+        return pvai::turnRunning(file);
+    };
+    check(turnOf("wake1", prev + note + asst), "a task notification answered by Claude is a running turn");
+    check(turnOf("wake1b", prev + noteAttachment + asst + toolResult), "the same as an attachment, with a tool result after");
+    check(!turnOf("wake2", prev + note), "a task notification alone is no turn");
+    check(!turnOf("wake2b", prev + noteAttachment), "an attachment notification alone is no turn");
+    check(!turnOf("wake3", prev + note + asst + done), "a notification turn that ended is no turn");
+    check(turnOf("wake4", prev + userLine(34, "do it")), "an owner prompt starts a turn at once");
+
     tail.follow(idle);
     got.clear();
     for (const auto &e : tail.poll())

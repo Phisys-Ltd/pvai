@@ -976,6 +976,17 @@ int main(int argc, char **argv)
               "mid-turn after a daemon restart: busy");
         check(!waitSession(a, "wdone", [](const json &s) { return s.value("state", "") == "idle"; }).empty(),
               "after the turn's end: idle");
+        // A turn a task notification started, taken over while it runs.
+        const std::string wakeFile = home + "/elsewhere/wake.jsonl";
+        const std::string notice =
+            R"({"type":"attachment","isSidechain":false,"attachment":{"type":"queued_command","prompt":"<task-notification>\n<status>completed</status>\n</task-notification>"}})";
+        const std::string tool = R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}})";
+        writeFile(wakeFile, prompt + "\n" + answer + "\n" + end + "\n" + notice + "\n" + tool + "\n");
+        writeFile(runtime + "/pvai/wwake.claude", json({{"claudeSession", "wake-1"}, {"transcript", wakeFile}}).dump() + "\n");
+        LineClient wake;
+        wake.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wwake"}, {"cwd", project}, {"label", "wake"}, {"running", true}, {"restart", true}});
+        check(!waitSession(a, "wwake", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),
+              "taken over in a turn a task notification started: busy");
     }
 
     // The permission mode: from the hooks and the footer; a change is
