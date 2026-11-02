@@ -211,7 +211,7 @@ bool Devices::add(const Device &device)
     return save(devices);
 }
 
-std::vector<Device> Devices::remove(const std::string &nameOrFingerprint)
+std::vector<Device> Devices::remove(const std::string &nameOrFingerprint, bool *saved)
 {
     auto devices = load();
     std::vector<Device> removed;
@@ -221,8 +221,11 @@ std::vector<Device> Devices::remove(const std::string &nameOrFingerprint)
             removed.push_back(d);
         return match;
     });
-    if (!removed.empty())
-        save(devices);
+    const bool written = removed.empty() || save(devices);
+    if (saved)
+        *saved = written;
+    if (!written)
+        removed.clear();
     return removed;
 }
 

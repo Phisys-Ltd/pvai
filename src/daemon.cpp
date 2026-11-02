@@ -351,6 +351,8 @@ private:
         peer->conn = std::make_unique<Conn>(fd);
         peer->serial = ++serial_;
         peer->tcp = tcp;
+        if (!tcp)
+            peer->conn->setMaxLine(kMaxLocalLine);
         peer->deadline = Clock::now() + kPreAuth; // cleared by hello (or the wrapper's register)
         if (tcp)
             keepAlive(fd);
@@ -680,7 +682,7 @@ private:
             if (!session)
                 return;
             if (type == "input")
-                session->onInput(message.value("escape", false));
+                session->onInput(message.value("escape", false), message.value("key", ""));
             else if (type == "draft")
                 session->onDraft(message.value("dirty", false));
             else if (type == "dialog")
@@ -1566,7 +1568,14 @@ private:
     // pvai revoke: drops the device and its connections. Local only.
     void onRevoke(Peer *peer, const json &message)
     {
-        const auto removed = Devices(devicesPath()).remove(message.value("device", ""));
+        bool saved = true;
+        const auto removed = Devices(devicesPath()).remove(message.value("device", ""), &saved);
+        if (!saved) {
+            logLine("revoke: could not write " + devicesPath());
+            peer->conn->send({{"type", "error"}, {"code", "save-failed"}, {"text", "the device list could not be written"}});
+            peer->conn->closeAfterFlush();
+            return;
+        }
         json names = json::array();
         for (const auto &device : removed) {
             names.push_back(device.name);

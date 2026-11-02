@@ -72,6 +72,7 @@ void spawnDaemon()
     // Installed as a service: the daemon belongs to systemd, not to us.
     if (startServiceDaemon())
         return;
+    rotateLog(runtimeDir() + "/daemon.log");
     const pid_t first = ::fork();
     if (first < 0)
         return;
@@ -447,6 +448,10 @@ int runWrapper(const WrapperOptions &options)
     auto typed = [&](bool ok) {
         if (daemon)
             daemon->send({{"type", "typed"}, {"ok", ok}, {"screen", ok ? json() : json(screenSnapshot(screen))}});
+        // The daemon retries once it hears the prompt is free: it needs the
+        // screen as it is now, also when it did not change.
+        if (daemon && !ok)
+            sendScreen();
     };
     bool registered = false;
     auto registerSelf = [&] {
@@ -480,11 +485,19 @@ int runWrapper(const WrapperOptions &options)
             return;
         reportDraft(false);
         // A lone Esc (not the start of a key sequence) may interrupt the turn.
-        if (n == 1 && data[0] == '\x1b') {
-            daemon->send({{"type", "input"}, {"escape", true}});
+        // `key` tells the daemon what may answer a dialog: Return, Esc or an
+        // option digit; arrow keys and the terminal's own replies do not.
+        const bool escape = n == 1 && data[0] == '\x1b';
+        const bool digit = n == 1 && data[0] >= '0' && data[0] <= '9';
+        const bool enter = std::memchr(data, '\r', n) || std::memchr(data, '\n', n);
+        if (escape || digit || enter) {
+            json note = {{"type", "input"}, {"key", escape ? "escape" : enter ? "return" : "digit"}};
+            if (escape)
+                note["escape"] = true;
+            daemon->send(note);
             lastInputNote = Clock::now();
         } else if (Clock::now() - lastInputNote > std::chrono::seconds(1)) {
-            daemon->send({{"type", "input"}});
+            daemon->send({{"type", "input"}, {"key", "other"}});
             lastInputNote = Clock::now();
         }
     };
@@ -551,6 +564,7 @@ int runWrapper(const WrapperOptions &options)
         fds.push_back({viewerListen, POLLIN, 0});
         for (const auto &viewer : viewers)
             fds.push_back({viewer->conn->fd(), static_cast<short>(POLLIN | (viewer->out.empty() ? 0 : POLLOUT)), 0});
+        const std::size_t polled = viewers.size(); // one accepted below has no pollfd yet
 
         long long timeout = -1;
         auto soonest = [&](long long ms) { timeout = timeout < 0 ? ms : std::min(timeout, ms); };
@@ -696,7 +710,7 @@ int runWrapper(const WrapperOptions &options)
                 viewers.push_back(std::move(viewer));
             }
         }
-        for (std::size_t i = 0; i < viewers.size(); ++i) {
+        for (std::size_t i = 0; i < polled; ++i) {
             Viewer &viewer = *viewers[i];
             const short revents = fds[5 + i].revents;
             bool alive = true;
@@ -821,6 +835,9 @@ int runWrapper(const WrapperOptions &options)
     }
     if (detached)
         ::unlink(viewerPath.c_str());
+    // What the daemon reads back after its own restart: no use once this
+    // wrapper is gone for good.
+    ::unlink((runtimeDir() + "/" + id + ".claude").c_str());
     if (WIFEXITED(status))
         return WEXITSTATUS(status);
     return 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);

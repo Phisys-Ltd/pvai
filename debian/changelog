@@ -1,3 +1,25 @@
+pvai (0.5.44-1) trixie; urgency=medium
+
+  * Logic fixes from an audit. A prompt the wrapper could not type is
+    retried after 600 ms and the wrapper sends the screen with its answer
+    (A1). A trust dialog answered in the terminal leaves the session idle
+    on the next SessionStart (A2). Unix socket peers may send lines up to
+    4 MiB (TCP stays 256 KiB) and the hook cuts tool input strings and
+    the last answer to 64 KiB (A3). `pvai revoke` fails when the device
+    list cannot be written (A4). In a dialog only Return, Esc and digits
+    answer; the wrapper's input message carries a key class, an older
+    wrapper counts every key (A5). A viewer accepted in a loop round is
+    no longer read before it is polled (A6). A lost Codex link answers
+    its pending requests with an error (A7). Hooks are deduplicated by
+    event, session, tool call and message within 500 ms, not by the whole
+    event (A8). An old task notification no longer counts as a running
+    turn (A9). Install and logout output without a newline keeps only
+    the last 64 KiB (A10). The wrapper removes its .claude file at exit,
+    daemon.log and kimi.log rotate above 8 MB, and Codex' stopped threads
+    are pruned (A11).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 14:00:00 +0000
+
 pvai (0.5.43-1) trixie; urgency=medium
 
   * Daemon hardening. A message with a field of the wrong JSON type no

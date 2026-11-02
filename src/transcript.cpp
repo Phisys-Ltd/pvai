@@ -171,7 +171,7 @@ bool turnRunning(const std::string &path)
             if (text.rfind("[Request interrupted by user", 0) == 0)
                 running = false;
             else if (content.is_string() && text.rfind("<command-name>", 0) != 0 && text.rfind("<local-command", 0) != 0
-                     && text.rfind("<bash-", 0) != 0)
+                     && text.rfind("<bash-", 0) != 0 && text.rfind("<task-notification", 0) != 0)
                 running = true;
         } else if (type == "assistant") {
             running = true;

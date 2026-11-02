@@ -465,11 +465,19 @@ void ClaudeSession::onHook(const json &event)
 {
     const std::string name = event.value("hook_event_name", "");
     // The same hook installed twice (user and project settings) reports
-    // every event twice.
-    const std::string fingerprint = event.dump();
-    if (fingerprint == lastEvent_)
-        return;
+    // every event twice, a moment apart; an exact repeat later is a new one.
+    const auto field = [&](const char *key) {
+        const json value = event.contains(key) ? event[key] : json();
+        return value.is_string() ? value.get<std::string>().substr(0, 200) : std::string();
+    };
+    const std::string fingerprint = name + '\n' + field("session_id") + '\n' + field("tool_use_id") + '\n' + field("tool_name")
+                                  + '\n' + field("message") + '\n' + field("timestamp") + '\n' + field("source");
+    const auto now = Clock::now();
+    const bool twice = fingerprint == lastEvent_ && now - lastEventAt_ < std::chrono::milliseconds(500);
     lastEvent_ = fingerprint;
+    lastEventAt_ = now;
+    if (twice)
+        return;
     if (!ours(event.value("session_id", ""), name == "SessionStart" ? event.value("source", "") : "")) {
         host_.log(id_ + ": " + name + " of another Claude Code (" + event.value("session_id", "") + "), dropped");
         return;
@@ -494,6 +502,7 @@ void ClaudeSession::onHook(const json &event)
     if (known)
         remember();
 
+    const bool trust = dialog_ == "trust"; // answered in the terminal: the next hook says so
     if (name != "Notification" && name != "PermissionRequest")
         dialog_.clear();
     if (name == "UserPromptSubmit" || name == "Stop" || name == "SessionStart") {
@@ -511,7 +520,7 @@ void ClaudeSession::onHook(const json &event)
     }
     if (name == "SessionStart") {
         const std::string source = event.value("source", "");
-        if (state_ == "starting" || source == "clear" || source == "resume")
+        if (state_ == "starting" || (state_ == "waiting" && trust) || source == "clear" || source == "resume")
             state_ = "idle";
         if (source == "clear") { // a new transcript: its output count starts at 0
             slashPending_ = false;
@@ -639,10 +648,14 @@ void ClaudeSession::onStatus(const json &status)
 // The owner typed into the session. Into a dialog Claude waited on: they
 // answer it, the turn goes on. An Esc may end the turn without a hook; the
 // transcript tells, a moment later.
-void ClaudeSession::onInput(bool escape)
+// `key` is what the wrapper saw: return, escape, digit or other (arrow keys,
+// terminal replies); an older wrapper says nothing and every key counts.
+void ClaudeSession::onInput(bool escape, const std::string &key)
 {
     if (escape && state_ != "idle")
         armEscapeCheck();
+    if (key == "other")
+        return;
     if (state_ == "waiting" && dialog_ != "trust" && dialog_ != "screen") {
         state_ = "busy";
         dialog_.clear();
@@ -854,6 +867,8 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry)
     blocked_ = true;
     retryOnPrompt_ = retry;
     retryAt_.reset();
+    if (retry) // the screen may not change: look again after a moment
+        retryAt_ = Clock::now() + kRetryAfter;
     screenFrom_ = "idle";
     state_ = "waiting";
     dialog_ = "screen";

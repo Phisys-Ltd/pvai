@@ -547,6 +547,7 @@ bool KimiBackend::spawn()
     setCloseOnExec(pair[0]);
     setCloseOnExec(pair[1]);
     const std::string log = runtimeDir() + "/kimi.log";
+    rotateLog(log);
     const pid_t pid = ::fork();
     if (pid < 0) {
         ::close(pair[0]);

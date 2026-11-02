@@ -722,14 +722,26 @@ int runDevices()
 int runRevoke(const std::string &which)
 {
     std::vector<std::string> names;
+    bool failed = false;
     const int status = adminRequest({{"type", "revoke"}, {"device", which}}, false, [&](const json &answer) {
+        if (answer.value("type", "") == "error") {
+            failed = true;
+            return true;
+        }
         for (const auto &name : answer.value("devices", json::array()))
             names.push_back(name.get<std::string>());
         return true;
     });
-    if (status < 0) // no daemon, so no connections either
-        for (const auto &device : Devices(devicesPath()).remove(which))
+    if (status < 0) { // no daemon, so no connections either
+        bool saved = true;
+        for (const auto &device : Devices(devicesPath()).remove(which, &saved))
             names.push_back(device.name);
+        failed = !saved;
+    }
+    if (failed) {
+        std::fprintf(stderr, "pvai: could not write %s, nothing revoked\n", devicesPath().c_str());
+        return 1;
+    }
     if (names.empty()) {
         std::fprintf(stderr, "pvai: no device %s\n", which.c_str());
         return 1;

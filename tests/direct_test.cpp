@@ -342,6 +342,16 @@ int main(int argc, char **argv)
         Client client(c, 9);
         check(typeOf(client.pair(link.code, "C")) == "paired", "a second device pairs");
     }
+    // A device list that cannot be written: revoke says so and revokes nothing.
+    {
+        const std::string blocker = std::string(home) + "/.config/pvai/devices.json.new";
+        std::filesystem::create_directories(blocker);
+        const std::string answer = run("revoke C 2>&1; echo status=$?");
+        check(answer.find("could not write") != std::string::npos && answer.find("status=1") != std::string::npos
+                  && answer.find("revoked:") == std::string::npos,
+              "revoke fails when the device list cannot be saved: " + answer);
+        std::filesystem::remove(blocker);
+    }
     for (int i = 0; i < 5; ++i) {
         Client client(b, 50);
         client.login();

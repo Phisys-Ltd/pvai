@@ -69,6 +69,15 @@ int main()
                         << summary.dump() << "\n"
                         << R"({"type":"system","subtype":"informational","uuid":"s3","content":"Compacted while idle"})" "\n";
     check(!pvai::turnRunning(idle), "an idle compaction starts no turn");
+
+    // A background task's notification (string content) after a finished
+    // turn is no turn: without a Stop it would hold the session busy.
+    const std::string notified = std::string(dir) + "/notified.jsonl";
+    std::ofstream(notified) << userLine(20, "hello")
+                            << R"({"type":"assistant","uuid":"u21","message":{"content":[{"type":"text","text":"hi"}]}})" "\n"
+                            << R"({"type":"system","subtype":"turn_duration","uuid":"s20"})" "\n"
+                            << userLine(22, "<task-notification><task-id>b1</task-id><status>completed</status></task-notification>");
+    check(!pvai::turnRunning(notified), "an old task notification starts no turn");
     tail.follow(idle);
     got.clear();
     for (const auto &e : tail.poll())

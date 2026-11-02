@@ -21,6 +21,7 @@ int runHook()
     json event = json::parse(input, nullptr, false);
     if (event.is_discarded() || !event.is_object())
         return 0;
+    cutHookEvent(event);
     if (event.value("hook_event_name", "") == "SessionStart")
         std::fputs(kVoiceContext, stdout);
     const int fd = connectUnix(socket);

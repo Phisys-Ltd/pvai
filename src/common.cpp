@@ -1,5 +1,7 @@
 #include "common.h"
 
+#include <filesystem>
+
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <pwd.h>
@@ -387,6 +389,44 @@ Conn::Conn(int fd)
 Conn::Conn(std::unique_ptr<Stream> stream)
     : stream_(std::move(stream))
 {
+}
+
+namespace {
+
+void cutStrings(json &value, std::size_t max)
+{
+    if (value.is_string()) {
+        const std::string &text = value.get_ref<const std::string &>();
+        if (text.size() <= max)
+            return;
+        std::size_t at = max;
+        while (at > 0 && (static_cast<unsigned char>(text[at]) & 0xC0) == 0x80) // not inside a character
+            --at;
+        value = text.substr(0, at) + "\n[... cut by pvai, " + std::to_string(text.size() - at) + " bytes more]";
+    } else if (value.is_array() || value.is_object()) {
+        for (auto &item : value)
+            cutStrings(item, max);
+    }
+}
+
+} // namespace
+
+void rotateLog(const std::string &path)
+{
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    if (!ec && size > 8u * 1024 * 1024)
+        std::filesystem::rename(path, path + ".old", ec);
+}
+
+void cutHookEvent(json &event)
+{
+    if (!event.is_object())
+        return;
+    if (event.contains("tool_input"))
+        cutStrings(event["tool_input"], kHookStringMax);
+    if (event.contains("last_assistant_message"))
+        cutStrings(event["last_assistant_message"], kHookStringMax);
 }
 
 void Conn::send(const json &message)

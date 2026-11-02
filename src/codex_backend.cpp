@@ -728,7 +728,14 @@ void CodexBackend::lost()
 {
     link_.close();
     ready_ = false;
-    pending_.clear();
+    // The app hears for each start or conversation request that it failed.
+    // (An answer that asks again meets the same end.)
+    while (!pending_.empty()) {
+        auto pending = std::move(pending_);
+        pending_.clear();
+        for (auto &[id, done] : pending)
+            done(json::object(), {{"code", -32603}, {"message", "Codex app server ended"}});
+    }
     adopting_.clear(); // their answers will not come
     subagents_.clear();
     for (CodexSession *session : sessions())
@@ -803,6 +810,8 @@ void CodexBackend::rescan()
             if (id.is_string())
                 loaded.insert(id.get<std::string>());
         std::erase_if(released_, [&](const std::string &id) { return !loaded.count(id); });
+        // A stopped thread that is no longer loaded is archived and gone.
+        std::erase_if(stopped_, [&](const std::string &id) { return !loaded.count(id); });
         if (std::erase_if(subagents_, [&](const auto &entry) { return !loaded.count(entry.first); }))
             host_.sessionsChanged();
         for (const auto &id : loaded)

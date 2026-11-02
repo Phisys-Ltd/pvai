@@ -39,7 +39,7 @@ public:
     // From the hook, the status line and the wrapper.
     void onHook(const json &event);
     void onStatus(const json &status);
-    void onInput(bool escape);
+    void onInput(bool escape, const std::string &key = {});
     void onDraft(bool dirty);
     void onDialog(const std::string &kind);
     void onScreen(const std::string &text, bool prompt, const std::string &mode = {});
@@ -89,7 +89,8 @@ private:
     std::size_t slashMark_ = 0;
     bool slashShell_ = false; // the pending command is a shell command (!): its output ends it
     std::size_t localDone() const { return slashShell_ ? tail_.shellOutputs() : tail_.localOutputs(); }
-    std::string lastEvent_; // the last hook event, to drop one that comes twice
+    std::string lastEvent_; // the last hook event's key, to drop one that comes twice
+    Clock::time_point lastEventAt_{};
     // After an Esc in the terminal: where the transcript ended then, and
     // when to look whether Claude Code wrote an interrupt behind it.
     off_t escapeOffset_ = -1;

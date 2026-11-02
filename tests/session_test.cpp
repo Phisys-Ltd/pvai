@@ -1070,6 +1070,76 @@ int main(int argc, char **argv)
         check(noClear.value("reason", "") == "not-supported", "an older wrapper cannot clear: " + noClear.dump());
     }
 
+    // 0.5.44: a typed ok:false without a screen is retried; trust answered in
+    // the terminal; dialog keys; big hook events.
+    {
+        Client rw;
+        rw.send({{"type", "register"}, {"id", "wretry"}, {"cwd", project}, {"label", "retry"}, {"restart", true}, {"verify", true}});
+        hook("wretry", {{"hook_event_name", "SessionStart"}, {"session_id", "r-1"}, {"source", "startup"}});
+        check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a retry wrapper's session");
+        rw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
+        a.send({{"type", "prompt"}, {"ref", 60}, {"session", "wretry"}, {"text", "eins"}});
+        check(rw.next("type").value("text", "") == "eins", "retry: typed");
+        rw.send({{"type", "typed"}, {"ok", false}, {"screen", "busy box"}}); // no screen message after it
+        const auto before = std::chrono::steady_clock::now();
+        json again = rw.next("type", {}, 3000);
+        const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - before).count();
+        check(again.value("text", "") == "eins" && again.value("verify", false) && waited >= 400,
+              "retry: the prompt is typed again after a moment without a new screen (" + std::to_string(waited) + " ms)");
+        rw.send({{"type", "typed"}, {"ok", true}});
+        hook("wretry", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "r-1"}, {"prompt", "eins"}});
+        check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 60; }).value("session", "") == "wretry", "retry: delivered");
+
+        // Dialog keys: arrows and terminal replies do not answer a dialog;
+        // Return does; an older wrapper (no key) counts every key.
+        hook("wretry", {{"hook_event_name", "PermissionRequest"}, {"session_id", "r-1"}, {"tool_name", "Bash"}, {"tool_input", {{"command", "ls"}}}});
+        check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "waiting"; }).empty(), "keys: a dialog waits");
+        rw.send({{"type", "input"}, {"key", "other"}});
+        check(waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "busy"; }, 800).empty(), "keys: an arrow key does not answer it");
+        rw.send({{"type", "input"}, {"key", "return"}});
+        check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "keys: Return answers it");
+        hook("wretry", {{"hook_event_name", "PermissionRequest"}, {"session_id", "r-1"}, {"tool_name", "Bash"}, {"tool_input", {{"command", "ls"}}}});
+        check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "waiting"; }).empty(), "keys: waits again");
+        rw.send({{"type", "input"}});
+        check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "keys: no key field counts as before");
+
+        // A Stop with a 1 MB answer is not lost; a PermissionRequest from the
+        // real hook is cut to 64 KiB.
+        const std::string big(1024 * 1024, 'x');
+        hook("wretry", {{"hook_event_name", "Stop"}, {"session_id", "r-1"}, {"last_assistant_message", big}});
+        check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "big: a 1 MB Stop reaches the session");
+        hook("wretry", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "r-1"}, {"prompt", "zwei"}});
+        const std::string eventFile = home + "/bigevent.json";
+        writeFile(eventFile, json({{"hook_event_name", "PermissionRequest"}, {"session_id", "r-1"}, {"tool_name", "Bash"},
+                                   {"tool_input", {{"command", big}}}, {"transcript_path", ""}}).dump());
+        (void)std::system(("cat " + eventFile + " | env PVAI_ID=wretry PVAI_SOCK=" + daemonSocket() + " " + g_pvai + " hook").c_str());
+        check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "waiting"; }).empty(),
+              "big: the real hook's PermissionRequest reaches the session");
+        json event = {{"hook_event_name", "Stop"}, {"last_assistant_message", std::string(100000, 'x') + "\xC3\xA4\xC3\xA4"},
+                      {"tool_input", {{"command", big}, {"edits", json::array({{{"new_string", big}}})}, {"short", "ok"}}}};
+        cutHookEvent(event);
+        const std::string last = event["last_assistant_message"].get<std::string>();
+        check(last.size() > kHookStringMax && last.size() < kHookStringMax + 100 && last.find("cut by pvai") != std::string::npos,
+              "big: the last answer is cut to 64 KiB with a marker (" + std::to_string(last.size()) + ")");
+        check(event["tool_input"]["command"].get<std::string>().size() < kHookStringMax + 100
+                  && event["tool_input"]["edits"][0]["new_string"].get<std::string>().size() < kHookStringMax + 100
+                  && event["tool_input"]["short"] == "ok",
+              "big: tool input strings are cut, also nested, short ones stay");
+        const std::string accent = std::string(kHookStringMax - 1, 'x') + "\xC3\xA4" + std::string(10, 'y');
+        json umlaut = {{"last_assistant_message", accent}};
+        cutHookEvent(umlaut);
+        check(json::accept(umlaut.dump()) && umlaut["last_assistant_message"].get<std::string>().find("\xC3\xA4") == std::string::npos,
+              "big: a cut never splits a UTF-8 character");
+
+        Client tw;
+        tw.send({{"type", "register"}, {"id", "wtrust"}, {"cwd", project}, {"label", "trust"}, {"restart", true}, {"verify", true}});
+        tw.send({{"type", "dialog"}, {"kind", "trust"}});
+        check(!waitSession(a, "wtrust", [](const json &s) { return s.value("dialog", "") == "trust"; }).empty(), "trust: the dialog is shown");
+        hook("wtrust", {{"hook_event_name", "SessionStart"}, {"session_id", "t-1"}, {"source", "startup"}});
+        check(!waitSession(a, "wtrust", [](const json &s) { return s.value("state", "") == "idle" && s.value("dialog", json()).is_null(); }).empty(),
+              "trust: answered in the terminal, the next SessionStart makes it idle");
+    }
+
     // clear (0.5.30): empties the prompt box, a draft or a command left in
     // shell mode, and the queue goes on.
     {

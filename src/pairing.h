@@ -65,7 +65,8 @@ public:
     std::optional<Device> find(const std::string &fingerprint) const;
     bool add(const Device &device);
     // By name or fingerprint; returns the removed devices.
-    std::vector<Device> remove(const std::string &nameOrFingerprint);
+    // `saved` (if given) tells whether the file was written; false: nothing is revoked.
+    std::vector<Device> remove(const std::string &nameOrFingerprint, bool *saved = nullptr);
     void seen(const std::string &fingerprint, long long when);
 
 private:

@@ -15,6 +15,11 @@ using json = nlohmann::json;
 constexpr int kDefaultPort = 7470;
 constexpr const char *kVersion = PVAI_VERSION;
 constexpr std::size_t kMaxLine = 256 * 1024;
+// Peers on the unix socket are the hooks and wrappers of this host: a hook
+// event with a big tool input may be long.
+constexpr std::size_t kMaxLocalLine = 4 * 1024 * 1024;
+// What the hook sends of one string (a tool input, the last answer).
+constexpr std::size_t kHookStringMax = 64 * 1024;
 constexpr std::size_t kMaxPrompt = 32 * 1024;
 
 // The wrapper's environment for Claude Code and so for its hooks.
@@ -56,6 +61,12 @@ void setNonBlocking(int fd);
 void setCloseOnExec(int fd);
 bool writeAll(int fd, const std::string &data);
 void sendLine(int fd, const json &message); // blocking, errors ignored
+// A log above 8 MB moves to <path>.old before it is opened for appending
+// (the runtime directory is RAM on Linux).
+void rotateLog(const std::string &path);
+// Cuts every string of a hook event's tool_input and its last_assistant_message
+// to kHookStringMax (with a marker), so the event stays far below the line limit.
+void cutHookEvent(json &event);
 
 // The bytes under a connection: a plain socket, or TLS on one (tls.h).
 // How a connection is set up (accept, handshake, pairing) is not its

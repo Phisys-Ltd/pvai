@@ -313,6 +313,9 @@ void Setup::service(int fd)
             line(assistant, task, plain(task.buffer.substr(0, nl)));
             task.buffer.erase(0, nl + 1);
         }
+        // An installer that only redraws with '\r' never ends a line.
+        if (task.buffer.size() > kMaxOutput)
+            task.buffer.erase(0, task.buffer.size() - kMaxOutput);
     } else {
         if (task.output.size() < kMaxOutput)
             task.output += plain(task.buffer);
