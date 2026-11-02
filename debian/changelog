@@ -1,3 +1,19 @@
+pvai (0.5.52-1) trixie; urgency=medium
+
+  * dropped goes to every app whenever a session ends with prompts not taken
+    (Claude Code, Codex, Kimi), with the whole text; the prompts of a Claude
+    session with a known conversation are kept for 24 h (kept: true) and
+    queued again when that conversation is resumed. Caps: 16 per
+    conversation, 64 in all; memory only.
+  * pvai run sends its version in register. Session.wrapperVersion and
+    Session.stale show it; answer, clearInput, mode, model and restart to a
+    wrapper before 0.5.44 are rejected with stale-wrapper. pvai daemon stop
+    and restart say how many sessions run an older pvai.
+  * A line without a type, or no object, in a pairing window is a bad proof:
+    the window closes and the connection ends.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 00:30:00 +0100
+
 pvai (0.5.51-1) trixie; urgency=medium
 
   * The screen model counts a joined emoji (family), a flag and a keycap as
