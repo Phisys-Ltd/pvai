@@ -82,6 +82,16 @@ int main()
     feed(small, "\x1b[?1049l");
     check(small.row(2) == "d" && pvai::screenDialog(small).empty(), "and leaving it shows the main screen again");
 
+    // A panel taller than the screen: no footer, its scroll mark at the bottom.
+    {
+        pvai::Screen panel(8, 40);
+        feed(panel, "\x1b[2J\x1b[H\xE2\x96\x94\xE2\x96\x94\xE2\x96\x94\r\n  Settings  Usage\r\n\r\n  Current week (Fable)\r\n  10% used\r\n\r\n  Subagents\r\n\x1b[38G\xE2\x86\x93");
+        const std::string text = pvai::screenDialog(panel);
+        check(text == "Settings  Usage\n\nCurrent week (Fable)\n10% used\n\nSubagents", "a scrolled panel: [" + text + "]");
+        feed(panel, "\x1b[2J\x1b[HSee below:\r\n\xE2\x86\x93 here");
+        check(pvai::screenDialog(panel).empty(), "an arrow in a line of text is no panel");
+    }
+
     // Wide characters take two cells.
     pvai::Screen wide(2, 10);
     feed(wide, "\xF0\x9F\x8E\x99x");

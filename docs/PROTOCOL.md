@@ -198,7 +198,10 @@ daemon knows every live one on its host.
   Each is cut to 2000 bytes, any may be `null`. A `screen` dialog is one
   whose footer ("Enter to confirm", "Enter to continue", "Enter to
   select", "Enter to submit", "Esc to cancel", "Esc to exit", "Esc to go
-  back", "Esc to close") is in the last two lines of the screen; it counts
+  back", "Esc to close") is in the last two lines of the screen, or (since
+  0.5.37) a panel taller than the screen shows only its scroll mark `↓`
+  alone in the last line (`/usage` at 40 rows; `text` is then the panel's
+  lowest 30 lines); it counts
   at once at the prompt, in a turn after a second without a hook's dialog
   (a permission dialog shows such a footer too). `text` follows the
   screen while it is open (a `sessions` update for each change); when it

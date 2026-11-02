@@ -403,12 +403,17 @@ std::string screenDialog(const Screen &screen)
     };
     // The footer is one of the last two lines with text: further up it is
     // something said in the conversation.
+    // A panel taller than the screen (/usage at 40 rows) shows no footer,
+    // only its scroll mark alone in the last line: it ends there.
     int footer = -1, seen = 0;
     for (int r = screen.rows() - 1; r >= 0 && seen < 2 && footer < 0; --r) {
         const std::string row = screen.row(r);
         if (trim(row).empty())
             continue;
-        ++seen;
+        if (++seen == 1 && trim(row) == "\xE2\x86\x93") { // ↓
+            footer = r - 1;
+            break;
+        }
         for (const char *marker : footers)
             if (row.find(marker) != std::string::npos)
                 footer = r;
