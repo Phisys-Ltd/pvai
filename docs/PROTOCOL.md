@@ -898,3 +898,26 @@ a second.
 - Fixed phrases belong to the app: English in the source, German through its
   translation, like every phi UI string. The daemon never sends prose of its
   own.
+
+## Shared constants
+
+Values both implementations must agree on, so neither drifts on its own.
+
+- Config directory: `$XDG_CONFIG_HOME/pvai`, or `~/.config/pvai` when the
+  variable is empty. `token`, `server.key`, `devices.json` live there.
+- base32 (fingerprints, pairing codes): RFC 4648 alphabet in lower case
+  (`a`-`z`, `2`-`7`), no padding. A decoder may accept upper case; it rejects
+  every other character, a trailing group of 5 or more bits, and non-zero
+  leftover bits. The daemon and the app decode the same string to the same
+  bytes or both refuse it.
+- Pairing proof: 32 bytes of TLS exporter output (RFC 8446 7.5) with the
+  label `EXPORTER-pvai-pair` and an empty context.
+- Environment of an assistant process (the daemon's wrapper, the app's login
+  check): remove every `CLAUDE_CODE_*` variable except
+  `CLAUDE_CODE_OAUTH_TOKEN`, and `CLAUDECODE`, `PVAI_ID`, `PVAI_SOCK`. The
+  prefix marks a nested session and would make Claude Code refuse to start;
+  the OAuth token is the owner's login and stays.
+- Finding `pvai`, `claude`, `codex`: the directories of `PATH` first, then
+  `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`; the first regular
+  executable file wins. An app started from Finder has a short `PATH`, which
+  is what the three fixed directories are for.
