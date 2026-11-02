@@ -224,7 +224,6 @@ void TranscriptTail::follow(const std::string &path)
     recent_.clear();
     toolNames_.clear();
     cache_ = nullptr;
-    window_ = kFirstWindow;
     resetState();
 }
 
@@ -253,9 +252,8 @@ std::vector<json> TranscriptTail::poll()
         return out;
     std::ifstream in(path_, std::ios::binary);
     bool skipFirstLine = false;
-    const bool firstRead = first_;
-    if (first_ && st.st_size > window_) {
-        offset_ = st.st_size - window_;
+    if (first_ && st.st_size > kFirstRead) {
+        offset_ = st.st_size - kFirstRead;
         skipFirstLine = true;
         windowed_ = true;
     }
@@ -285,13 +283,6 @@ std::vector<json> TranscriptTail::poll()
         } catch (const json::exception &) {
             // A line of the wrong shape: skipped.
         }
-    }
-    // A short window that gave less history than `history` keeps: read more.
-    if (firstRead && skipFirstLine && out.size() < kKeep && window_ < kFirstRead) {
-        const std::string path = path_;
-        follow(path);
-        window_ = std::min<off_t>(kFirstRead, window_ * 4);
-        return poll();
     }
     partial_.erase(0, start);
     for (const auto &entry : out) {

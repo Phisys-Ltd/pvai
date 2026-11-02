@@ -1,3 +1,14 @@
+pvai (0.5.46-1) trixie; urgency=medium
+
+  * The first transcript read is the last 8 MiB again; the 2 MiB window
+    cost more than it saved on real files (the line pre-filter and the
+    turn state from the first pass stay). The project list scans every
+    folder for its newest transcript each time, so a resumed old
+    conversation moves its project up; only the cwd of a transcript is
+    cached.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 20:10:00 +0100
+
 pvai (0.5.45-1) trixie; urgency=medium
 
   * Performance. The first transcript read skips sidechain lines and

@@ -898,44 +898,38 @@ private:
         const std::filesystem::path root = std::filesystem::path(home ? home : "/") / ".claude" / "projects";
         std::vector<std::pair<std::filesystem::file_time_type, std::string>> found;
         std::error_code ec;
-        // Per folder: its mtime, the newest transcript and the cwd read from
-        // it. While the folder is unchanged only that transcript is statted.
+        // The newest transcript of a folder is found by a scan every time
+        // (a resumed old conversation must move its project up). Only the
+        // cwd is cached: it sits at the head of the file and stays while
+        // the file grows; a smaller file is a replaced one.
         struct Known {
-            std::filesystem::file_time_type folderTime{};
-            std::filesystem::path newest;
+            std::uintmax_t size = 0;
             std::string cwd;
         };
         static std::map<std::string, Known> cache;
         std::set<std::string> present;
         for (const auto &folder : std::filesystem::directory_iterator(root, ec)) {
-            const std::string key = folder.path().string();
-            present.insert(key);
-            const auto folderTime = folder.last_write_time(ec);
-            Known &known = cache[key];
+            std::filesystem::path newest;
             std::filesystem::file_time_type newestTime{};
-            if (!known.newest.empty() && known.folderTime == folderTime) {
-                newestTime = std::filesystem::last_write_time(known.newest, ec);
-                if (ec)
-                    known = {};
-            }
-            if (known.newest.empty() || known.folderTime != folderTime) {
-                known = {};
-                known.folderTime = folderTime;
-                for (const auto &file : std::filesystem::directory_iterator(folder.path(), ec)) {
-                    if (file.path().extension() != ".jsonl")
-                        continue;
-                    const auto t = file.last_write_time(ec);
-                    if (known.newest.empty() || t > newestTime) {
-                        known.newest = file.path();
-                        newestTime = t;
-                    }
-                }
-                if (known.newest.empty())
+            for (const auto &file : std::filesystem::directory_iterator(folder.path(), ec)) {
+                if (file.path().extension() != ".jsonl")
                     continue;
-                std::ifstream in(known.newest);
+                const auto t = file.last_write_time(ec);
+                if (newest.empty() || t > newestTime) {
+                    newest = file.path();
+                    newestTime = t;
+                }
+            }
+            if (newest.empty())
+                continue;
+            const std::string key = newest.string();
+            present.insert(key);
+            const std::uintmax_t size = std::filesystem::file_size(newest, ec);
+            Known &known = cache[key];
+            if (known.cwd.empty() || size < known.size) {
+                known = {size, ""};
+                std::ifstream in(newest);
                 std::string line;
-                // The cwd sits in the first lines that have one; a line
-                // without the key is not parsed.
                 for (int i = 0; i < 50 && std::getline(in, line); ++i) {
                     if (line.find("\"cwd\"") == std::string::npos)
                         continue;
@@ -945,6 +939,7 @@ private:
                         break;
                 }
             }
+            known.size = size;
             if (!known.cwd.empty() && std::filesystem::is_directory(known.cwd, ec))
                 found.emplace_back(newestTime, known.cwd);
         }
