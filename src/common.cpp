@@ -177,6 +177,13 @@ std::string findBinary(const std::string &name)
     return {};
 }
 
+std::string claudeBinary()
+{
+    if (const char *chosen = std::getenv("PVAI_CLAUDE"))
+        return *chosen && ::access(chosen, X_OK) == 0 ? chosen : std::string();
+    return findBinary("claude");
+}
+
 std::string randomHex(std::size_t bytes)
 {
     std::string raw(bytes, '\0');

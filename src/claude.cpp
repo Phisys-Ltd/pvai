@@ -1141,12 +1141,9 @@ void ClaudeBackend::refreshLogin(std::function<void(bool changed)> done)
     });
 }
 
-// PVAI_CLAUDE names the binary (an empty value: none), as PVAI_CODEX does.
 std::string ClaudeBackend::binary() const
 {
-    if (const char *chosen = std::getenv("PVAI_CLAUDE"))
-        return *chosen && ::access(chosen, X_OK) == 0 ? chosen : std::string();
-    return findBinary("claude");
+    return claudeBinary();
 }
 
 void ClaudeBackend::start(const StartRequest &request, Started done)
@@ -1157,6 +1154,11 @@ void ClaudeBackend::start(const StartRequest &request, Started done)
             || ::stat((projectDir(request.cwd) + "/" + request.resume + ".jsonl").c_str(), &st) != 0)
             return done({}, "unknown-conversation");
     }
+    // The found program by its path: the daemon's PATH (started over ssh or
+    // by a service) need not hold ~/.local/bin, where the app installs it.
+    const std::string bin = binary();
+    if (bin.empty())
+        return done({}, "not-installed");
     const std::string id = "w" + randomHex(4);
     std::vector<std::string> argv = {selfExe(), "run", "--detached", "--id", id};
     if (!request.label.empty()) {
@@ -1164,7 +1166,7 @@ void ClaudeBackend::start(const StartRequest &request, Started done)
         argv.push_back(request.label);
     }
     argv.push_back("--");
-    argv.push_back("claude");
+    argv.push_back(bin);
     if (!request.resume.empty()) {
         argv.push_back("--resume");
         argv.push_back(request.resume);

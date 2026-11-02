@@ -845,6 +845,12 @@ int main(int argc, char **argv)
             if (options.command.empty())
                 options.command = {"claude"};
             const auto program = std::filesystem::path(options.command[0]).filename();
+            // A bare "claude" is looked up the way the daemon looks it up, so
+            // a program the app installed under ~/.local/bin runs from a
+            // shell or a daemon whose PATH does not hold that directory.
+            if (program == "claude" && options.command[0] == "claude")
+                if (const std::string found = claudeBinary(); !found.empty())
+                    options.command[0] = found;
             if (program == "codex" && !options.detached)
                 return runCodex({options.command.begin() + 1, options.command.end()});
             // Claude Code reports through the hooks and the status line; a

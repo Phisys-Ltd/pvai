@@ -32,6 +32,10 @@ std::string randomHex(std::size_t bytes);
 // `name` in PATH, ~/.local/bin, /usr/local/bin or /opt/homebrew/bin (the
 // daemon may run with a bare PATH); empty when there is none.
 std::string findBinary(const std::string &name);
+/// Claude Code's program: PVAI_CLAUDE (an empty value: none), else
+/// findBinary("claude"). The daemon and `pvai run` both use it, so a program
+/// the app installed under ~/.local/bin runs from a PATH without it.
+std::string claudeBinary();
 // The convention for spoken turns, given to every session as context:
 // Claude Code gets it from the SessionStart hook, Codex as developer
 // instructions.

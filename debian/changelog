@@ -1,3 +1,15 @@
+pvai (0.5.38-1) trixie; urgency=medium
+
+  * start runs Claude Code by the path the daemon found (PVAI_CLAUDE, PATH,
+    ~/.local/bin, /usr/local/bin, /opt/homebrew/bin), no longer by the bare
+    name: a daemon started over ssh or by a service has no ~/.local/bin in
+    its PATH, and a Claude the app installed there exited with 127. Without
+    a program the start is rejected with not-installed. `pvai run` without
+    a path resolves a bare claude the same way. Codex and Kimi already ran
+    by path.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 08:40:50 +0100
+
 pvai (0.5.37-1) trixie; urgency=medium
 
   * Read a panel taller than the screen (/usage at 40 rows) as a screen
