@@ -10,6 +10,7 @@
 #include "pairing.h"
 #include "tls.h"
 
+#include <cctype>
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
@@ -279,6 +280,15 @@ int main(int argc, char **argv)
     const TestDevice a = newDevice("phone-a"), b = newDevice("phone-b"), c = newDevice("phone-c");
     Link link = parseLink(run("pair --link --name testhost"));
     check(link.code.size() == 26 && link.port == g_port, "pair --link gives a code and the port");
+    {
+        std::string upper = link.code;
+        for (char &ch : upper)
+            ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+        check(base32Decode(link.code) && base32Decode(upper) == base32Decode(link.code),
+              "an upper case code decodes like the lower case one");
+        check(!base32Decode("0aaaaaaa") && !base32Decode("1aaaaaaa") && !base32Decode("aaaaaaa="),
+              "0, 1 and = stay rejected");
+    }
     {
         Client client(a, 2);
         check(client.handshake && client.serverFp == link.fp, "the server's fingerprint is the link's");

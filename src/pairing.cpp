@@ -91,8 +91,10 @@ std::optional<std::string> base32Decode(std::string_view text)
     std::string out;
     unsigned buffer = 0;
     int bits = 0;
-    for (const char c : text) {
+    for (char c : text) {
         int value;
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a'); // upper case reads as lower case
         if (c >= 'a' && c <= 'z')
             value = c - 'a';
         else if (c >= '2' && c <= '7')
