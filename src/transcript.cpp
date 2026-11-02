@@ -91,6 +91,36 @@ bool isMachinePrompt(const std::string &text)
     return false;
 }
 
+std::string stripPasteFrame(const std::string &text)
+{
+    if (text.find("<pasted_content") == std::string::npos && text.find("</pasted_content") == std::string::npos)
+        return text;
+    std::string out;
+    std::size_t at = 0;
+    while (at < text.size()) {
+        const std::size_t open = text.find("<pasted_content", at);
+        const std::size_t close = text.find("</pasted_content", at);
+        const std::size_t tag = std::min(open, close);
+        if (tag == std::string::npos) {
+            out += text.substr(at);
+            break;
+        }
+        const std::size_t end = text.find('>', tag);
+        if (end == std::string::npos) {
+            out += text.substr(at);
+            break;
+        }
+        out += text.substr(at, tag - at);
+        at = end + 1;
+        if (tag == open && at < text.size() && text[at] == '\n')
+            ++at;
+    }
+    const std::size_t first = out.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos)
+        return {};
+    return out.substr(first, out.find_last_not_of(" \t\r\n") - first + 1);
+}
+
 std::string commandFile(const std::string &command)
 {
     std::string found;
@@ -392,7 +422,8 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
         entry.update(base);
         out.push_back(std::move(entry));
     };
-    auto prompt = [&](const std::string &text) {
+    auto prompt = [&](const std::string &raw) {
+        const std::string text = stripPasteFrame(raw);
         std::string inner, args;
         if (text.rfind("[Request interrupted by user", 0) == 0) {
             emit({{"kind", "interrupted"}});

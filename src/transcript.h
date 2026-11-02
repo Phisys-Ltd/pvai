@@ -25,6 +25,10 @@ std::string commandFile(const std::string &command);
 // command echoes and output, ! shell input and output), by its known
 // leading tag; an owner's prompt that starts with another tag is none.
 bool isMachinePrompt(const std::string &text);
+// `text` without Claude Code's paste frame (<pasted_content id="..."> ...
+// </pasted_content id="...">, also around only a part of the text) and
+// without the whitespace around it. Unchanged when there is no frame.
+std::string stripPasteFrame(const std::string &text);
 // A line Claude Code keeps for itself: meta lines, and the summary a
 // compaction leaves as a user line (isCompactSummary).
 bool isBookkeeping(const json &line);

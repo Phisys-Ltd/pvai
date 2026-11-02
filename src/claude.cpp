@@ -543,6 +543,7 @@ void ClaudeSession::onHook(const json &event)
     const bool trust = dialog_ == "trust"; // answered in the terminal: the next hook says so
     if (name != "Notification" && name != "PermissionRequest")
         dialog_.clear();
+    std::optional<Prompt> confirmed; // the prompt this hook confirms, when the daemon typed it
     if (name == "UserPromptSubmit" || name == "Stop" || name == "SessionStart") {
         blocked_ = false; // the prompt is Claude's again
         retryAt_.reset();
@@ -550,6 +551,7 @@ void ClaudeSession::onHook(const json &event)
         if (name == "UserPromptSubmit") {
             if (!inFlight_)
                 dropQueued(event.value("prompt", ""));
+            confirmed = inFlight_;
             delivered();
         } else if (inFlight_) { // a turn ended or started over without it
             queue_.push_front(*inFlight_);
@@ -570,7 +572,7 @@ void ClaudeSession::onHook(const json &event)
     } else if (name == "UserPromptSubmit") {
         limited_ = nullptr;
         state_ = "busy";
-        promptVoice(event.value("prompt", ""));
+        promptVoice(event.value("prompt", ""), confirmed ? &*confirmed : nullptr);
     } else if (name == "Stop" && limited_.is_object() && limitAhead(limited_)) {
         // The limit ended the turn in the file, but Claude Code goes on by
         // itself at the reset: stay busy until it does.
@@ -893,7 +895,7 @@ void ClaudeSession::onSnapshot(const std::string &screen)
 // instead of going in a second time.
 void ClaudeSession::dropQueued(const std::string &text)
 {
-    std::string sent = trim(text, " \t\r\n");
+    std::string sent = trim(stripPasteFrame(text), " \t\r\n");
     if (sent.compare(0, std::strlen(kMicMark), kMicMark) == 0)
         sent = trim(sent.substr(std::strlen(kMicMark)), " \t\r\n");
     for (auto it = queue_.begin(); it != queue_.end(); ++it) {

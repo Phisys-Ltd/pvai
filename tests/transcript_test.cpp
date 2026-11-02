@@ -30,6 +30,9 @@ int main()
     check(!isMachinePrompt("<pasted_content id=\"x\">text</pasted_content>"), "a paste stays");
     check(!isMachinePrompt("<bash-inputs>x"), "only whole tag names");
     check(!isMachinePrompt("plain"), "plain text is the owner's");
+    check(pvai::stripPasteFrame("\n\n<pasted_content id=\"8916\">\n[Message p1 from x]\nhi\n</pasted_content id=\"8916\">") == "[Message p1 from x]\nhi",
+          "a paste frame is stripped");
+    check(pvai::stripPasteFrame("plain") == "plain", "no frame, no change");
 
     const pvai::test::TestHome home("/tmp/pvai-transcript-", false);
     const std::string path = home.path + "/t.jsonl";
@@ -75,6 +78,15 @@ int main()
     for (const auto &e : tail.poll())
         got += e.value("kind", "") + ":" + e.value("text", "") + "|";
     check(got == "prompt:hello|text:hi|command:/compact|", "a compaction is a /compact entry, its summary none: " + got);
+    // A pasted prompt shows without its frame, like the plain one.
+    const std::string pasted = home.path + "/pasted.jsonl";
+    std::ofstream(pasted) << userLine(30, "\n\n<pasted_content id=\"8916\">\n[Message p1 from x]\nhi\n</pasted_content id=\"8916\">")
+                          << userLine(31, "[Message p1 from x]\nhi");
+    tail.follow(pasted);
+    got.clear();
+    for (const auto &e : tail.poll())
+        got += e.value("kind", "") + ":" + e.value("text", "") + "|";
+    check(got == "prompt:[Message p1 from x]\nhi|prompt:[Message p1 from x]\nhi|", "a pasted prompt is the plain one: " + got);
     // The text of the last local command's output.
     const std::string local = home.path + "/local.jsonl";
     std::ofstream(local) << userLine(20, "<command-name>/model</command-name>")

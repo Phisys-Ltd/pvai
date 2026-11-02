@@ -1,3 +1,12 @@
+pvai (0.5.54-1) trixie; urgency=medium
+
+  * A prompt the daemon typed decides the voice state by its own flags, not
+    by its text; Claude Code's pasted_content frame no longer makes an agent
+    message look like a prompt the owner typed. The frame is also ignored in
+    the text check for terminal prompts and in the transcript's prompt entries.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 02:00:00 +0100
+
 pvai (0.5.53-1) trixie; urgency=medium
 
   * A wrapper that sends no version (before 0.5.52) is stale but served;

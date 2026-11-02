@@ -1122,7 +1122,10 @@ private:
             return reject(peer, ref, id, "empty");
         if (text.size() > kMaxPrompt)
             return reject(peer, ref, id, "too-long");
-        const bool typed = session->prompt({fromLine(message) + text, message.value("voice", false), ref});
+        const std::string header = fromLine(message);
+        Prompt prompt{header + text, message.value("voice", false), ref};
+        prompt.agent = !header.empty();
+        const bool typed = session->prompt(std::move(prompt));
         peer->conn->send({{"type", "accepted"}, {"ref", ref}, {"session", id},
                           {"delivery", typed && !session->confirmsDelivery() ? "typed" : "queued"}});
     }

@@ -219,12 +219,19 @@ bool Session::deliver()
     return true;
 }
 
-void Session::promptVoice(const std::string &text)
+void Session::promptVoice(const std::string &raw, const Prompt *typed)
 {
-    if (text.rfind(kMicMark, 0) == 0)
+    const std::string text = stripPasteFrame(raw);
+    if (typed) {
+        if (typed->voice)
+            spokenLast_ = true;
+        else if (!typed->agent)
+            spokenLast_ = false;
+    } else if (text.rfind(kMicMark, 0) == 0) {
         spokenLast_ = true;
-    else if (text.rfind("[Message ", 0) != 0)
+    } else if (text.rfind("[Message ", 0) != 0) {
         spokenLast_ = false;
+    }
     voiceTurn_ = spokenLast_;
 }
 

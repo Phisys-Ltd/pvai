@@ -25,6 +25,7 @@ struct Prompt {
     std::string text;
     bool voice = false;
     json ref; // the app's `ref`, for `delivered`
+    bool agent = false; // an agent message the owner released ([Message ...] first line)
     bool modelSwitch = false; // Claude Code's /model from setModel: its output tells the outcome
 };
 
@@ -156,7 +157,11 @@ protected:
     // A turn starts with `text` as its prompt: spoken when it has the 🎙
     // mark; an agent message (`[Message `) goes on as the owner's last
     // prompt did, any other text is the owner typing and ends that.
-    void promptVoice(const std::string &text);
+    // `typed` is the prompt the daemon typed itself, when the hook confirms
+    // one: its own flags decide (a 🎙 prompt is spoken, an agent message
+    // changes nothing, any other text is the owner's), not the text, which
+    // Claude Code may have wrapped (a paste).
+    void promptVoice(const std::string &text, const Prompt *typed = nullptr);
     // A turn without a prompt (a background task or agent came back): it
     // is spoken when the owner's last prompt was.
     void wakeVoice() { voiceTurn_ = spokenLast_; }

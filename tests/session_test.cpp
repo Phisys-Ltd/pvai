@@ -1308,6 +1308,17 @@ int main(int argc, char **argv)
     check(said("typed") == json(false), "a typed prompt ends that");
     check(said("[Message p2 from M4/w1, released by the owner. Answer with: ...]\nhi") == json(false),
           "and an agent message after a typed prompt is not spoken");
+    // Claude Code stores a long delivered message as a paste.
+    const std::string frame = "\n\n<pasted_content id=\"8916\">\n[Message p690cecbc from M4/w3c, released by the owner. Answer with: ...]\nhi\n</pasted_content id=\"8916\">";
+    check(said("\xF0\x9F\x8E\x99 voice again") == json(true), "a spoken prompt");
+    a.send({{"type", "prompt"}, {"ref", 20}, {"session", "wterm"}, {"text", "hi"}, {"from", "M4/w3c"}, {"fromLabel", "x"}});
+    check(wrapper.next("type").value("text", "").rfind("[Message ", 0) == 0, "a daemon-typed agent message goes in");
+    hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", frame}});
+    check(said("") == json(true), "daemon-typed, confirmed as a paste: the voice state is unchanged");
+    check(said(frame) == json(true), "terminal-typed paste frame around [Message: unchanged (text fallback)");
+    check(said("\n\n<pasted_content id=\"1\">\nplain words\n</pasted_content id=\"1\">") == json(false),
+          "terminal-typed plain text in a frame ends it");
+    check(said("typed again") == json(false), "plain terminal text is not spoken");
     // A notification and its answer inside a turn, read only after its Stop:
     // no turn of its own.
     hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "go"}});

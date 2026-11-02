@@ -951,6 +951,12 @@ a second.
   owner's last own prompt was: a turn a finished background task or agent
   started, and an agent message the owner released (`[Message …]`). A
   prompt the owner typed ends that. The 🔊 convention says the same.
+  (Since 0.5.54) A prompt the daemon typed itself decides by what it is,
+  not by its text: a `voice: true` prompt is spoken, an agent message
+  (`from`) leaves the state as it is, any other app prompt ends it. Only a
+  prompt typed in the terminal (or after a daemon restart) is judged by its
+  text, and Claude Code's `<pasted_content id="...">` frame around a long
+  prompt is ignored there, in the transcript's `prompt` entries too.
 - At the end of every turn the daemon sends `say`. `text` is the last `🔊 `
   line of the turn's final answer, without the marker. Without such a line:
   empty for a voice turn (the app speaks its own "done, details in the
