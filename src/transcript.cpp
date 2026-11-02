@@ -153,6 +153,19 @@ namespace {
 
 bool isWake(const json &line);
 
+// A message from another Claude session or from pvai itself: Claude Code
+// writes it as a meta user line and takes it up like a task notification.
+bool isHandBack(const json &line)
+{
+    if (line.value("type", "") != "user" || !line.value("isMeta", false) || !line.contains("message") || !line["message"].is_object())
+        return false;
+    const json content = line["message"].value("content", json());
+    if (!content.is_string())
+        return false;
+    const std::string text = content.get<std::string>();
+    return text.rfind("Another Claude session sent a message", 0) == 0 || text.rfind("[Message p", 0) == 0;
+}
+
 // A task notification younger than this, not answered yet, is a turn Claude
 // Code is about to run (or runs: the answer is written when it is complete).
 constexpr long long kNotificationFresh = 10 * 60;
@@ -169,7 +182,7 @@ void turnStep(const json &entry, bool &running, bool &ends, long long &noteAt)
     if (!entry.is_object() || entry.value("isSidechain", false))
         return;
     const std::string type = entry.value("type", "");
-    if (isWake(entry)) {
+    if (isWake(entry) || isHandBack(entry)) {
         noteAt = unixTime(entry.value("timestamp", ""));
         return;
     }
@@ -229,13 +242,18 @@ bool turnRunning(const std::string &path)
             continue;
         turnStep(json::parse(line, nullptr, false), running, ends, noteAt);
     }
-    return ends && (running || freshNote(noteAt));
+    // A turn end is not needed: an answer after the last one (or none at
+    // all, in a window that holds no end) is a turn that goes on.
+    (void)ends;
+    return running || freshNote(noteAt);
 }
 
 std::optional<bool> TranscriptTail::turnRunningSeen() const
 {
+    if (turnRunning_ || freshNote(noteAt_))
+        return true;
     if (turnEnds_)
-        return turnRunning_ || freshNote(noteAt_);
+        return false;
     if (windowed_)
         return std::nullopt; // no turn end in the window: the file may have one further back
     return false;

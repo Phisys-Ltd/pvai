@@ -997,6 +997,22 @@ int main(int argc, char **argv)
         fresh.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wfresh"}, {"cwd", project}, {"label", "fresh"}, {"running", true}, {"restart", true}});
         check(!waitSession(a, "wfresh", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),
               "taken over with a fresh unanswered task notification: busy");
+        {
+            char stampMac[32];
+            const std::time_t t = std::time(nullptr) - 30;
+            std::tm tmMac{};
+            gmtime_r(&t, &tmMac);
+            std::strftime(stampMac, sizeof stampMac, "%Y-%m-%dT%H:%M:%S.000Z", &tmMac);
+            const json meta = {{"type", "user"}, {"isMeta", true}, {"timestamp", stampMac},
+                               {"message", {{"role", "user"}, {"content", "Another Claude session sent a message: <agent-message from=\"x\">hi</agent-message>"}}}};
+            const std::string macFile = home + "/elsewhere/mac.jsonl";
+            writeFile(macFile, meta.dump() + "\n" + tool + "\n" + R"({"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}})" "\n");
+            writeFile(runtime + "/pvai/wmac.claude", json({{"claudeSession", "mac-1"}, {"transcript", macFile}}).dump() + "\n");
+            LineClient macClient;
+            macClient.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wmac"}, {"cwd", project}, {"label", "mac"}, {"running", true}, {"restart", true}});
+            check(!waitSession(a, "wmac", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),
+                  "taken over in a turn a meta hand-back started, no turn end in the file: busy");
+        }
         LineClient wake;
         wake.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wwake"}, {"cwd", project}, {"label", "wake"}, {"running", true}, {"restart", true}});
         check(!waitSession(a, "wwake", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),

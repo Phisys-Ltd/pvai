@@ -50,7 +50,10 @@ int main()
     check(got == "command:! ssh pi5 uptime|output:up 3 days\nwarn\n|prompt:<div>mine</div>|", "the entries: " + got);
     check(tail.localOutputs() == 0, "! output is no slash command's");
     check(tail.shellOutputs() == 2, "each ! output counts, also an empty one: " + std::to_string(tail.shellOutputs()));
-    check(!pvai::turnRunning(path), "! input starts no turn");
+    const std::string bangs = home.path + "/bangs.jsonl";
+    std::ofstream(bangs) << userLine(1, "<bash-input>ssh pi5 uptime</bash-input>") << userLine(2, "<bash-stdout>up</bash-stdout><bash-stderr></bash-stderr>");
+    check(!pvai::turnRunning(bangs), "! input starts no turn");
+    check(pvai::turnRunning(path), "an owner prompt after them does, whether or not a turn ever ended");
 
     // An idle compaction after a finished turn (Claude Code 2.1.31x): the
     // summary is no prompt, and no turn runs.
@@ -113,6 +116,28 @@ int main()
     check(turnOf("wake5", prev + stamped(60)), "a notification 1 min old, not answered yet: running");
     check(!turnOf("wake6", prev + stamped(2 * 3600)), "a notification 2 h old, alone: not running");
     check(!turnOf("wake7", prev + stamped(60) + asst + done), "a fresh notification whose turn ended: not running");
+    // The Mac sequence: a meta hand-back line starts the turn, no turn_duration
+    // in the window, tool calls going on.
+    auto at = [&](long long ago) {
+        char buf[32];
+        const std::time_t t = std::time(nullptr) - ago;
+        std::tm tm{};
+        gmtime_r(&t, &tm);
+        std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%S.000Z", &tm);
+        return std::string(buf);
+    };
+    const std::string macStart = pvai::json({{"type", "user"}, {"isMeta", true}, {"timestamp", at(40)},
+                                             {"message", {{"role", "user"}, {"content", "Another Claude session sent a message: <agent-message from=\"M4/w1\">hi</agent-message>"}}}}).dump() + "\n";
+    const std::string macTool = pvai::json({{"type", "assistant"}, {"isSidechain", false}, {"timestamp", at(30)},
+                                            {"message", {{"content", pvai::json::array({{{"type", "tool_use"}, {"id", "t9"}, {"name", "Bash"}, {"input", pvai::json::object()}}})}}}}).dump() + "\n";
+    const std::string macRest = pvai::json({{"type", "user"}, {"timestamp", at(25)}, {"message", {{"role", "user"}, {"content", pvai::json::array({{{"type", "tool_result"}, {"tool_use_id", "t9"}, {"content", "ok"}}})}}}}).dump() + "\n"
+                              + R"({"type":"attachment","isSidechain":false,"attachment":{"type":"hook_success"}})" "\n"
+                              + R"({"type":"queue-operation","operation":"enqueue"})" "\n"
+                              + R"({"type":"api-request","uuid":"r1"})" "\n" + R"({"type":"last-prompt"})" "\n";
+    check(turnOf("mac1", macStart + macTool + macRest), "the Mac sequence, no turn end anywhere: running");
+    check(turnOf("mac2", prev + macStart + macTool + macRest), "the Mac sequence after a finished turn: running");
+    check(turnOf("mac3", prev + macStart), "a fresh meta hand-back alone: running");
+    check(!turnOf("mac4", prev + macStart + macTool + done), "and ended by turn_duration: not running");
     check(turnOf("wake4", prev + userLine(34, "do it")), "an owner prompt starts a turn at once");
 
     tail.follow(idle);

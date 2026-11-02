@@ -1,3 +1,13 @@
+pvai (0.5.56-1) trixie; urgency=medium
+
+  * A daemon restarted in the middle of a turn reads the session as busy
+    when the transcript holds no turn end in its window: an answer of
+    Claude's after the last end, or after none, is a turn that goes on.
+    A message from another Claude session (a meta user line) counts like a
+    task notification, busy while it is under ten minutes old.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 04:00:00 +0100
+
 pvai (0.5.55-1) trixie; urgency=medium
 
   * A daemon restarted right after a task notification reads the session as
