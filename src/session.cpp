@@ -1,5 +1,6 @@
 #include "session.h"
 
+#include <cctype>
 #include <ctime>
 
 namespace pvai {
@@ -132,6 +133,16 @@ void Session::promptVoice(const std::string &text)
 void Session::say(const std::string &answer)
 {
     std::string text = speakLine(answer);
+    std::size_t words = 0;
+    bool inWord = false;
+    for (unsigned char c : text) {
+        const bool space = std::isspace(c);
+        if (!space && !inWord) ++words;
+        inWord = !space;
+    }
+    host_.log(id_ + ": say voice=" + (voiceTurn_ ? "true" : "false")
+              + (text.empty() ? ", no speak line"
+                              : ", speak line " + std::to_string(words) + " words " + std::to_string(text.size()) + " bytes"));
     if (text.empty() && !voiceTurn_)
         text = firstSentence(answer);
     host_.broadcast({{"type", "say"}, {"session", id_}, {"text", text}, {"voice", voiceTurn_}});
