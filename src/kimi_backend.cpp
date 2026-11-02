@@ -311,7 +311,7 @@ void KimiSession::onUpdate(const json &update)
         setConfig(update);
     } else if (kind == "session_info_update") {
         if (const std::string title = str(update, "title"); !title.empty() && label().empty())
-            setLabel(cut(oneLine(title, kTitleMax * 4), kTitleMax));
+            setLabel(shortTitle(title));
     }
 }
 
@@ -667,16 +667,12 @@ void KimiBackend::conversations(const std::string &cwd, std::function<void(std::
                 if (id.empty() || host_.session(id))
                     continue;
                 std::string title = str(s, "title");
-                if (title.rfind(kMicMark, 0) == 0)
-                    title = title.substr(std::string(kMicMark).size());
-                title = cut(oneLine(title, kTitleMax * 4), kTitleMax);
+                title = conversationTitle(std::move(title));
                 if (title.empty())
                     continue;
                 out.push_back({id, title, unixTimeOf(s.value("updatedAt", json()))});
             }
-        std::sort(out.begin(), out.end(), [](const auto &x, const auto &y) { return x.at > y.at; });
-        if (out.size() > kMaxConversations)
-            out.resize(kMaxConversations);
+        trimConversations(out);
         done(std::move(out));
     });
 }
@@ -687,10 +683,7 @@ void KimiBackend::start(const StartRequest &request, Started done)
 {
     if (!ready_)
         return done({}, "no-assistant");
-    std::string model;
-    for (std::size_t i = 0; i + 1 < request.args.size(); ++i)
-        if (request.args[i] == "-m" || request.args[i] == "--model")
-            model = request.args[i + 1];
+    const std::string model = modelArgument(request.args).value_or("");
     const std::string label = request.label, cwd = request.cwd;
     auto failed = [this, done](const json &error, const char *reason) {
         noteAuth(error);

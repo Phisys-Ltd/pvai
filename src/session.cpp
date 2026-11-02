@@ -131,6 +131,31 @@ json contextOf(const json &used, const json &size)
     return {{"percent", percent}, {"tokens", used.is_number() ? used : json(0)}, {"size", size}};
 }
 
+std::string shortTitle(std::string_view text) { return cut(oneLine(text, kTitleMax * 4), kTitleMax); }
+
+std::string conversationTitle(std::string text)
+{
+    if (text.rfind(kMicMark, 0) == 0)
+        text = text.substr(std::string(kMicMark).size());
+    return shortTitle(text);
+}
+
+void trimConversations(std::vector<Conversation> &list)
+{
+    std::sort(list.begin(), list.end(), [](const auto &x, const auto &y) { return x.at > y.at; });
+    if (list.size() > kMaxConversations)
+        list.resize(kMaxConversations);
+}
+
+std::optional<std::string> modelArgument(const std::vector<std::string> &args)
+{
+    std::optional<std::string> model;
+    for (std::size_t i = 0; i + 1 < args.size(); ++i)
+        if (args[i] == "-m" || args[i] == "--model")
+            model = args[i + 1];
+    return model;
+}
+
 void sortByStart(json &entries)
 {
     std::sort(entries.begin(), entries.end(), [](const json &a, const json &b) {

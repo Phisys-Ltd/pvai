@@ -273,6 +273,15 @@ std::string isoTime(long long ms);
 json contextOf(const json &used, const json &size);
 // Subagent entries, the earliest `startedAt` first.
 void sortByStart(json &entries);
+// A conversation's title or a subagent's description: one line of at most
+// kTitleMax bytes.
+std::string shortTitle(std::string_view text);
+// The same without the leading mic mark of a spoken prompt.
+std::string conversationTitle(std::string text);
+// Newest first, at most kMaxConversations.
+void trimConversations(std::vector<Conversation> &list);
+// The model named by the last `-m` or `--model` in `args`, if one is.
+std::optional<std::string> modelArgument(const std::vector<std::string> &args);
 // The first word of a `--version` output that starts with a digit.
 std::string versionIn(const std::string &output);
 

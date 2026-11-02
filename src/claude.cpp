@@ -104,9 +104,7 @@ std::string firstPrompt(const std::string &path)
         text = trim(text);
         if (text.empty() || isMachinePrompt(text))
             continue;
-        if (text.rfind(kMicMark, 0) == 0)
-            text = text.substr(std::string(kMicMark).size());
-        return cut(oneLine(text, kTitleMax * 4), kTitleMax);
+        return conversationTitle(std::move(text));
     }
     return {};
 }

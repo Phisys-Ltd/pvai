@@ -755,7 +755,7 @@ void CodexBackend::noteSubagent(const json &thread)
     const json source = thread.value("source", json());
     if (type.empty() && source.is_object() && source.contains("subAgent") && source["subAgent"].is_string())
         type = source["subAgent"].get<std::string>();
-    std::string description = cut(oneLine(str(thread, "preview"), kTitleMax * 4), kTitleMax);
+    std::string description = shortTitle(str(thread, "preview"));
     if (description.empty())
         description = str(thread, "agentNickname");
     Subagent agent{parent,
@@ -944,16 +944,12 @@ void CodexBackend::conversations(const std::string &cwd, std::function<void(std:
                     std::string title = str(thread, "name");
                     if (title.empty())
                         title = str(thread, "preview");
-                    if (title.rfind(kMicMark, 0) == 0)
-                        title = title.substr(std::string(kMicMark).size());
-                    title = cut(oneLine(title, kTitleMax * 4), kTitleMax);
+                    title = conversationTitle(std::move(title));
                     if (title.empty())
                         continue;
                     out.push_back({id, title, thread.value("updatedAt", 0LL)});
                 }
-            std::sort(out.begin(), out.end(), [](const auto &x, const auto &y) { return x.at > y.at; });
-            if (out.size() > kMaxConversations)
-                out.resize(kMaxConversations);
+            trimConversations(out);
             done(std::move(out));
         });
     });
@@ -966,9 +962,8 @@ void CodexBackend::start(const StartRequest &request, Started done)
     if (!ready_)
         return done({}, "no-assistant");
     json params = {{"developerInstructions", kVoiceContext}};
-    for (std::size_t i = 0; i + 1 < request.args.size(); ++i)
-        if (request.args[i] == "-m" || request.args[i] == "--model")
-            params["model"] = request.args[i + 1];
+    if (const auto model = modelArgument(request.args))
+        params["model"] = *model;
     const std::string label = request.label;
     auto started = [this, label, done](const json &result, const json &error, const char *failure) {
         CodexSession *session = error.is_null() && result.contains("thread") ? addSession(result["thread"], true) : nullptr;
