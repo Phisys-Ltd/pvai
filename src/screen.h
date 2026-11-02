@@ -51,6 +51,8 @@ private:
     std::string utf8_;
     std::size_t utf8Need_ = 0;
     int lastR_ = -1, lastC_ = -1; // the cell a combining mark joins
+    bool joinNext_ = false;       // after a zero width joiner: the next character joins too
+    bool riOpen_ = false;         // the last character is a lone regional indicator
 };
 
 // The dialog Claude Code shows in place of its prompt, read off the screen:

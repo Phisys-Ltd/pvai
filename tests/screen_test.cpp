@@ -107,6 +107,22 @@ int main()
     feed(vs16, "\xF0\x9F\x8E\x99\xEF\xB8\x8F" "ab\r\x1b[3CZ");
     check(vs16.row(0) == "\xF0\x9F\x8E\x99\xEF\xB8\x8F" "aZ", "a symbol with VS16 takes two columns: " + vs16.row(0));
 
+    // Joined sequences are one character of two columns for Claude Code: a
+    // family, a flag, a keycap, a heart with VS16. It then moves by absolute
+    // column, so a different width leaves letters of the old line behind
+    // (the bytes are Claude Code 2.1.316 streaming a reply).
+    struct Cluster { const char *name; const char *utf8; };
+    for (const Cluster &c : {Cluster{"family", "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D\xF0\x9F\x91\xA7"},
+                             Cluster{"flag", "\xF0\x9F\x87\xA9\xF0\x9F\x87\xAA"}, Cluster{"keycap", "1\xEF\xB8\x8F\xE2\x83\xA3"},
+                             Cluster{"heart", "\xE2\x9D\xA4\xEF\xB8\x8F"}, Cluster{"skin tone", "\xF0\x9F\x91\x8D\xF0\x9F\x8F\xBD"}}) {
+        pvai::Screen cluster(4, 40);
+        const std::string line = std::string("  a ") + c.utf8 + " bcdefgh ijklmnop";
+        feed(cluster, "\x1b[H" + line + "\r\n");
+        // The next frame rewrites the same row: letters at absolute columns.
+        feed(cluster, "\x1b[H\r\x1b[2Ca\x1b[5G" + std::string(c.utf8) + "\x1b[8Gbcdefgh\x1b[16Gijklmnop");
+        check(cluster.row(0) == line, std::string("a ") + c.name + " is two columns: [" + cluster.row(0) + "]");
+    }
+
     // A prompt typed with the mic mark, drawn as Claude Code 2.1.316 does: the
     // mark is one column, later updates move by absolute column.
     pvai::Screen mic(8, 60);

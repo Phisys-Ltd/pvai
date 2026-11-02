@@ -121,13 +121,20 @@ bool emojiPresentation(char32_t cp)
 int width(char32_t cp)
 {
     if ((cp >= 0x300 && cp <= 0x36f) || cp == 0x200b || cp == 0x200c || cp == 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f)
-        || (cp >= 0x1f3fb && cp <= 0x1f3ff) || (cp >= 0xe0020 && cp <= 0xe007f))
+        || (cp >= 0x1f3fb && cp <= 0x1f3ff) || (cp >= 0xe0020 && cp <= 0xe007f) || (cp >= 0x483 && cp <= 0x489)
+        || (cp >= 0x1ab0 && cp <= 0x1aff) || (cp >= 0x1dc0 && cp <= 0x1dff) || (cp >= 0x20d0 && cp <= 0x20ff)
+        || (cp >= 0xfe20 && cp <= 0xfe2f))
         return 0;
     if ((cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf && cp != 0x303f) || (cp >= 0xac00 && cp <= 0xd7a3)
         || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60)
         || (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x20000 && cp <= 0x3fffd) || emojiPresentation(cp))
         return 2;
     return 1;
+}
+
+bool regionalIndicator(char32_t cp)
+{
+    return cp >= 0x1f1e6 && cp <= 0x1f1ff;
 }
 
 char32_t decode(const std::string &s)
@@ -206,6 +213,7 @@ void Screen::resize(int rows, int cols)
     bottom_ = rows_ - 1;
     wrapPending_ = false;
     lastR_ = lastC_ = -1;
+    joinNext_ = riOpen_ = false;
 }
 
 std::string Screen::row(int r) const
@@ -255,9 +263,19 @@ void Screen::lineFeed()
 
 void Screen::put(const std::string &ch, int w)
 {
+    // Claude Code counts a joined sequence as one character of its first
+    // width: a family (emoji, joiner, emoji, ...) is two columns, a flag (two
+    // regional indicators) is two, not four.
+    if (w > 0 && lastR_ >= 0 && (joinNext_ || (riOpen_ && regionalIndicator(decode(ch))))) {
+        grid()[lastR_][lastC_] += ch;
+        joinNext_ = riOpen_ = false;
+        return;
+    }
+    joinNext_ = riOpen_ = false;
     if (w == 0) {
         if (lastR_ < 0)
             return;
+        joinNext_ = ch == "\xE2\x80\x8D"; // zero width joiner
         auto &cell = grid()[lastR_][lastC_];
         // Variation selector 16 makes a text-style symbol two columns wide,
         // as Claude Code draws it.
@@ -277,6 +295,7 @@ void Screen::put(const std::string &ch, int w)
     line[c_] = ch;
     lastR_ = r_;
     lastC_ = c_;
+    riOpen_ = regionalIndicator(decode(ch));
     if (w == 2 && c_ + 1 < cols_)
         line[c_ + 1] = "\x01";
     c_ += w;
@@ -416,6 +435,8 @@ void Screen::feed(const char *data, std::size_t n)
                 }
                 utf8Need_ = 0; // a broken sequence: drop it, read this byte afresh
             }
+            if (b < 0x20)
+                joinNext_ = riOpen_ = false;
             if (b == 0x1b) {
                 state_ = State::Escape;
             } else if (b == '\r') {
