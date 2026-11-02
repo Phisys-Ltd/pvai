@@ -76,7 +76,8 @@ so this path must hold up like ssh.
    and cannot make a valid proof.
 3. The daemon answers `paired` (`host`, `fingerprint` of the device) and
    adds the device, or `rejected` with `reason` `bad-proof` (also for a
-   line that is no well-formed `pair`) or `no-window`; either way it closes
+   line that is no well-formed `pair`: since 0.5.52 that includes JSON without a
+   `type`, JSON that is no object, and text that is no JSON at all) or `no-window`; either way it closes
    the connection and the window. The app then connects again as a paired
    device.
 

@@ -687,13 +687,15 @@ private:
 
     void handle(Peer *peer, const json &message)
     {
+        // In a pairing window every line that is no well-formed `pair` is a
+        // bad proof (the window closes), also one without a type.
+        if (!peer->pairing.empty()) {
+            onPair(peer, message);
+            return;
+        }
         const std::string type = message.is_object() ? message.value("type", "") : "";
         if (type.empty()) {
             peer->conn->send({{"type", "error"}, {"code", "bad-message"}, {"text", "not a JSON object with a type"}});
-            return;
-        }
-        if (!peer->pairing.empty()) {
-            onPair(peer, message);
             return;
         }
         if (peer->kind == Kind::Unknown) {

@@ -348,6 +348,26 @@ int main(int argc, char **argv)
         check(client.readLine().empty(), "an overlong line before login is dropped");
     }
 
+    // In a pairing window every line that is no well-formed pair is a bad
+    // proof, also JSON without a type or no object: the window closes and the
+    // connection ends.
+    {
+        int index = 80;
+        for (const char *line : {"{}", "[]", R"({"x":1})", "7", "not json"}) {
+            freshAddress();
+            link = parseLink(run("pair --link"));
+            {
+                Client client(b, index++);
+                client.sendLine(line);
+                check(typeOf(client.readLine()) == "rejected:bad-proof", std::string("a bad proof: ") + line);
+                check(client.readLine().empty(), std::string("and the connection ends: ") + line);
+            }
+            Client later(b, index++);
+            const std::string again = typeOf(later.pair(link.code, "B"));
+            check(again != "paired", std::string("the window is closed after: ") + line + " (" + again + ")");
+        }
+    }
+
     stopDaemon();
     return finish();
 }
