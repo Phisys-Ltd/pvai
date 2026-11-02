@@ -237,6 +237,45 @@ int installHooks(bool quiet)
     return changeSettings(withHooks, true, quiet, unchanged.c_str(), written.c_str());
 }
 
+// Claude Code's own config (~/.claude.json, beside the ~/.claude directory
+// that installHooks uses): marks the first-run onboarding as done when the
+// keys are missing, so a fresh install starts without its pages. Keys that
+// exist stay as they are.
+void markOnboardingDone()
+{
+    const char *home = std::getenv("HOME");
+    const std::string path = std::string(home ? home : "") + "/.claude.json";
+    json config = json::object();
+    struct stat st;
+    const bool exists = ::stat(path.c_str(), &st) == 0;
+    if (exists) {
+        std::ifstream in(path);
+        config = json::parse(in, nullptr, false);
+        if (config.is_discarded() || !config.is_object()) {
+            std::fprintf(stderr, "pvai: %s is not a JSON object, not touching it\n", path.c_str());
+            return;
+        }
+    }
+    bool changed = false;
+    for (const auto &[key, value] : {std::pair<const char *, json>{"hasCompletedOnboarding", true}, {"theme", "dark"}})
+        if (!config.contains(key)) {
+            config[key] = value;
+            changed = true;
+        }
+    if (!changed)
+        return;
+    const std::string temp = path + ".tmp";
+    const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    const std::string text = config.dump(2) + "\n";
+    const bool ok = fd >= 0 && ::write(fd, text.data(), text.size()) == static_cast<ssize_t>(text.size());
+    if (fd >= 0)
+        ::close(fd);
+    if (exists)
+        ::chmod(temp.c_str(), st.st_mode & 07777);
+    if (!ok || ::rename(temp.c_str(), path.c_str()) != 0)
+        std::fprintf(stderr, "pvai: cannot write %s: %s\n", path.c_str(), std::strerror(errno));
+}
+
 int uninstallHooks()
 {
     return changeSettings(withoutHooks, false, false, "no pvai hooks or status line in",
@@ -855,8 +894,10 @@ int main(int argc, char **argv)
                 return runCodex({options.command.begin() + 1, options.command.end()});
             // Claude Code reports through the hooks and the status line; a
             // missing or stale entry (another pvai binary) is fixed here.
-            if (program == "claude")
+            if (program == "claude") {
                 installHooks(true);
+                markOnboardingDone();
+            }
             return runWrapper(options);
         }
         if (verb == "listen" && args.size() <= 2)

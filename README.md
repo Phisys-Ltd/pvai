@@ -22,7 +22,9 @@ without Qt; the app talks to it over the JSON protocol in
   existing status line command keeps printing through `--chain`); the rest
   of the file stays as it is, the old one is kept as `settings.json.pvai-bak`.
   `pvai install-hooks` does the same on its own, `pvai uninstall-hooks`
-  takes them out again.
+  takes them out again. `pvai run` also marks Claude Code's onboarding as
+  done in `~/.claude.json` (`hasCompletedOnboarding`, `theme`) when those
+  keys are missing, so a fresh install starts without the first-run pages.
 - `pvai codex …` starts the Codex TUI on Codex's shared app server
   (`--remote unix://`), where the daemon follows its threads; Codex needs
   no wrapper and no hooks.

@@ -216,7 +216,10 @@ daemon knows every live one on its host.
   profile as JSON), `null` for a question.
 - `usage`: what `/context` and `/usage` would show, in short, from Claude
   Code's status line input (so `pvai install-hooks` sets the status line to
-  `pvai statusline`); `null` until the first status line:
+  `pvai statusline`); `null` until the first status line. (The wrapper also
+  marks Claude Code's onboarding as done, `hasCompletedOnboarding` and
+  `theme` in `~/.claude.json`, when the keys are missing, so a fresh install
+  starts without the first-run pages.):
   ```json
   {"model": "Opus 5.5",
    "context": {"percent": 5, "tokens": 50971, "size": 1000000},

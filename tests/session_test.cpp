@@ -1445,7 +1445,18 @@ int main(int argc, char **argv)
     };
     const std::string settings = home + "/.claude/settings.json";
     writeFile(settings, R"({"model": "opus", "statusLine": {"type": "command", "command": "my-line"}})");
+    const std::string claudeJson = home + "/.claude.json";
+    writeFile(claudeJson, R"({"theme": "light", "projects": {"/x": {}}})");
     std::string out = shell(g_pvai + " run -- claude --version");
+    const json onboarded = json::parse(readFile(claudeJson), nullptr, false);
+    check(onboarded.is_object() && onboarded.value("hasCompletedOnboarding", false) && onboarded.value("theme", "") == "light"
+              && onboarded.contains("projects"),
+          "pvai run marks onboarding done and keeps the existing keys: " + onboarded.dump());
+    fs::remove(claudeJson);
+    shell(g_pvai + " run -- claude --version");
+    const json created = json::parse(readFile(claudeJson), nullptr, false);
+    check(created.is_object() && created.value("hasCompletedOnboarding", false) && created.value("theme", "") == "dark",
+          "a missing .claude.json is created with onboarding done and theme dark: " + created.dump());
     check(out.find("hooks and status line") != std::string::npos && out.find("(Claude Code)") != std::string::npos,
           "pvai run writes missing hooks, then runs claude: " + out);
     const json written = json::parse(readFile(settings), nullptr, false);
