@@ -36,6 +36,7 @@ int main()
     check(dialog == "Pick one\n\xE2\x9D\xAF 1. Yes\n  2. No\n\nEnter to confirm \xC2\xB7 Esc to cancel", "the dialog: [" + dialog + "]");
     check(!pvai::promptBox(screen, box), "no prompt box under the dialog");
 
+
     // The selection moves: one cell rewritten in place.
     feed(screen, "\x1b[3A\x1b[2G \x1b[1B\x1b[2G\xE2\x9D\xAF");
     check(pvai::screenDialog(screen).find("  1. Yes\n\xE2\x9D\xAF 2. No") != std::string::npos,
@@ -98,5 +99,11 @@ int main()
     check(wide.row(0) == "\xF0\x9F\x8E\x99x", "an emoji and the letter after it: " + wide.row(0));
 
     std::printf(failures ? "FAILED\n" : "all passed\n");
+    pvai::Screen select_(14, 70);
+    // Claude Code's select list (/model with usage credits): its footer is "Enter to select".
+    feed(select_, "\x1b[2J\x1b[H" + rule + "\r\n You've used your included Fable usage for this week\r\n\r\n \xE2\x9D\xAF 1. Switch to Opus and continue\r\n   2. Continue with usage credits\r\n   3. Manage on claude.ai\r\n\r\n \xE2\x86\x91/\xE2\x86\x93 to navigate \xC2\xB7 Enter to select \xC2\xB7 Esc to cancel");
+    const std::string select = pvai::screenDialog(select_);
+    check(select.find("Continue with usage credits") != std::string::npos && select.find("Enter to select") != std::string::npos,
+          "a select list is a dialog: [" + select + "]");
     return failures ? 1 : 0;
 }

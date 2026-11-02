@@ -1,3 +1,12 @@
+pvai (0.5.41-1) trixie; urgency=medium
+
+  * A model switch of a Claude Code session reports what Claude Code did:
+    done once /model answered "Set model to ...", failed with its message
+    ("Kept model as ...") otherwise, busy while one is pending. A usage
+    credits dialog it shows first arrives as a screen dialog.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 10:30:00 +0100
+
 pvai (0.5.40-1) trixie; urgency=medium
 
   * The wrapper marks Claude Code's onboarding done before a start

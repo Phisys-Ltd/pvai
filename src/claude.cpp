@@ -175,6 +175,16 @@ json ClaudeSession::describe() const
     return entry;
 }
 
+// A slash or shell command went in: it ends with its output.
+void ClaudeSession::markSlash(const Prompt &prompt)
+{
+    tail_.poll();
+    slashPending_ = true;
+    slashModel_ = prompt.modelSwitch;
+    slashShell_ = prompt.text[0] == '!';
+    slashMark_ = localDone();
+}
+
 void ClaudeSession::submit(const Prompt &prompt)
 {
     // A slash command or a shell command (!): no UserPromptSubmit, it ends
@@ -192,19 +202,13 @@ void ClaudeSession::submit(const Prompt &prompt)
         return;
     }
     if (verify_ && slash) { // sent without the check: taken as delivered
-        tail_.poll();
-        slashPending_ = true;
-        slashShell_ = prompt.text[0] == '!';
-        slashMark_ = localDone();
+        markSlash(prompt);
         state_ = "busy";
         delivered();
         return;
     }
     if (slash) {
-        tail_.poll();
-        slashPending_ = true;
-        slashShell_ = prompt.text[0] == '!';
-        slashMark_ = localDone();
+        markSlash(prompt);
     } else {
         submitDeadline_ = Clock::now() + kSubmitTimeout;
     }
@@ -382,6 +386,7 @@ std::string ClaudeSession::restart()
     for (auto &[id, agent] : subagents_)
         agent.entry = nullptr;
     slashPending_ = false;
+    modelDone("failed", "ended");
     escapeChecks_.clear();
     submitDeadline_.reset();
     changed();
@@ -389,12 +394,31 @@ std::string ClaudeSession::restart()
 }
 
 // Claude Code's own /model, queued like a prompt: it goes in when the
-// prompt is free, and the status line shows the model from then on.
+// prompt is free. The answer waits for the command's output in the
+// transcript ("Set model to" or "Kept model as"); a dialog Claude Code
+// shows first (usage credits) is the app's to answer as a screen dialog.
 std::string ClaudeSession::setModel(const std::string &model, const json &ref)
 {
-    prompt({"/model " + model, false, json()});
-    modelEvent(ref, model, "done");
+    if (!modelTarget_.empty())
+        return "busy";
+    modelTarget_ = model;
+    modelRef_ = ref;
+    Prompt command{"/model " + model, false, json()};
+    command.modelSwitch = true;
+    prompt(command);
     return {};
+}
+
+void ClaudeSession::modelDone(const std::string &state, const std::string &error)
+{
+    if (modelTarget_.empty())
+        return;
+    const std::string model = modelTarget_;
+    const json ref = modelRef_;
+    modelTarget_.clear();
+    modelRef_ = nullptr;
+    slashModel_ = false;
+    modelEvent(ref, model, state, error);
 }
 
 // The wrapper empties the box; its `draft` and `screen` say when it is
@@ -415,6 +439,7 @@ std::string ClaudeSession::clear()
 
 void ClaudeSession::terminate()
 {
+    modelDone("failed", "ended");
     wrapper_.send({{"type", "terminate"}});
 }
 
@@ -488,8 +513,11 @@ void ClaudeSession::onHook(const json &event)
         const std::string source = event.value("source", "");
         if (state_ == "starting" || source == "clear" || source == "resume")
             state_ = "idle";
-        if (source == "clear") // a new transcript: its output count starts at 0
+        if (source == "clear") { // a new transcript: its output count starts at 0
             slashPending_ = false;
+            if (slashModel_)
+                modelDone("failed", "interrupted");
+        }
     } else if (name == "UserPromptSubmit") {
         state_ = "busy";
         promptVoice(event.value("prompt", ""));
@@ -497,6 +525,8 @@ void ClaudeSession::onHook(const json &event)
         state_ = "idle";
         forceIdle_ = false;
         slashPending_ = false;
+        if (slashModel_)
+            modelDone("failed", "interrupted");
         say(event.value("last_assistant_message", ""));
     } else if (name == "PermissionRequest") {
         // Claude Code shows a permission dialog for this tool call; its
@@ -736,6 +766,8 @@ void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::st
             // only has local commands is not written yet).
             if (state_ == "busy" && slashPending_ && prompt) {
                 slashPending_ = false;
+                if (slashModel_)
+                    modelDone("done");
                 state_ = "idle";
             }
             deliver();
@@ -757,6 +789,7 @@ void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::st
 void ClaudeSession::onExited(int status, const std::string &screen)
 {
     host_.log(id_ + ": claude exited with " + std::to_string(status));
+    modelDone("failed", "ended");
     if (!detached() || stopping_)
         return;
     if (status == 0 && Clock::now() - began_ > std::chrono::seconds(90))
@@ -782,10 +815,7 @@ void ClaudeSession::onTyped(bool ok, const std::string &screen)
     }
     if (inFlight_->text[0] == '/' || inFlight_->text[0] == '!') {
         // No hook for a slash or shell command: in is in. It ends with its output.
-        tail_.poll();
-        slashPending_ = true;
-        slashShell_ = inFlight_->text[0] == '!';
-        slashMark_ = localDone();
+        markSlash(*inFlight_);
         delivered();
     } else {
         submitDeadline_ = Clock::now() + kSubmitTimeout;
@@ -939,10 +969,13 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
     // session hung (a Claude Code without a login answers every prompt with
     // "Not logged in" and no hook); what waited for it goes, so it does not
     // land in the same hole.
-    if (!seen && !slashPending_)
+    const bool cleared = !seen && !slashPending_;
+    if (cleared)
         queue_.clear();
     forceIdle_ = false;
     slashPending_ = false;
+    if (slashModel_ || cleared) // a kept queue still types the /model
+        modelDone("failed", "interrupted");
     deliver();
     changed();
 }
@@ -985,6 +1018,13 @@ void ClaudeSession::pollTranscript()
     }
     if (slashPending_ && localDone() > slashMark_) {
         slashPending_ = false;
+        if (slashModel_) {
+            const std::string &out = tail_.lastLocalOutput();
+            if (out.empty() || out.rfind("Set model to", 0) == 0)
+                modelDone("done");
+            else
+                modelDone("failed", out);
+        }
         if (state_ == "busy") {
             state_ = "idle";
             deliver();

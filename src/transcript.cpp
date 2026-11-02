@@ -322,6 +322,9 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
         } else if (element(text, "local-command-stdout", inner) || element(text, "local-command-stderr", inner)) {
             ++localOutputs_;
             inner = stripAnsi(inner);
+            lastLocalOutput_.clear();
+            if (const auto from = inner.find_first_not_of(" \n\r\t"); from != std::string::npos)
+                lastLocalOutput_ = inner.substr(from, inner.find_last_not_of(" \n\r\t") - from + 1);
             if (inner.find_first_not_of(" \n") != std::string::npos)
                 emit({{"kind", "output"}, {"text", cut(inner, kMaxResult)}});
         } else if (text.rfind("<bash-input>", 0) == 0 && element(text, "bash-input", inner)) {

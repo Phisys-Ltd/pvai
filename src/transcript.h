@@ -50,6 +50,9 @@ public:
     // fires for them.
     std::size_t localOutputs() const { return localOutputs_; }
     // Output lines of shell commands (!), one each, also when empty.
+    // The text of the last local command's output (ANSI stripped, trimmed);
+    // empty when it had none.
+    const std::string &lastLocalOutput() const { return lastLocalOutput_; }
     std::size_t shellOutputs() const { return shellOutputs_; }
     // How many turns Claude Code started on its own: a task notification
     // (a background task or agent finished) followed by an answer of
@@ -76,6 +79,7 @@ private:
     std::deque<json> recent_;
     std::map<std::string, std::string> toolNames_; // tool_use id -> name
     std::size_t localOutputs_ = 0;
+    std::string lastLocalOutput_;
     std::size_t shellOutputs_ = 0;
     std::size_t wakeTurns_ = 0;
     bool wakePending_ = false; // a task notification, no answer yet

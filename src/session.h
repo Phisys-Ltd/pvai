@@ -24,6 +24,7 @@ struct Prompt {
     std::string text;
     bool voice = false;
     json ref; // the app's `ref`, for `delivered`
+    bool modelSwitch = false; // Claude Code's /model from setModel: its output tells the outcome
 };
 
 class Session;

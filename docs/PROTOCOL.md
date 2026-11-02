@@ -731,8 +731,13 @@ answer is `{"type": "model", "ref", "session", "model", "state": "done" |
 "failed", "error"?}` to every app; `usage.model` shows what runs.
 
 - Claude Code: its own `/model <name>`, queued like a prompt (it goes in
-  when the prompt is free); `done` once queued, `usage.model` follows from
-  the status line.
+  when the prompt is free); since 0.5.41 `done` once Claude Code's
+  `/model` answered "Set model to ..." in the transcript, `failed` with
+  Claude Code's message (e.g. "Kept model as Opus 5.5") otherwise, and
+  `rejected` with `busy` while another switch is pending. A usage-credits
+  dialog Claude Code may show first arrives as a `screen` dialog
+  (attention kind `screen`) the app answers like any screen dialog.
+  `usage.model` follows from the status line.
 - Codex: with the next turn (`turn/start` `model`), holding from there;
   `done` at once and `usage.model` is the new one.
 - Kimi: its `model` option (`session/set_config_option`); `done` or

@@ -74,6 +74,18 @@ int main()
     for (const auto &e : tail.poll())
         got += e.value("kind", "") + ":" + e.value("text", "") + "|";
     check(got == "prompt:hello|text:hi|command:/compact|", "a compaction is a /compact entry, its summary none: " + got);
+    // The text of the last local command's output.
+    const std::string local = std::string(dir) + "/local.jsonl";
+    std::ofstream(local) << userLine(20, "<command-name>/model</command-name>")
+                         << userLine(21, "<local-command-stdout>Kept model as \x1b[1mOpus 5.5\x1b[22m\n</local-command-stdout>");
+    tail.follow(local);
+    tail.poll();
+    check(tail.localOutputs() == 1 && tail.lastLocalOutput() == "Kept model as Opus 5.5",
+          "the last local output, stripped and trimmed: [" + tail.lastLocalOutput() + "]");
+    std::ofstream(local, std::ios::app) << userLine(22, "<local-command-stdout></local-command-stdout>");
+    tail.poll();
+    check(tail.localOutputs() == 2 && tail.lastLocalOutput().empty(), "an empty output clears it");
+    std::remove(local.c_str());
     std::remove(idle.c_str());
     std::remove(path.c_str());
     ::rmdir(dir);

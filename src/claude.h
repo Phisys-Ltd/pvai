@@ -80,6 +80,11 @@ private:
     // A slash command went in: it ends with its output in the transcript,
     // not with a Stop.
     bool slashPending_ = false;
+    bool slashModel_ = false; // the pending slash command is the one setModel queued
+    std::string modelTarget_;
+    json modelRef_;
+    void modelDone(const std::string &state, const std::string &error = {});
+    void markSlash(const Prompt &prompt);
     std::size_t slashMark_ = 0;
     bool slashShell_ = false; // the pending command is a shell command (!): its output ends it
     std::size_t localDone() const { return slashShell_ ? tail_.shellOutputs() : tail_.localOutputs(); }

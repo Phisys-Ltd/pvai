@@ -948,6 +948,44 @@ int main(int argc, char **argv)
     hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "Ok."}});
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle again");
 
+    // A model switch waits for what Claude Code answers to /model.
+    {
+        const std::string running = transcripts + "/running-1.jsonl";
+        auto append = [&](const std::string &text) { std::ofstream(running, std::ios::app) << text; };
+        hook("wterm", {{"hook_event_name", "SessionStart"}, {"session_id", "running-1"}, {"source", "resume"}, {"transcript_path", running}});
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle with a transcript");
+        a.send({{"type", "model"}, {"ref", 70}, {"session", "wterm"}, {"model", "fable"}});
+        check(wrapper.next("type").value("text", "") == "/model fable", "a Claude Code model switch types /model");
+        a.send({{"type", "model"}, {"ref", 71}, {"session", "wterm"}, {"model", "opus"}});
+        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 71; }).value("reason", "") == "busy",
+              "a second switch while one is pending is busy");
+        check(a.next("model", [](const json &m) { return m.value("ref", 0) == 70; }, 700).empty(), "no answer before Claude Code answers");
+        append(userLine("<command-name>/model</command-name>") + userLine("<local-command-stdout>Kept model as \x1b[1mOpus 5.5\x1b[22m</local-command-stdout>"));
+        const json kept = a.next("model", [](const json &m) { return m.value("ref", 0) == 70; }, 3000);
+        check(kept.value("state", "") == "failed" && kept.value("error", "") == "Kept model as Opus 5.5" && kept.value("model", "") == "fable",
+              "Kept model as ... is failed with Claude Code's words: " + kept.dump());
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after the command");
+        a.send({{"type", "model"}, {"ref", 72}, {"session", "wterm"}, {"model", "opus"}});
+        check(wrapper.next("type").value("text", "") == "/model opus", "the next switch goes in");
+        append(userLine("<command-name>/model</command-name>") + userLine("<local-command-stdout>Set model to Opus 5.5</local-command-stdout>"));
+        const json set = a.next("model", [](const json &m) { return m.value("ref", 0) == 72; }, 3000);
+        check(set.value("state", "") == "done" && set.value("model", "") == "opus", "Set model to ... is done: " + set.dump());
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle again after the switch");
+        // Queued behind a running turn: that turn's Stop does not end the request.
+        a.send({{"type", "prompt"}, {"ref", 73}, {"session", "wterm"}, {"text", "long"}});
+        check(wrapper.next("type").value("text", "") == "long", "a prompt is typed");
+        hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "long"}});
+        a.send({{"type", "model"}, {"ref", 74}, {"session", "wterm"}, {"model", "sonnet"}});
+        check(a.next("model", [](const json &m) { return m.value("ref", 0) == 74; }, 500).empty(), "no answer while it waits in the queue");
+        hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "Ok."}});
+        check(wrapper.next("type").value("text", "") == "/model sonnet", "after the Stop the /model goes in");
+        check(a.next("model", [](const json &m) { return m.value("ref", 0) == 74; }, 500).empty(), "and the Stop did not fail it");
+        append(userLine("<command-name>/model</command-name>") + userLine("<local-command-stdout>Set model to Sonnet</local-command-stdout>"));
+        const json later = a.next("model", [](const json &m) { return m.value("ref", 0) == 74; }, 3000);
+        check(later.value("state", "") == "done" && later.value("model", "") == "sonnet", "a queued switch is done by its output: " + later.dump());
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after the queued switch");
+    }
+
     // A Claude Code started from a shell command of this one inherits pvai's
     // environment: its hooks and status line are not this session's.
     hook("wterm", {{"hook_event_name", "SessionStart"}, {"session_id", "nested-9"}, {"source", "startup"}});
