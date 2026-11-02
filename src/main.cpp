@@ -321,8 +321,13 @@ int localClient(const json &first, bool follow, bool startDaemon = false)
 {
     int status = 1;
     const Talk talk = talkToDaemon(startDaemon, true, first, follow ? -1 : 3000, [&](Conn &, const json &message) {
-        std::cout << message.dump() << std::endl;
         const std::string type = message.is_object() ? message.value("type", "") : "";
+        const bool result = type == "accepted" || type == "answered" || type == "inputCleared" || type == "forgotten" || type == "started"
+                         || type == "stopping" || type == "rejected";
+        // A request prints its result only, not the welcome, sessions and
+        // proposals the daemon sends every client first.
+        if (follow || first.is_null() || result)
+            std::cout << message.dump() << std::endl;
         if (!follow && (type == "accepted" || type == "answered" || type == "inputCleared" || type == "forgotten" || type == "started" || type == "stopping")) {
             status = 0;
             return true;
