@@ -1141,8 +1141,7 @@ std::string ClaudeBackend::projectDir(const std::string &cwd)
     for (char &c : name)
         if (!std::isalnum(static_cast<unsigned char>(c)))
             c = '-';
-    const char *home = std::getenv("HOME");
-    return std::string(home ? home : "/") + "/.claude/projects/" + name;
+    return homeDir() + "/.claude/projects/" + name;
 }
 
 // The transcripts of `cwd`, newest first, without the sessions that run.

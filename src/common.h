@@ -4,6 +4,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <sys/types.h>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,6 +54,49 @@ void dropClaudeEnvironment();
 // Starts `argv` in `cwd` as its own session, stdin and output on /dev/null,
 // without the Claude Code environment; does not wait for it.
 void spawnDetached(const std::string &cwd, const std::vector<std::string> &argv);
+
+// $HOME, "/" when it is not set.
+std::string homeDir();
+
+// Where one of a child's standard streams goes.
+struct Stdio {
+    enum class Kind { Inherit, Null, Fd, Append, SameAsOut };
+    Kind kind = Kind::Inherit;
+    int fd = -1;        // Kind::Fd: a descriptor of ours, duplicated onto the stream
+    std::string path;   // Kind::Append: a file opened for appending, mode 0600
+    static Stdio null() { return {Kind::Null, -1, {}}; }
+    static Stdio descriptor(int fd) { return {Kind::Fd, fd, {}}; }
+    static Stdio append(const std::string &path) { return {Kind::Append, -1, path}; }
+    static Stdio sameAsOut() { return {Kind::SameAsOut, -1, {}}; }
+};
+
+struct ChildOptions {
+    std::vector<std::string> argv;
+    std::string exe;      // the program; empty: argv[0]
+    bool search = false;  // look `exe` up in PATH (execvp)
+    std::string cwd;      // empty: stay where we are
+    int cwdFailure = 1;   // exit status of a child that cannot change there
+    bool detach = false;  // fork twice, setsid: the child belongs to nobody; spawnChild waits for the middle one
+    bool newSession = false; // setsid
+    bool ownGroup = false;   // setpgid(0, 0), so that kill(-pid) reaches the child and its children
+    bool dropEnv = true;     // dropClaudeEnvironment() first
+    std::vector<std::pair<std::string, std::string>> env; // set after that
+    Stdio in, out, err;
+    // The child's terminal: a pseudo-terminal of this size, its master in
+    // *ptyMaster; the streams above are not touched then.
+    int ptyRows = 0, ptyCols = 0;
+    int *ptyMaster = nullptr;
+    const char *execFailure = nullptr; // perror() label of a child whose exec failed
+};
+// Forks and starts the child. The pid, 0 for a detached child that started,
+// -1 when the fork failed (errno as fork left it). Does not wait, except for
+// the middle process of a detached child.
+pid_t spawnChild(const ChildOptions &options);
+// exec of `exe` with `argv`; returns only when that failed, errno kept.
+void execChild(const std::string &exe, const std::vector<std::string> &argv, bool search);
+// Reads what a non-blocking `fd` has and appends it to `out` while that is
+// below `cap` (the rest is dropped). True on end of file or a read error.
+bool readAvailable(int fd, std::string &out, std::size_t cap = std::string::npos);
 
 int connectUnix(const std::string &path); // blocking; -1 on failure
 int listenUnix(const std::string &path);  // -1 on failure

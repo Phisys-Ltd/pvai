@@ -22,33 +22,23 @@ constexpr const char *kUnit = "pvai.service";
 
 std::string unitPath()
 {
-    const char *home = std::getenv("HOME");
     const char *config = std::getenv("XDG_CONFIG_HOME");
-    const std::string base = config && *config ? config : std::string(home ? home : "") + "/.config";
+    const std::string base = config && *config ? config : homeDir() + "/.config";
     return base + "/systemd/user/" + kUnit;
 }
 
 // Runs a command and returns its exit status (-1 when it did not run).
 int runQuiet(const std::vector<std::string> &argv, bool quiet)
 {
-    const pid_t pid = ::fork();
+    ChildOptions options;
+    options.argv = argv;
+    options.search = true;
+    options.dropEnv = false;
+    if (quiet)
+        options.out = options.err = Stdio::null();
+    const pid_t pid = spawnChild(options);
     if (pid < 0)
         return -1;
-    if (pid == 0) {
-        if (quiet) {
-            const int null = ::open("/dev/null", O_RDWR);
-            if (null >= 0) {
-                ::dup2(null, STDOUT_FILENO);
-                ::dup2(null, STDERR_FILENO);
-            }
-        }
-        std::vector<char *> args;
-        for (const auto &a : argv)
-            args.push_back(const_cast<char *>(a.c_str()));
-        args.push_back(nullptr);
-        ::execvp(args[0], args.data());
-        ::_exit(127);
-    }
     int status = 0;
     if (::waitpid(pid, &status, 0) < 0)
         return -1;

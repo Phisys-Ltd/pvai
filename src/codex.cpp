@@ -16,12 +16,6 @@ namespace {
 
 constexpr std::size_t kMaxMessage = 64 * 1024 * 1024;
 
-std::string home()
-{
-    const char *h = std::getenv("HOME");
-    return h ? h : "/";
-}
-
 bool executable(const std::string &path)
 {
     struct stat st;
@@ -40,7 +34,7 @@ std::string codexBinary()
 
 std::string codexSocket()
 {
-    return home() + "/.codex/app-server-control/app-server-control.sock";
+    return homeDir() + "/.codex/app-server-control/app-server-control.sock";
 }
 
 CodexLink::~CodexLink()

@@ -73,28 +73,14 @@ void spawnDaemon()
     if (startServiceDaemon())
         return;
     rotateLog(runtimeDir() + "/daemon.log");
-    const pid_t first = ::fork();
-    if (first < 0)
-        return;
-    if (first == 0) {
-        ::setsid();
-        if (::fork() != 0)
-            ::_exit(0);
-        dropClaudeEnvironment();
-        const std::string log = runtimeDir() + "/daemon.log";
-        const int in = ::open("/dev/null", O_RDONLY);
-        const int out = ::open(log.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
-        if (in >= 0)
-            ::dup2(in, STDIN_FILENO);
-        if (out >= 0) {
-            ::dup2(out, STDOUT_FILENO);
-            ::dup2(out, STDERR_FILENO);
-        }
-        const std::string exe = selfExe();
-        ::execl(exe.c_str(), "pvai", "daemon", static_cast<char *>(nullptr));
-        ::_exit(127);
-    }
-    ::waitpid(first, nullptr, 0);
+    ChildOptions options;
+    options.argv = {"pvai", "daemon"};
+    options.exe = selfExe();
+    options.detach = true;
+    options.in = Stdio::null();
+    options.out = Stdio::append(runtimeDir() + "/daemon.log");
+    options.err = Stdio::sameAsOut();
+    spawnChild(options);
 }
 
 // Connects to the daemon, starting it when nobody listens.
@@ -395,12 +381,8 @@ int runWrapper(const WrapperOptions &options)
         if (g_child == 0) {
             ::setenv(kEnvId, id.c_str(), 1);
             ::setenv(kEnvSocket, daemonSocket().c_str(), 1);
-            std::vector<char *> argv;
-            for (const auto &arg : command)
-                argv.push_back(const_cast<char *>(arg.c_str()));
-            argv.push_back(nullptr);
-            ::execvp(argv[0], argv.data());
-            std::fprintf(stderr, "pvai: cannot run %s: %s\n", argv[0], std::strerror(errno));
+            execChild(command[0], command, true);
+            std::fprintf(stderr, "pvai: cannot run %s: %s\n", command[0].c_str(), std::strerror(errno));
             ::_exit(127);
         }
         setNonBlocking(master);

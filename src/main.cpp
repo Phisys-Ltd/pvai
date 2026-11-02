@@ -183,8 +183,7 @@ json withoutHooks(json settings)
 int changeSettings(const std::function<json(json)> &change, bool create, bool quiet,
                    const char *unchanged, const char *written)
 {
-    const char *home = std::getenv("HOME");
-    const std::string dir = std::string(home ? home : "") + "/.claude";
+    const std::string dir = homeDir() + "/.claude";
     const std::string path = dir + "/settings.json";
     json settings = json::object();
     struct stat st;
@@ -243,8 +242,7 @@ int installHooks(bool quiet)
 // exist stay as they are.
 void markOnboardingDone()
 {
-    const char *home = std::getenv("HOME");
-    const std::string path = std::string(home ? home : "") + "/.claude.json";
+    const std::string path = homeDir() + "/.claude.json";
     json config = json::object();
     struct stat st;
     const bool exists = ::stat(path.c_str(), &st) == 0;
@@ -761,14 +759,12 @@ int runCodex(const std::vector<std::string> &args)
         return 1;
     }
     if (!std::filesystem::exists(codexSocket())) {
-        const pid_t pid = ::fork();
-        if (pid == 0) {
-            const int null = ::open("/dev/null", O_WRONLY);
-            ::dup2(null, STDOUT_FILENO);
-            ::execl(codex.c_str(), "codex", "app-server", "daemon", "start", static_cast<char *>(nullptr));
-            ::_exit(127);
-        }
-        if (pid > 0)
+        ChildOptions start;
+        start.argv = {"codex", "app-server", "daemon", "start"};
+        start.exe = codex;
+        start.dropEnv = false;
+        start.out = Stdio::null();
+        if (const pid_t pid = spawnChild(start); pid > 0)
             ::waitpid(pid, nullptr, 0);
     }
     if (const int fd = openDaemon(true); fd >= 0)
@@ -800,13 +796,9 @@ int runCodex(const std::vector<std::string> &args)
         }
     }
     argv.insert(argv.end(), args.begin() + static_cast<long>(at), args.end());
-    std::vector<char *> raw;
-    for (auto &arg : argv)
-        raw.push_back(arg.data());
-    raw.push_back(nullptr);
     dropClaudeEnvironment();
     if (!tui) {
-        ::execv(codex.c_str(), raw.data());
+        execChild(codex, argv, false);
         std::perror("pvai: codex");
         return 127;
     }
@@ -833,15 +825,15 @@ int runCodex(const std::vector<std::string> &args)
                      && i + 1 < args.size())
                 ++i;
         }
-    const pid_t child = ::fork();
+    ChildOptions tuiChild;
+    tuiChild.argv = argv;
+    tuiChild.exe = codex;
+    tuiChild.dropEnv = false; // dropped above
+    tuiChild.execFailure = "pvai: codex";
+    const pid_t child = spawnChild(tuiChild);
     if (child < 0) {
         std::perror("pvai: fork");
         return 1;
-    }
-    if (child == 0) {
-        ::execv(codex.c_str(), raw.data());
-        std::perror("pvai: codex");
-        ::_exit(127);
     }
     // The terminal's keys and signals are the TUI's.
     ::signal(SIGINT, SIG_IGN);

@@ -538,25 +538,17 @@ bool KimiBackend::spawn()
     setCloseOnExec(pair[1]);
     const std::string log = runtimeDir() + "/kimi.log";
     rotateLog(log);
-    const pid_t pid = ::fork();
+    ChildOptions options;
+    options.argv = {bin_, "acp"};
+    options.newSession = true;
+    options.cwd = homeDir();
+    options.in = options.out = Stdio::descriptor(pair[1]);
+    options.err = Stdio::append(log);
+    const pid_t pid = spawnChild(options);
     if (pid < 0) {
         ::close(pair[0]);
         ::close(pair[1]);
         return false;
-    }
-    if (pid == 0) {
-        ::setsid();
-        const char *home = std::getenv("HOME");
-        if (::chdir(home ? home : "/") != 0)
-            ::_exit(1);
-        dropClaudeEnvironment();
-        ::dup2(pair[1], STDIN_FILENO);
-        ::dup2(pair[1], STDOUT_FILENO);
-        const int err = ::open(log.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
-        if (err >= 0)
-            ::dup2(err, STDERR_FILENO);
-        ::execl(bin_.c_str(), bin_.c_str(), "acp", static_cast<char *>(nullptr));
-        ::_exit(127);
     }
     ::close(pair[1]);
     setNonBlocking(pair[0]);

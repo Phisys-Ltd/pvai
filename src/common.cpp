@@ -16,8 +16,15 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#ifdef __APPLE__
+#include <util.h>
+#else
+#include <pty.h>
+#endif
+
 #include <cerrno>
 #include <climits>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -32,12 +39,6 @@ extern char **environ;
 namespace pvai {
 
 namespace {
-
-std::string home()
-{
-    const char *h = std::getenv("HOME");
-    return h && *h ? h : "/";
-}
 
 void makeDir(const std::string &path, mode_t mode)
 {
@@ -97,7 +98,7 @@ std::string configDir()
     if (const char *xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg)
         base = xdg;
     else
-        base = home() + "/.config";
+        base = homeDir() + "/.config";
     makeDir(base, 0755);
     makeDir(base + "/pvai", 0700);
     return base + "/pvai";
@@ -179,9 +180,8 @@ const char *const kVoiceContext =
 
 std::string findBinary(const std::string &name)
 {
-    const char *home = std::getenv("HOME");
     std::string path = std::getenv("PATH") ? std::getenv("PATH") : "";
-    path += ":" + std::string(home ? home : "") + "/.local/bin:/usr/local/bin:/opt/homebrew/bin";
+    path += ":" + homeDir() + "/.local/bin:/usr/local/bin:/opt/homebrew/bin";
     std::size_t at = 0;
     while (at <= path.size()) {
         auto end = path.find(':', at);
@@ -252,28 +252,120 @@ void dropClaudeEnvironment()
 
 void spawnDetached(const std::string &cwd, const std::vector<std::string> &argv)
 {
-    const pid_t first = ::fork();
-    if (first != 0) {
-        if (first > 0)
-            ::waitpid(first, nullptr, 0);
-        return;
-    }
-    ::setsid();
-    if (::fork() != 0)
-        ::_exit(0);
-    if (::chdir(cwd.c_str()) != 0)
-        ::_exit(1);
-    dropClaudeEnvironment();
-    const int null = ::open("/dev/null", O_RDWR);
-    ::dup2(null, STDIN_FILENO);
-    ::dup2(null, STDOUT_FILENO);
-    ::dup2(null, STDERR_FILENO);
+    ChildOptions options;
+    options.argv = argv;
+    options.cwd = cwd;
+    options.detach = true;
+    options.in = options.out = options.err = Stdio::null();
+    spawnChild(options);
+}
+
+std::string homeDir()
+{
+    const char *h = std::getenv("HOME");
+    return h && *h ? h : "/";
+}
+
+void execChild(const std::string &exe, const std::vector<std::string> &argv, bool search)
+{
     std::vector<char *> args;
     for (const auto &arg : argv)
         args.push_back(const_cast<char *>(arg.c_str()));
     args.push_back(nullptr);
-    ::execv(args[0], args.data());
+    if (search)
+        ::execvp(exe.c_str(), args.data());
+    else
+        ::execv(exe.c_str(), args.data());
+}
+
+namespace {
+
+void redirect(const Stdio &stdio, int target)
+{
+    int fd = -1;
+    switch (stdio.kind) {
+    case Stdio::Kind::Inherit:
+        return;
+    case Stdio::Kind::Null:
+        fd = ::open("/dev/null", target == STDIN_FILENO ? O_RDONLY : O_WRONLY);
+        break;
+    case Stdio::Kind::Fd:
+        ::dup2(stdio.fd, target);
+        return;
+    case Stdio::Kind::Append:
+        fd = ::open(stdio.path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
+        break;
+    case Stdio::Kind::SameAsOut:
+        ::dup2(STDOUT_FILENO, target);
+        return;
+    }
+    if (fd < 0)
+        return;
+    ::dup2(fd, target);
+    if (fd > STDERR_FILENO)
+        ::close(fd);
+}
+
+// What the child does between fork and exec.
+[[noreturn]] void runChild(const ChildOptions &options)
+{
+    if (options.newSession || options.detach)
+        ::setsid();
+    if (options.detach && ::fork() != 0)
+        ::_exit(0);
+    if (options.ownGroup)
+        ::setpgid(0, 0);
+    if (!options.cwd.empty() && ::chdir(options.cwd.c_str()) != 0)
+        ::_exit(options.cwdFailure);
+    if (options.dropEnv)
+        dropClaudeEnvironment();
+    for (const auto &[name, value] : options.env)
+        ::setenv(name.c_str(), value.c_str(), 1);
+    if (!options.ptyMaster) {
+        redirect(options.in, STDIN_FILENO);
+        redirect(options.out, STDOUT_FILENO);
+        redirect(options.err, STDERR_FILENO); // may follow stdout
+    }
+    execChild(options.exe.empty() ? options.argv.at(0) : options.exe, options.argv, options.search);
+    if (options.execFailure)
+        std::perror(options.execFailure);
     ::_exit(127);
+}
+
+} // namespace
+
+pid_t spawnChild(const ChildOptions &options)
+{
+    pid_t pid;
+    if (options.ptyMaster) {
+        winsize size{};
+        size.ws_row = static_cast<unsigned short>(options.ptyRows);
+        size.ws_col = static_cast<unsigned short>(options.ptyCols);
+        pid = ::forkpty(options.ptyMaster, nullptr, nullptr, &size);
+    } else {
+        pid = ::fork();
+    }
+    if (pid == 0)
+        runChild(options);
+    if (pid > 0 && options.detach) {
+        ::waitpid(pid, nullptr, 0);
+        return 0;
+    }
+    return pid;
+}
+
+bool readAvailable(int fd, std::string &out, std::size_t cap)
+{
+    char buffer[4096];
+    for (;;) {
+        const ssize_t n = ::read(fd, buffer, sizeof buffer);
+        if (n > 0) {
+            if (out.size() < cap)
+                out.append(buffer, static_cast<std::size_t>(n));
+            continue;
+        }
+        return n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
+    }
 }
 
 int connectUnix(const std::string &path)

@@ -696,8 +696,7 @@ void CodexBackend::tick(Clock::time_point now)
         nextTry_ = now + kRetry * std::min(++openFailures_, 3);
         if (!lastStart_ || now - *lastStart_ > std::chrono::minutes(1)) {
             lastStart_ = now;
-            const char *home = std::getenv("HOME");
-            spawnDetached(home ? home : "/", {bin_, "app-server", "daemon", "start"});
+            spawnDetached(homeDir(), {bin_, "app-server", "daemon", "start"});
             nextTry_ = now + std::chrono::seconds(3);
         }
         return;

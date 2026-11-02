@@ -232,44 +232,32 @@ std::string Setup::loginCancel(const std::string &assistant)
 void Setup::spawn(const std::string &assistant, Task task, const std::vector<std::string> &argv, bool pty)
 {
     int fd = -1;
-    pid_t pid = -1;
     int out[2] = {-1, -1};
+    ChildOptions options;
+    options.argv = argv;
+    options.search = true;
+    options.cwd = homeDir();
+    options.cwdFailure = 127;
+    options.env = {{"BROWSER", "true"}, // no browser on this host: the link goes to the app
+                   {"TERM", "dumb"}};
     if (pty) {
-        winsize size{};
-        size.ws_row = 40;
-        size.ws_col = 200; // a long link on one line
-        pid = ::forkpty(&fd, nullptr, nullptr, &size);
+        options.ptyRows = 40;
+        options.ptyCols = 200; // a long link on one line
+        options.ptyMaster = &fd;
     } else if (::pipe(out) == 0) {
-        pid = ::fork();
         fd = out[0];
+        options.ownGroup = true;
+        options.in = Stdio::null();
+        options.out = Stdio::descriptor(out[1]);
+        options.err = Stdio::sameAsOut();
     }
+    const pid_t pid = pty || out[0] >= 0 ? spawnChild(options) : -1;
     if (pid < 0) {
         if (out[0] >= 0) {
             ::close(out[0]);
             ::close(out[1]);
         }
         return;
-    }
-    if (pid == 0) {
-        if (!pty) {
-            ::setpgid(0, 0);
-            const int null = ::open("/dev/null", O_RDONLY);
-            ::dup2(null, STDIN_FILENO);
-            ::dup2(out[1], STDOUT_FILENO);
-            ::dup2(out[1], STDERR_FILENO);
-        }
-        const char *home = std::getenv("HOME");
-        if (::chdir(home ? home : "/") != 0)
-            ::_exit(127);
-        dropClaudeEnvironment();
-        ::setenv("BROWSER", "true", 1); // no browser on this host: the link goes to the app
-        ::setenv("TERM", "dumb", 1);
-        std::vector<char *> args;
-        for (const auto &arg : argv)
-            args.push_back(const_cast<char *>(arg.c_str()));
-        args.push_back(nullptr);
-        ::execvp(args[0], args.data());
-        ::_exit(127);
     }
     if (!pty)
         ::close(out[1]);
@@ -296,18 +284,8 @@ void Setup::service(int fd)
         return;
     const std::string assistant = it->first;
     Task &task = it->second;
-    char chunk[4096];
-    bool eof = false;
-    for (;;) {
-        const ssize_t n = ::read(fd, chunk, sizeof chunk);
-        if (n > 0) {
-            task.buffer.append(chunk, static_cast<std::size_t>(n));
-            continue;
-        }
-        // A pty reads EIO once the child has gone.
-        eof = n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
-        break;
-    }
+    // A pty reads EIO once the child has gone.
+    const bool eof = readAvailable(fd, task.buffer);
     if (task.install || task.logout) {
         for (auto nl = task.buffer.find('\n'); nl != std::string::npos; nl = task.buffer.find('\n')) {
             line(assistant, task, plain(task.buffer.substr(0, nl)));

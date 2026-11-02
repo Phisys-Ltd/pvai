@@ -321,21 +321,14 @@ public:
             done(127, "cannot start");
             return;
         }
-        const pid_t pid = ::fork();
-        if (pid == 0) {
-            ::setpgid(0, 0);
-            const int null = ::open("/dev/null", O_RDONLY);
-            ::dup2(null, STDIN_FILENO);
-            ::dup2(out[1], STDOUT_FILENO);
-            ::dup2(out[1], STDERR_FILENO);
-            dropClaudeEnvironment();
-            std::vector<char *> args;
-            for (const auto &arg : argv)
-                args.push_back(const_cast<char *>(arg.c_str()));
-            args.push_back(nullptr);
-            ::execvp(args[0], args.data());
-            ::_exit(127);
-        }
+        ChildOptions options;
+        options.argv = argv;
+        options.search = true;
+        options.ownGroup = true;
+        options.in = Stdio::null();
+        options.out = Stdio::descriptor(out[1]);
+        options.err = Stdio::sameAsOut();
+        const pid_t pid = spawnChild(options);
         ::close(out[1]);
         if (pid < 0) {
             ::close(out[0]);
@@ -438,19 +431,8 @@ private:
         std::vector<std::pair<std::function<void(int, const std::string &)>, std::pair<int, std::string>>> finished;
         for (auto &job : jobs_) {
             bool eof = false;
-            if (std::find(readable.begin(), readable.end(), job.pid) != readable.end()) {
-                char buffer[4096];
-                for (;;) {
-                    const ssize_t n = ::read(job.fd, buffer, sizeof buffer);
-                    if (n > 0) {
-                        if (job.output.size() < kMaxJobOutput)
-                            job.output.append(buffer, static_cast<std::size_t>(n));
-                        continue;
-                    }
-                    eof = n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
-                    break;
-                }
-            }
+            if (std::find(readable.begin(), readable.end(), job.pid) != readable.end())
+                eof = readAvailable(job.fd, job.output, kMaxJobOutput);
             int status = 0;
             if (eof) {
                 ::waitpid(job.pid, &status, 0);
@@ -894,8 +876,7 @@ private:
     // under ~/.claude/projects record (the folder names there are lossy).
     static json knownProjects()
     {
-        const char *home = std::getenv("HOME");
-        const std::filesystem::path root = std::filesystem::path(home ? home : "/") / ".claude" / "projects";
+        const std::filesystem::path root = std::filesystem::path(homeDir()) / ".claude" / "projects";
         std::vector<std::pair<std::filesystem::file_time_type, std::string>> found;
         std::error_code ec;
         // The newest transcript of a folder is found by a scan every time
