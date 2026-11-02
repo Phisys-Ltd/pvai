@@ -134,6 +134,20 @@ int main()
     std::string micBox;
     check(pvai::promptBox(mic, micBox) && micBox == "\xE2\x9D\xAF\xC2\xA0\xF0\x9F\x8E\x99 Okay, wie", "the prompt box with the mic mark: [" + micBox + "]");
 
+    // A prompt Claude Code took shows as its own line above a free box (the
+    // frame at the "running UserPromptSubmit hook" moment of 2.1.316).
+    pvai::Screen taken(12, 60);
+    std::string rules2;
+    for (int i = 0; i < 20; ++i)
+        rules2 += "\xE2\x94\x80";
+    const std::string mic2 = "\xF0\x9F\x8E\x99 Antworte nur mit dem Wort ok.";
+    feed(taken, "\x1b[2J\x1b[H\xE2\x9D\xAF " + mic2 + "\r\n\r\n\xE2\x9C\xBB Ebbing\xE2\x80\xA6 (running UserPromptSubmit hook)\r\n\r\n" + rules2 + "\r\n\xE2\x9D\xAF\xC2\xA0\r\n" + rules2);
+    check(pvai::promptLinesShown(taken, mic2) == 1, "the taken prompt is a line above the box");
+    check(pvai::promptLinesShown(taken, "something else") == 0, "another text is not shown");
+    pvai::Screen pasted(12, 60);
+    feed(pasted, "\x1b[2J\x1b[H\r\n\r\n" + rules2 + "\r\n\xE2\x9D\xAF\xC2\xA0" + mic2 + "\r\n" + rules2);
+    check(pvai::promptLinesShown(pasted, mic2) == 0, "the text only in the prompt box is not a submitted prompt");
+
     pvai::Screen select_(14, 70);
     // Claude Code's select list (/model with usage credits): its footer is "Enter to select".
     feed(select_, "\x1b[2J\x1b[H" + rule + "\r\n You've used your included Fable usage for this week\r\n\r\n \xE2\x9D\xAF 1. Switch to Opus and continue\r\n   2. Continue with usage credits\r\n   3. Manage on claude.ai\r\n\r\n \xE2\x86\x91/\xE2\x86\x93 to navigate \xC2\xB7 Enter to select \xC2\xB7 Esc to cancel");

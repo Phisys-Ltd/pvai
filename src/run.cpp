@@ -461,6 +461,8 @@ int runWrapper(const WrapperOptions &options)
     struct Typing {
         std::string before; // the box before the paste
         Clock::time_point until;
+        std::string text;
+        int seen = 0; // lines already showing it as a prompt before the paste
     };
     std::optional<Typing> typing;
     auto typed = [&](bool ok) {
@@ -673,7 +675,7 @@ int runWrapper(const WrapperOptions &options)
                     // Return as a separate keystroke, after the paste has landed
                     // (with `verify`: once the prompt box shows it).
                     if (message.value("verify", false))
-                        typing = Typing{box, Clock::now() + std::chrono::milliseconds(2000)};
+                        typing = Typing{box, Clock::now() + std::chrono::milliseconds(2000), text, promptLinesShown(screen, text)};
                     else
                         returnAt = Clock::now() + std::chrono::milliseconds(150);
                 } else if (type == "keys") {
@@ -782,7 +784,14 @@ int runWrapper(const WrapperOptions &options)
         if (typing) {
             std::string box;
             const bool shown = promptBox(screen, box) && box != typing->before && screenDialog(screen).empty();
-            if (shown || Clock::now() >= typing->until) {
+            // Claude Code may have taken the prompt already (a quick Return of
+            // its own, a screen seen between two frames): it shows as a
+            // conversation line above the box. That is delivered; a Return
+            // now would send it twice.
+            if (promptLinesShown(screen, typing->text) > typing->seen) {
+                typing.reset();
+                typed(true);
+            } else if (shown || Clock::now() >= typing->until) {
                 typing.reset();
                 if (shown)
                     returnAt = Clock::now() + std::chrono::milliseconds(100);

@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -505,9 +506,11 @@ void ClaudeSession::onHook(const json &event)
         blocked_ = false; // the prompt is Claude's again
         retryAt_.reset();
         typedDeadline_.reset();
-        if (name == "UserPromptSubmit")
+        if (name == "UserPromptSubmit") {
+            if (!inFlight_)
+                dropQueued(event.value("prompt", ""));
             delivered();
-        else if (inFlight_) { // a turn ended or started over without it
+        } else if (inFlight_) { // a turn ended or started over without it
             queue_.push_front(*inFlight_);
             inFlight_.reset();
         }
@@ -842,6 +845,24 @@ void ClaudeSession::onSnapshot(const std::string &screen)
     snapshotPending_ = false;
     if (inFlight_)
         notDelivered(screen, false);
+}
+
+// A prompt Claude Code took after the check had said no (a screen read
+// between two frames): UserPromptSubmit names it, and it leaves the queue
+// instead of going in a second time.
+void ClaudeSession::dropQueued(const std::string &text)
+{
+    std::string sent = trim(text, " \t\r\n");
+    if (sent.compare(0, std::strlen(kMicMark), kMicMark) == 0)
+        sent = trim(sent.substr(std::strlen(kMicMark)), " \t\r\n");
+    for (auto it = queue_.begin(); it != queue_.end(); ++it) {
+        if (it->text[0] == '/' || it->text[0] == '!' || trim(it->text, " \t\r\n") != sent)
+            continue;
+        inFlight_ = *it;
+        queue_.erase(it);
+        host_.log(id_ + ": a prompt the check had refused was taken: not sent again");
+        return;
+    }
 }
 
 void ClaudeSession::delivered()

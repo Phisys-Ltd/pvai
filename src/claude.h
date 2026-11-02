@@ -71,6 +71,7 @@ private:
     void pressModeKey();
     void modeDone(const std::string &state, const std::string &error = {});
     void delivered();
+    void dropQueued(const std::string &text);
     void notDelivered(const std::string &screen, bool retry);
     void unblock();
     void retryIfBlocked();

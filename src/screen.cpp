@@ -569,7 +569,7 @@ std::string screenDialog(const Screen &screen)
     return joinLines(lines);
 }
 
-bool promptBox(const Screen &screen, std::string &text, bool *shell)
+bool promptBox(const Screen &screen, std::string &text, bool *shell, int *topRule)
 {
     static const std::string mark = "\xE2\x9D\xAF"; // ❯
     int below = -1;
@@ -591,12 +591,43 @@ bool promptBox(const Screen &screen, std::string &text, bool *shell)
         }
         if (shell)
             *shell = bang;
+        if (topRule)
+            *topRule = r;
         text.clear();
         for (int k = r + 1; k < below; ++k)
             text += (k > r + 1 ? "\n" : "") + screen.row(k);
         return true;
     }
     return false;
+}
+
+int promptLinesShown(const Screen &screen, const std::string &text)
+{
+    std::string box;
+    int top = -1;
+    if (!promptBox(screen, box, nullptr, &top))
+        return 0;
+    // The start of the first line, as far as one row shows it.
+    std::string first = text.substr(0, text.find('\n'));
+    first = trim(first, " ");
+    if (first.size() > 40)
+        first.resize(utf8Boundary(first, 40));
+    if (first.empty())
+        return 0;
+    static const std::string mark = "\xE2\x9D\xAF"; // ❯
+    int count = 0;
+    for (int r = 0; r < top; ++r) {
+        std::string row = screen.row(r);
+        for (std::size_t at; (at = row.find("\xC2\xA0")) != std::string::npos;)
+            row.replace(at, 2, " "); // Claude Code draws a no-break space after the mark
+        const auto from = row.find_first_not_of(' ');
+        if (from == std::string::npos || row.compare(from, mark.size(), mark) != 0)
+            continue;
+        const auto start = row.find_first_not_of(' ', from + mark.size());
+        if (start != std::string::npos && row.compare(start, first.size(), first) == 0)
+            ++count;
+    }
+    return count;
 }
 
 std::string screenMode(const Screen &screen)
