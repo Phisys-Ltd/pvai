@@ -477,33 +477,6 @@ private:
             }
     }
 
-    void onMode(Peer *peer, const json &message)
-    {
-        const json ref = message.value("ref", json());
-        const std::string id = message.value("session", "");
-        Session *session = this->session(id);
-        const std::string reason = !session ? "unknown-session" : session->setMode(message.value("mode", ""), ref);
-        if (!reason.empty())
-            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"session", id}, {"reason", reason}});
-    }
-
-    void onModel(Peer *peer, const json &message)
-    {
-        const json ref = message.value("ref", json());
-        const std::string id = message.value("session", "");
-        const std::string model = message.value("model", "");
-        Session *session = this->session(id);
-        std::string reason = !session ? "unknown-session" : "";
-        // A model's name or alias: letters, digits, . - _ [ ] and no more than 80.
-        if (reason.empty() && (model.empty() || model.size() > 80
-                               || model.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_[]:/") != std::string::npos))
-            reason = "bad-model";
-        if (reason.empty())
-            reason = session->setModel(model, ref);
-        if (!reason.empty())
-            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"session", id}, {"reason", reason}});
-    }
-
     // ---- Install and login from the app (setup.h) ----
 
     void onInstall(Peer *peer, const json &message)
@@ -678,15 +651,15 @@ private:
             else if (type == "dialog")
                 session->onDialog(message.value("kind", ""));
             else if (type == "exited")
-                session->onExited(message.value("status", 0), message.value("screen", json()).is_string() ? message["screen"].get<std::string>() : "");
+                session->onExited(message.value("status", 0), str(message, "screen"));
             else if (type == "screen")
-                session->onScreen(message.value("dialog", json()).is_string() ? message["dialog"].get<std::string>() : "",
+                session->onScreen(str(message, "dialog"),
                                   message.value("prompt", false),
-                                  message.value("mode", json()).is_string() ? message["mode"].get<std::string>() : "");
+                                  str(message, "mode"));
             else if (type == "typed")
-                session->onTyped(message.value("ok", false), message.value("screen", json()).is_string() ? message["screen"].get<std::string>() : "");
+                session->onTyped(message.value("ok", false), str(message, "screen"));
             else if (type == "snapshot")
-                session->onSnapshot(message.value("screen", json()).is_string() ? message["screen"].get<std::string>() : "");
+                session->onSnapshot(str(message, "screen"));
             return;
         }
         if (type == "ping")
@@ -701,10 +674,8 @@ private:
             onForget(peer, message);
         else if (type == "install")
             onInstall(peer, message);
-        else if (type == "model")
-            onModel(peer, message);
-        else if (type == "mode")
-            onMode(peer, message);
+        else if (const SessionCommand *command = sessionCommand(type))
+            onSessionCommand(peer, message, *command);
         else if (type == "login" || type == "login-code" || type == "login-cancel")
             onLogin(peer, message);
         else if (type == "logout")
@@ -715,16 +686,6 @@ private:
             peer->conn->send({{"type", "projects"}, {"dirs", knownProjects()}});
         else if (type == "browse")
             peer->conn->send(browse(message.value("path", "")));
-        else if (type == "answer")
-            onAnswer(peer, message);
-        else if (type == "stop")
-            onStop(peer, message);
-        else if (type == "interrupt")
-            onInterrupt(peer, message);
-        else if (type == "restart")
-            onRestart(peer, message);
-        else if (type == "clearInput")
-            onClear(peer, message);
         else if (type == "unsubscribe")
             peer->subscriptions.erase(message.value("session", ""));
         else if (type == "prompt")
@@ -956,63 +917,60 @@ private:
         peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"session", id}, {"reason", reason}});
     }
 
-    void onAnswer(Peer *peer, const json &message)
+    // What a client asks of one session: `run` answers a reason to reject,
+    // empty when it went through; then `okType` goes back (none: the session
+    // answers itself).
+    struct SessionCommand {
+        const char *type;
+        const char *okType;
+        std::function<std::string(Session &, const json &message, const json &ref)> run;
+    };
+
+    static const SessionCommand *sessionCommand(const std::string &type)
     {
-        const json ref = message.value("ref", json());
-        const std::string id = message.value("session", "");
-        Session *session = this->session(id);
-        if (!session)
-            return reject(peer, ref, id, "unknown-session");
-        if (const std::string reason = session->answer(message.value("choice", "")); !reason.empty())
-            return reject(peer, ref, id, reason);
-        peer->conn->send({{"type", "answered"}, {"ref", ref}, {"session", id}});
+        for (const auto &command : sessionCommands())
+            if (type == command.type)
+                return &command;
+        return nullptr;
     }
 
-    void onStop(Peer *peer, const json &message)
+    static const std::vector<SessionCommand> &sessionCommands()
     {
-        const json ref = message.value("ref", json());
-        const std::string id = message.value("session", "");
-        Session *session = this->session(id);
-        if (!session)
-            return reject(peer, ref, id, "unknown-session");
-        if (const std::string reason = session->stop(); !reason.empty())
-            return reject(peer, ref, id, reason);
-        peer->conn->send({{"type", "stopping"}, {"ref", ref}, {"session", id}});
+        static const std::vector<SessionCommand> commands = {
+            {"mode", nullptr, [](Session &s, const json &m, const json &ref) { return s.setMode(m.value("mode", ""), ref); }},
+            {"model", nullptr,
+             [](Session &s, const json &m, const json &ref) {
+                 const std::string model = m.value("model", "");
+                 // A model's name or alias: letters, digits, . - _ [ ] and no more than 80.
+                 if (model.empty() || model.size() > 80
+                     || model.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_[]:/") != std::string::npos)
+                     return std::string("bad-model");
+                 return s.setModel(model, ref);
+             }},
+            {"answer", "answered", [](Session &s, const json &m, const json &) { return s.answer(m.value("choice", "")); }},
+            {"stop", "stopping", [](Session &s, const json &, const json &) { return s.stop(); }},
+            {"interrupt", "interrupting",
+             [](Session &s, const json &, const json &) {
+                 s.interrupt();
+                 return std::string();
+             }},
+            {"restart", "restarting", [](Session &s, const json &, const json &) { return s.restart(); }},
+            {"clearInput", "inputCleared", [](Session &s, const json &, const json &) { return s.clear(); }},
+        };
+        return commands;
     }
 
-    void onInterrupt(Peer *peer, const json &message)
+    void onSessionCommand(Peer *peer, const json &message, const SessionCommand &command)
     {
         const json ref = message.value("ref", json());
         const std::string id = message.value("session", "");
         Session *session = this->session(id);
         if (!session)
             return reject(peer, ref, id, "unknown-session");
-        session->interrupt();
-        peer->conn->send({{"type", "interrupting"}, {"ref", ref}, {"session", id}});
-    }
-
-    void onClear(Peer *peer, const json &message)
-    {
-        const json ref = message.value("ref", json());
-        const std::string id = message.value("session", "");
-        Session *session = this->session(id);
-        if (!session)
-            return reject(peer, ref, id, "unknown-session");
-        if (const std::string reason = session->clear(); !reason.empty())
+        if (const std::string reason = command.run(*session, message, ref); !reason.empty())
             return reject(peer, ref, id, reason);
-        peer->conn->send({{"type", "inputCleared"}, {"ref", ref}, {"session", id}});
-    }
-
-    void onRestart(Peer *peer, const json &message)
-    {
-        const json ref = message.value("ref", json());
-        const std::string id = message.value("session", "");
-        Session *session = this->session(id);
-        if (!session)
-            return reject(peer, ref, id, "unknown-session");
-        if (const std::string reason = session->restart(); !reason.empty())
-            return reject(peer, ref, id, reason);
-        peer->conn->send({{"type", "restarting"}, {"ref", ref}, {"session", id}});
+        if (command.okType)
+            peer->conn->send({{"type", command.okType}, {"ref", ref}, {"session", id}});
     }
 
     void onSubscribe(Peer *peer, const json &message)
