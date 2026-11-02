@@ -151,7 +151,7 @@ bool skippable(const char *line, std::size_t n)
     const std::string_view view(line, n);
     if (view.find("\"isSidechain\":true") != std::string_view::npos || view.find("\"isSidechain\": true") != std::string_view::npos)
         return true;
-    static const char *const kTypes[] = {"\"user\"", "\"assistant\"", "\"system\"", "\"attachment\""};
+    static const char *const kTypes[] = {"\"user\"", "\"assistant\"", "\"system\"", "\"attachment\"", "\"queue-operation\""};
     for (const char *type : kTypes)
         if (view.find(type) != std::string_view::npos)
             return false;
@@ -208,6 +208,8 @@ void TranscriptTail::resetState()
     lastLocalOutput_.clear();
     wakePending_ = false;
     cache_ = nullptr;
+    limited_ = nullptr;
+    limitHits_ = limitClears_ = turnEndCount_ = 0;
     turnRunning_ = turnEnds_ = windowed_ = false;
     recent_.clear();
 }
@@ -291,6 +293,12 @@ bool isWake(const json &line)
 
 } // namespace
 
+void TranscriptTail::clearLimited()
+{
+    limited_ = nullptr;
+    ++limitClears_;
+}
+
 void TranscriptTail::take(const json &line, std::vector<json> &out)
 {
     const std::string type = line.value("type", "");
@@ -304,6 +312,48 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
                    && line["message"].value("content", json()).is_string()) {
             wakePending_ = false; // the owner's prompt takes the notification along
         }
+    }
+    if (type == "system" && line.value("subtype", "") == "turn_duration" && !line.value("isSidechain", false))
+        ++turnEndCount_;
+    // The usage limit: Claude Code writes the 429 as an assistant line and
+    // goes on by itself at the reset, after a dequeue of its own prompt.
+    if (type == "queue-operation") {
+        if (line.value("operation", "") == "dequeue" && limited_.is_object()) {
+            clearLimited();
+            json entry = {{"kind", "resumed"}, {"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}};
+            out.push_back(std::move(entry));
+        }
+        return;
+    }
+    if (type == "assistant" && !line.value("isSidechain", false)) {
+        if (line.value("isApiErrorMessage", false) && line.value("apiError", "") == "usage_limit_reached") {
+            std::string text;
+            const json content = line.contains("message") && line["message"].is_object() ? line["message"].value("content", json()) : json();
+            if (content.is_array())
+                for (const auto &block : content)
+                    if (block.is_object() && block.value("type", "") == "text") {
+                        text = block.value("text", "");
+                        break;
+                    }
+            text = cut(text, kMaxText);
+            std::replace(text.begin(), text.end(), '\n', ' ');
+            const json quota = line.value("quotaLimits", json());
+            json at = nullptr, kind = nullptr;
+            if (quota.is_object()) {
+                if (quota.contains("resetsAt") && quota["resetsAt"].is_number())
+                    at = quota["resetsAt"].get<long long>();
+                if (quota.contains("rateLimitType") && quota["rateLimitType"].is_string())
+                    kind = quota["rateLimitType"];
+            }
+            limited_ = {{"resetsAt", at}, {"type", kind}, {"text", text}};
+            ++limitHits_;
+            json entry = {{"kind", "limited"}, {"text", text}, {"resetsAt", at}, {"type", kind}};
+            entry.update(json{{"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}});
+            out.push_back(std::move(entry));
+            return;
+        }
+        if (limited_.is_object())
+            clearLimited();
     }
     // A compaction Claude Code started itself (the context ran full, or idle
     // before the prompt cache expired); /compact typed by the owner shows as

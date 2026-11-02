@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -143,6 +144,17 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
                 const auto seen = tail_.turnRunningSeen();
                 if (seen ? *seen : turnRunning(transcript_))
                     state_ = "busy";
+                // A limit end is a turn end in the file, yet Claude Code
+                // goes on at the reset: waiting, while that is ahead.
+                syncMarks();
+                if (tail_.limited().is_object()) {
+                    if (limitAhead(tail_.limited())) {
+                        limited_ = tail_.limited();
+                        state_ = "busy";
+                    } else {
+                        state_ = "idle";
+                    }
+                }
             }
         }
         host_.log(id_ + ": taken on while running, " + (transcript_.empty() ? "no transcript known" : transcript_ + ": " + state_));
@@ -159,6 +171,7 @@ json ClaudeSession::describe() const
             running.push_back(agent.entry);
     sortByStart(running);
     entry["subagents"] = std::move(running);
+    entry["limited"] = limited_;
     if (inFlight_) // typed, not confirmed yet
         entry["queued"] = entry.value("queued", 0) + 1;
     return entry;
@@ -366,6 +379,8 @@ std::string ClaudeSession::restart()
     for (auto &[id, agent] : subagents_)
         agent.entry = nullptr;
     slashPending_ = false;
+    limited_ = nullptr;
+    stopCheck_.reset();
     modelDone("failed", "ended");
     escapeChecks_.clear();
     submitDeadline_.reset();
@@ -474,6 +489,8 @@ void ClaudeSession::onHook(const json &event)
         tail_.follow(path);
         tail_.poll();
         wakeMark_ = tail_.wakeTurns();
+        syncMarks();
+        limited_ = nullptr;
         subagents_.clear();
         nextSubagents_ = Clock::now();
         historyReset();
@@ -495,9 +512,11 @@ void ClaudeSession::onHook(const json &event)
             inFlight_.reset();
         }
         submitDeadline_.reset();
+        stopCheck_.reset();
         catchUp();
     }
     if (name == "SessionStart") {
+        limited_ = nullptr;
         const std::string source = event.value("source", "");
         if (state_ == "starting" || (state_ == "waiting" && trust) || source == "clear" || source == "resume")
             state_ = "idle";
@@ -505,9 +524,14 @@ void ClaudeSession::onHook(const json &event)
             endSlash();
         }
     } else if (name == "UserPromptSubmit") {
+        limited_ = nullptr;
         state_ = "busy";
         promptVoice(event.value("prompt", ""));
+    } else if (name == "Stop" && limited_.is_object() && limitAhead(limited_)) {
+        // The limit ended the turn in the file, but Claude Code goes on by
+        // itself at the reset: stay busy until it does.
     } else if (name == "Stop") {
+        limited_ = nullptr;
         state_ = "idle";
         forceIdle_ = false;
         endSlash();
@@ -903,6 +927,32 @@ void ClaudeSession::armEscapeCheck(bool forceIdle)
 void ClaudeSession::tick(Clock::time_point now)
 {
     runEscapeChecks(now);
+    if (stopCheck_ && now >= *stopCheck_) {
+        // The turn ended in the transcript and no Stop came: Claude Code
+        // writes no Stop for some ends. Still busy only when it went on.
+        stopCheck_.reset();
+        if (state_ == "busy" && !limited_.is_object() && !slashPending_ && !inFlight_ && !turnRunning(transcript_)) {
+            state_ = "idle";
+            voiceTurn_ = false;
+            submitDeadline_.reset();
+            deliver();
+            changed();
+        }
+    }
+    if (limited_.is_object()) {
+        // Gone on without a line we know, or the session ended some other way.
+        const json &at = limited_.value("resetsAt", json());
+        if ((state_ != "busy" && state_ != "waiting")
+            || (at.is_number() && at.get<long long>() + kLimitGrace.count() < static_cast<long long>(std::time(nullptr)))) {
+            limited_ = nullptr;
+            if (state_ == "busy" && !slashPending_) {
+                state_ = "idle";
+                voiceTurn_ = false;
+                deliver();
+            }
+            changed();
+        }
+    }
     if (typedDeadline_ && now >= *typedDeadline_) // the wrapper never answered
         notDelivered("", true);
     if (retryAt_ && now >= *retryAt_) {
@@ -946,6 +996,8 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
         next = std::min({next, lastTail_ + kTailEvery, lastSubagents_ + kSubagentsEvery});
     for (const auto &at : escapeChecks_)
         next = std::min(next, at);
+    if (stopCheck_)
+        next = std::min(next, *stopCheck_);
     if (submitDeadline_)
         next = std::min(next, *submitDeadline_);
     if (screenAt_)
@@ -984,6 +1036,7 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
         return;
     escapeChecks_.clear();
     state_ = "idle";
+    limited_ = nullptr;
     voiceTurn_ = false;
     submitDeadline_.reset();
     // Interrupted by the app and nothing in the transcript says so: the
@@ -1010,6 +1063,20 @@ void ClaudeSession::catchUp()
     drain();
     tail_.settleWakes();
     wakeMark_ = tail_.wakeTurns();
+    endMark_ = tail_.turnEndCount();
+}
+
+void ClaudeSession::syncMarks()
+{
+    hitMark_ = tail_.limitHits();
+    clearMark_ = tail_.limitClears();
+    endMark_ = tail_.turnEndCount();
+}
+
+bool ClaudeSession::limitAhead(const json &limited)
+{
+    const json &at = limited.value("resetsAt", json());
+    return !at.is_number() || at.get<long long>() > static_cast<long long>(std::time(nullptr));
 }
 
 // Claude Code's session id and transcript, kept beside the wrapper's socket
@@ -1035,6 +1102,34 @@ void ClaudeSession::pollTranscript()
     if (usage_.is_object() && usage_.value("cache", json()) != tail_.cache()) {
         usage_["cache"] = tail_.cache();
         usageChanged();
+    }
+    // The usage limit: hit (busy until the reset), gone on, or a turn end
+    // the Stop hook should have followed.
+    if (tail_.limitHits() < hitMark_ || tail_.limitClears() < clearMark_ || tail_.turnEndCount() < endMark_) { // another file
+        syncMarks();
+        limited_ = nullptr;
+    }
+    if (tail_.limitHits() != hitMark_) {
+        hitMark_ = tail_.limitHits();
+        clearMark_ = tail_.limitClears();
+        if (tail_.limited().is_object()) {
+            limited_ = tail_.limited();
+            state_ = "busy";
+            stopCheck_.reset();
+            attention("limited", limited_.value("text", ""));
+            changed();
+        }
+    } else if (tail_.limitClears() != clearMark_) {
+        clearMark_ = tail_.limitClears();
+        if (limited_.is_object()) {
+            limited_ = nullptr;
+            changed();
+        }
+    }
+    if (tail_.turnEndCount() != endMark_) {
+        endMark_ = tail_.turnEndCount();
+        if (state_ == "busy" && !limited_.is_object() && !tail_.limited().is_object() && !slashPending_)
+            stopCheck_ = Clock::now() + kStopWait;
     }
     // A background task or agent finished and Claude Code took it up: a
     // turn without UserPromptSubmit, ended by Stop as usual.

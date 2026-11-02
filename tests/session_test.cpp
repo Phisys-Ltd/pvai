@@ -6,6 +6,7 @@
 // usage: pvai-session-test /path/to/pvai
 #include "support.h"
 
+#include <ctime>
 #include <fstream>
 
 using namespace pvai;
@@ -1198,6 +1199,56 @@ int main(int argc, char **argv)
     hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok"}});
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle" && s.value("dialogInfo", json()).is_null(); }).empty(),
           "dialogInfo goes with the dialog");
+
+    // The usage limit: Claude Code writes the 429 as an assistant line and a
+    // turn end, then goes on by itself at the reset (a dequeue line, no hook).
+    {
+        const long long resetsAt = static_cast<long long>(std::time(nullptr)) + 3600;
+        const json limitLine = {{"type", "assistant"}, {"uuid", "u-lim"}, {"timestamp", "2026-11-02T19:21:52.424Z"},
+                                {"message", {{"model", "<synthetic>"}, {"role", "assistant"},
+                                             {"content", json::array({{{"type", "text"}, {"text", "You've hit your 5-hour limit \xC2\xB7 resets 11:20pm (Europe/Zurich)"}}})}}},
+                                {"apiError", "usage_limit_reached"}, {"error", "rate_limit"}, {"isApiErrorMessage", true}, {"apiErrorStatus", 429},
+                                {"quotaLimits", {{"status", "rejected"}, {"resetsAt", resetsAt}, {"rateLimitType", "five_hour"}}}};
+        const std::string info = R"({"type":"system","subtype":"informational","content":"Usage limit reached"})";
+        const std::string end = R"({"type":"system","subtype":"turn_duration","durationMs":1165})";
+        const std::string dequeue = R"({"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-02T22:21:22.796Z"})";
+        auto isLimited = [](const json &s) { return sub(s, "limited").value("type", "") == "five_hour"; };
+        a.drain();
+        hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "long job"}});
+        append(limitLine.dump());
+        append(info);
+        append(end);
+        const json attention = a.next("attention", [](const json &m) { return m.value("kind", "") == "limited"; }, 3000);
+        check(attention.value("session", "") == "wterm" && attention.value("text", "").find("5-hour limit") != std::string::npos,
+              "attention limited: " + attention.dump());
+        term = waitSession(a, "wterm", isLimited);
+        check(!term.empty() && term.value("state", "") == "busy" && term["limited"].value("resetsAt", 0LL) == resetsAt
+                  && term["limited"].value("text", "").find("resets 11:20pm") != std::string::npos,
+              "the limit line: limited set, still busy: " + term.dump());
+        check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }, 4500).empty(),
+              "a turn end while limited does not end the busy state");
+        append(dequeue);
+        term = waitSession(a, "wterm", [](const json &s) { return s["limited"].is_null(); });
+        check(!term.empty() && term.value("state", "") == "busy", "the dequeue: limited null, still busy: " + term.dump());
+        hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "done"}});
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle" && s["limited"].is_null(); }).empty(),
+              "then Stop ends the turn");
+        // A Stop that arrives while the limit waits changes nothing.
+        hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "again"}});
+        append(limitLine.dump());
+        check(!waitSession(a, "wterm", isLimited).empty(), "limited again");
+        hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "x"}});
+        check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }, 1200).empty(), "a Stop during the limit: still busy");
+        hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "typed again"}});
+        term = waitSession(a, "wterm", [](const json &s) { return s["limited"].is_null() && s.value("state", "") == "busy"; });
+        check(!term.empty(), "a prompt of the owner's ends the wait");
+        // A turn end and no Stop: idle after a moment.
+        append(answerLine);
+        append(end);
+        check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }, 1200).empty(), "a turn end: not idle at once");
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }, 5000).empty(),
+              "but idle after 3 s without a Stop");
+    }
 
     // Ended Claude conversations: titles, no command-only ones, not the
     // running one.

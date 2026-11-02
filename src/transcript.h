@@ -1,7 +1,7 @@
 // Follows a Claude Code session transcript (one JSON object per line, an
 // internal format that changes between versions) and turns what the owner
 // should see into the protocol's entries: prompt, text, tool, result,
-// interrupted. Everything else in the file is skipped.
+// interrupted, limited, resumed. Everything else in the file is skipped.
 #pragma once
 
 #include "common.h"
@@ -73,8 +73,20 @@ public:
     // held no turn end and the file may have one further back.
     std::optional<bool> turnRunningSeen() const;
 
+    // The usage limit the session waits on ({"resetsAt", "type", "text"}, the
+    // first two null when the line has none), or null once Claude Code went
+    // on (a dequeue, or an answer that is no API error). The counters tell
+    // a caller that polls less often than lines come in that something
+    // happened. A `resumed` entry follows a dequeue only while limited.
+    const json &limited() const { return limited_; }
+    std::size_t limitHits() const { return limitHits_; }
+    std::size_t limitClears() const { return limitClears_; }
+    // How many turn_duration lines (a turn ended in the file) were read.
+    std::size_t turnEndCount() const { return turnEndCount_; }
+
 private:
     void resetState();
+    void clearLimited();
     void take(const json &line, std::vector<json> &out);
 
     std::string path_;
@@ -89,6 +101,8 @@ private:
     std::size_t wakeTurns_ = 0;
     bool wakePending_ = false; // a task notification, no answer yet
     json cache_;
+    json limited_;
+    std::size_t limitHits_ = 0, limitClears_ = 0, turnEndCount_ = 0;
     bool turnRunning_ = false, turnEnds_ = false, windowed_ = false;
 };
 

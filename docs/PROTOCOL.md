@@ -110,7 +110,7 @@ daemon knows every live one on its host.
 ```json
 {"id": "w1a2b3c4d", "assistant": "claude", "label": "phi-core", "cwd": "/root/projects/phi-core",
  "state": "idle", "queued": 0, "draft": false, "detached": false, "stoppable": false, "restartable": true, "inputClearable": true,
- "dialog": null, "dialogInfo": null, "usage": null, "claudeSession": "4f3b744c-...", "subagents": []}
+ "dialog": null, "dialogInfo": null, "usage": null, "claudeSession": "4f3b744c-...", "subagents": [], "limited": null}
 ```
 
 - `id`: opaque, stable while it lives: chosen by the wrapper (`w` + 8 hex
@@ -256,6 +256,11 @@ daemon knows every live one on its host.
   state does too (since 0.5.22): a session whose transcript has a turn
   going on (a prompt or an answer after Claude Code's last turn end) is
   `busy` after the restart, else `idle`.
+- `limited` (since 0.5.50): `null`, or `{"resetsAt": <Unix seconds, null
+  when unknown>, "type": "<rateLimitType, e.g. five_hour|seven_day, or
+  null>", "text": "<the assistant's text, one line>"}` while a Claude Code
+  session waits for its usage limit to reset; see "Usage limit". The
+  state stays `busy`. A missing field (an older daemon) means `null`.
 - `subagents`: the subagents of a session that run now, oldest first; they
   can outlive the turn that started them (background agents), so a session
   can be `idle` with subagents running. A finished one drops out, and every
@@ -370,7 +375,7 @@ Daemon to app:
 | `projects` | `dirs: [path]` | most recently used first |
 | `browse` | `path`, `dirs: [name]`, `ok` | sorted, hidden ones left out; `ok: false` when `path` cannot be read |
 | `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn counts as spoken (see "What gets spoken") |
-| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the dialog's first line). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models") |
+| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the dialog's first line). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models"); since 0.5.50 `kind: "limited"`: a Claude Code session hit its usage limit, `text` is Claude Code's message (see "Usage limit") |
 | `history` | `session`, `entries: [Entry]` | answer to `subscribe`, oldest first; sent again, to every subscriber, when the session moves to another transcript (`/clear`): the view starts over |
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
 | `conversations` | `assistant`, `cwd`, `conversations: [Conversation]` | answer to `conversations` |
@@ -752,6 +757,26 @@ where the assistant says so, the apps get `{"type": "attention", "session",
 `model/rerouted` (a limit, a capacity or safety reason). Claude Code's
 fallback shows in `usage.model` only (its status line).
 
+## Usage limit
+
+Since 0.5.50 a Claude Code session that runs into its usage limit shows it.
+Claude Code ends the turn with an API error (a 429) in the transcript and
+goes on by itself at the reset, without a hook, so the session stays
+`busy` and `Session.limited` says why: `{"resetsAt": 1791826200, "type":
+"five_hour", "text": "You've hit your session limit · resets 7:30pm
+(Europe/Zurich)"}`. When the limit is hit the apps get once `{"type":
+"attention", "session", "kind": "limited", "text": "<text>"}` (to show and
+to speak), and the conversation view a `limited` history entry.
+
+`limited` goes back to `null`, with a `sessions` update, when the turn
+goes on or ends: Claude Code's resumption (a `resumed` history entry), an
+answer that is no API error, UserPromptSubmit, the session ending or
+restarting, or the owner's Esc. A Stop hook that comes while the reset is
+still ahead is ignored, since Claude Code continues anyway; a limit still
+set 3 minutes after `resetsAt` is given up and the session goes `idle`. A
+daemon that takes a session on again after a restart shows it `busy` and
+`limited` when the limit is still ahead.
+
 ## Install and login
 
 Since 0.5.24 the app can install an assistant that is missing and log one
@@ -866,6 +891,8 @@ a second.
 | `tool` | `tool`, `text`, `file` | a tool call; `text` is one line saying what it does; `file`, when present, names the file whose content the result shows (a `Read`, or a shell command that names exactly one file), so an app can colour it by its extension |
 | `result` | `tool`, `text`, `error` | what the tool returned, cut at 4 KiB |
 | `interrupted` | | the owner stopped the turn |
+| `limited` | `text`, `resetsAt`, `type` | since 0.5.50: the usage limit was hit; `resetsAt` (Unix seconds) and `type` (`five_hour`, `seven_day`) are null when the line has none |
+| `resumed` | | since 0.5.50, internal and optional: Claude Code went on by itself after a `limited`; an app that does not know the kind skips it |
 | `command` | `text` | a slash command that ran in Claude Code itself (`/compact`, `/context`, `/model opus`), a shell command the owner typed with `!` (`! git status`), or `/compact` for a compaction Claude Code started itself (the context ran full, or idle before the prompt cache expired) |
 | `output` | `text` | what such a command printed (for `!`: stdout, then stderr), terminal colours removed, cut at 4 KiB (empty output is not passed on) |
 

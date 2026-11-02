@@ -97,5 +97,31 @@ int main()
     for (const auto &e : tail.poll())
         got += e.value("kind", "") + ":" + e.value("text", "") + "|";
     check(got == "prompt:after the bad lines|", "malformed lines are skipped: " + got);
+    // The usage limit and the resumption after it.
+    const std::string limit = home.path + "/limit.jsonl";
+    std::ofstream(limit) << userLine(40, "long job")
+                         << R"({"type":"queue-operation","operation":"dequeue"})" "\n"
+                         << R"({"type":"assistant","uuid":"u41","timestamp":"t1","message":{"content":[{"type":"text","text":"You've hit your session limit\nresets 7:30pm"}]},)"
+                            R"("isApiErrorMessage":true,"apiError":"usage_limit_reached","apiErrorStatus":429,"error":"rate_limit",)"
+                            R"("quotaLimits":{"status":"rejected","resetsAt":1791826200,"rateLimitType":"five_hour"}})" "\n"
+                         << R"({"type":"system","subtype":"turn_duration","durationMs":5})" "\n";
+    tail.follow(limit);
+    auto kinds = [&]() {
+        std::string out;
+        for (const auto &e : tail.poll())
+            out += e.value("kind", "") + "|";
+        return out;
+    };
+    check(kinds() == "prompt|limited|", "a limit line is a limited entry, an ordinary dequeue none");
+    check(tail.limited().is_object() && tail.limited().value("resetsAt", 0LL) == 1791826200 && tail.limited().value("type", "") == "five_hour"
+              && tail.limited().value("text", "") == "You've hit your session limit resets 7:30pm" && tail.limitHits() == 1 && tail.turnEndCount() == 1,
+          "limited(): " + tail.limited().dump());
+    check(tail.recent().back().value("resetsAt", 0LL) == 1791826200, "the entry carries resetsAt");
+    std::ofstream(limit, std::ios::app) << R"({"type":"queue-operation","operation":"dequeue","timestamp":"t2"})" "\n";
+    check(kinds() == "resumed|" && tail.limited().is_null() && tail.limitClears() == 1, "a dequeue ends the limit with a resumed entry");
+    std::ofstream(limit, std::ios::app) << R"({"type":"assistant","uuid":"u50","isApiErrorMessage":true,"apiError":"usage_limit_reached","message":{"content":[{"type":"text","text":"Limit"}]}})" "\n"
+                                        << R"({"type":"assistant","uuid":"u51","message":{"content":[{"type":"text","text":"Back."}]}})" "\n";
+    check(kinds() == "limited|text|" && tail.limited().is_null() && tail.limitHits() == 2,
+          "a limit line without quotaLimits, ended by the next ordinary answer");
     return pvai::test::finish();
 }

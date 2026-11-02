@@ -61,6 +61,8 @@ private:
     void pollTranscript();
     void scanSubagents(Clock::time_point now);
     void catchUp();
+    void syncMarks();
+    static bool limitAhead(const json &limited);
     void drain(); // reads the transcript and hands the new entries to the subscribers
     void remember() const;
     void openScreenDialog();
@@ -105,6 +107,16 @@ private:
     std::optional<Clock::time_point> submitDeadline_;
     // Turns Claude Code started on its own, seen so far (see wakeTurns()).
     std::size_t wakeMark_ = 0;
+    // The usage limit the session waits on (see Session.limited in the
+    // protocol), and how much of the tail's limit and turn-end counts has
+    // been reacted to.
+    json limited_;
+    std::size_t hitMark_ = 0, clearMark_ = 0, endMark_ = 0;
+    // A turn ended in the transcript while busy: when to look whether the
+    // Stop hook came (it does not for every end).
+    std::optional<Clock::time_point> stopCheck_;
+    static constexpr std::chrono::seconds kStopWait{3};
+    static constexpr std::chrono::seconds kLimitGrace{180}; // past the reset, a limit is given up
     // The dialog the screen shows now (see onScreen), when a turn's one
     // counts, and the state it interrupted.
     std::string screenText_;
