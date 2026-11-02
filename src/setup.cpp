@@ -25,6 +25,7 @@ namespace {
 
 constexpr auto kInstallTime = std::chrono::minutes(15);
 constexpr auto kLoginTime = std::chrono::minutes(30);
+constexpr auto kLogoutTime = std::chrono::minutes(1);
 constexpr std::size_t kMaxOutput = 64 * 1024;
 constexpr const char *kStep = "pvai-step: ";
 
@@ -179,10 +180,32 @@ std::string Setup::login(const std::string &assistant, const std::string &binary
     return tasks_.count(assistant) ? "" : "cannot-start";
 }
 
+// Claude Code `auth logout`, Codex `logout`; Kimi Code has no logout command.
+std::string Setup::logout(const std::string &assistant, const std::string &binary, const json &ref)
+{
+    if (busy(assistant))
+        return "busy";
+    std::vector<std::string> argv;
+    if (assistant == "claude")
+        argv = {binary, "auth", "logout"};
+    else if (assistant == "codex")
+        argv = {binary, "logout"};
+    else if (assistant == "kimi")
+        return "not-supported";
+    else
+        return "unknown-assistant";
+    Task task;
+    task.logout = true;
+    task.ref = ref;
+    task.until = Clock::now() + kLogoutTime;
+    spawn(assistant, std::move(task), argv, false);
+    return tasks_.count(assistant) ? "" : "cannot-start";
+}
+
 std::string Setup::loginCode(const std::string &assistant, const std::string &code)
 {
     const auto it = tasks_.find(assistant);
-    if (it == tasks_.end() || it->second.install)
+    if (it == tasks_.end() || it->second.install || it->second.logout)
         return "no-login";
     const std::string clean = oneLine(code, 512);
     if (clean.empty())
@@ -198,7 +221,7 @@ std::string Setup::loginCode(const std::string &assistant, const std::string &co
 std::string Setup::loginCancel(const std::string &assistant)
 {
     const auto it = tasks_.find(assistant);
-    if (it == tasks_.end() || it->second.install)
+    if (it == tasks_.end() || it->second.install || it->second.logout)
         return "no-login";
     ::kill(-it->second.pid, SIGTERM);
     ::waitpid(it->second.pid, nullptr, 0);
@@ -255,7 +278,7 @@ void Setup::spawn(const std::string &assistant, Task task, const std::vector<std
     task.pid = pid;
     task.fd = fd;
     Task &stored = tasks_[assistant] = std::move(task);
-    event(assistant, stored, stored.install ? "running" : "waiting");
+    event(assistant, stored, stored.install || stored.logout ? "running" : "waiting");
 }
 
 std::vector<int> Setup::fds() const
@@ -285,7 +308,7 @@ void Setup::service(int fd)
         eof = n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
         break;
     }
-    if (task.install) {
+    if (task.install || task.logout) {
         for (auto nl = task.buffer.find('\n'); nl != std::string::npos; nl = task.buffer.find('\n')) {
             line(assistant, task, plain(task.buffer.substr(0, nl)));
             task.buffer.erase(0, nl + 1);
@@ -297,7 +320,7 @@ void Setup::service(int fd)
         loginOutput(assistant, task);
     }
     if (eof) {
-        if (task.install && !task.buffer.empty())
+        if ((task.install || task.logout) && !task.buffer.empty())
             line(assistant, task, plain(task.buffer));
         int status = 0;
         ::waitpid(task.pid, &status, 0);
@@ -365,14 +388,16 @@ void Setup::end(const std::string &assistant, int status, const std::string &why
     if (!ok)
         error = !why.empty() ? why : !task.last.empty() ? task.last : "exit status " + std::to_string(status);
     event(assistant, task, ok ? "done" : "failed", error);
-    finished_(assistant, task.install, ok);
+    finished_(assistant, kindOf(task), ok);
 }
 
 void Setup::event(const std::string &assistant, const Task &task, const std::string &state, const std::string &error)
 {
-    json message = {{"type", task.install ? "install" : "login"}, {"ref", task.ref}, {"assistant", assistant}, {"state", state},
+    json message = {{"type", kindOf(task)}, {"ref", task.ref}, {"assistant", assistant}, {"state", state},
                     {"text", task.last.empty() ? json() : json(task.last)}};
-    if (task.install) {
+    if (task.logout) {
+        // text only
+    } else if (task.install) {
         message["step"] = task.step.empty() ? json() : json(task.step);
     } else {
         message["url"] = task.url.empty() ? json() : json(task.url);

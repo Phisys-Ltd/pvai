@@ -331,6 +331,7 @@ App to daemon:
 | `login` | `ref`, `assistant` | (since 0.5.24) log an assistant in on this host: a link and a code for the owner (see "Install and login") |
 | `login-code` | `ref`, `assistant`, `code` | the code the login page showed, for a login in state `code-needed` (Claude Code) |
 | `login-cancel` | `ref`, `assistant` | end a running login |
+| `logout` | `ref`, `assistant` | (since 0.5.39) log an assistant out on this host (see "Install and login") |
 | `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust; Return for `screen`) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits; for `screen` it closes the dialog). Since 0.5.13 also `key:NAME`, one key into any dialog but `trust`: `up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `space`, or a digit or lower-case letter (an option's number, a shortcut such as `s`); the dialog stays open until the screen or a hook says otherwise. `send`: see "Delivery" under the session fields. Kimi: also `always` and `option:<id>`, see "Kimi sessions" |
 | `interrupt` | `ref`, `session` | stop the running turn, like Esc in the terminal (into a dialog: deny); nothing happens while `idle`, `starting` or on the trust dialog |
 | `stop` | `ref`, `session` | end a `stoppable` session |
@@ -349,7 +350,7 @@ Daemon to app:
 
 | type | fields | meaning |
 |---|---|---|
-| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget` |
+| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout` |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
@@ -371,9 +372,10 @@ Daemon to app:
 | `updated` | `ref`, `installed`, `changed`, `errors` | answer to `update` |
 | `install` | `ref`, `assistant`, `state`, `step`, `text`, `error` | an install's progress, to every app: `state` `running`, then `done` or `failed` (`error` why); `step` `download` (claude), `node`, `npm` (codex, kimi), `check`; `text` the last line of output |
 | `login` | `ref`, `assistant`, `state`, `url`, `code`, `text`, `error` | a login's progress, to every app: `state` `waiting` (show `url` and `code`; the owner signs in in a browser), `code-needed` (Claude Code: the page shows a code, send it with `login-code`), `done` or `failed` (`error`: why, also `cancelled` and `timed out`) |
+| `logout` | `ref`, `assistant`, `state`, `text`, `error` | a logout's progress, to every app: `state` `running`, then `done` or `failed` (`error` why, also `timed out`); `text` the last line of output |
 | `model` | `ref`, `session`, `model`, `state`, `error` | a model change ended, to every app: `done` or `failed` (see "Models"); `rejected` before (`unknown-session`, `bad-model`, `not-supported`) |
 | `mode` | `ref`, `session`, `state`, `mode`, `error` | a mode change ended, to every app: `state` `done` (`mode` the new one) or `failed` (`error`: `unavailable`, the mode is not in this session's cycle; `no change on the screen`; Kimi's own words); `rejected` before (`unknown-session`, `unknown-mode`, `not-supported`, `busy`) |
-| `assistants` | `assistants`, `installed` | (since 0.5.24) `welcome.assistants` and `welcome.installed` again, to every app, when an install or a login changed them |
+| `assistants` | `assistants`, `installed` | (since 0.5.24) `welcome.assistants` and `welcome.installed` again, to every app, when an install, a login or a logout changed them |
 | `proposals` | `proposals: [Proposal]` | the agent messages waiting for the owner, sent after `welcome` and after every change (see "Agent messages") |
 | `dismissed` | `ref`, `proposal` | answer to `dismiss`; `proposal` is gone from `proposals` (also when it was unknown) |
 | `dropped` | `prompts: [{session, ref, text}]` | (since 0.5.21) the daemon is stopping by `pvai daemon stop|restart --force` and these queued prompts are lost (`ref` the one of their `prompt`, `text` the first 80 bytes); to every app. Without `--force` the daemon does not stop while any prompt is queued (`pvai` gets `rejected` with `queued` over loopback, from `{"type": "shutdown", "ref", "force"}`) |
@@ -774,10 +776,19 @@ one task per assistant at a time.
   `login-cancel` ends it; after 30 minutes it ends by itself. The output's
   forms are the assistants' own and may change with their versions: `text`
   always carries the last line as it came.
+- `{"type": "logout", "ref", "assistant"}` (since 0.5.39; `welcome.logout:
+  true`) runs the assistant's own logout as a child process: `claude auth
+  logout`, `codex logout`. `rejected`: `unknown-assistant`, `not-installed`,
+  `busy` (a login or logout of that assistant is running), `not-logged-in`
+  (`loggedIn` is `false`), `not-supported` (Kimi Code has no logout
+  command). Events `logout` follow (`running` with the last line of output
+  as `text`, then `done` or `failed`; at most 1 minute), then `assistants`
+  with `loggedIn` read again. Running sessions of that assistant are left
+  as they are.
 - `loggedIn` in `welcome.assistants` for all three: Claude Code from
   `claude auth status --json`, Codex from `codex login status`, Kimi from
   its ACP answers (and `true` after a login went through); read with the
-  versions, after every install and login. `null` when not known.
+  versions, after every install, login and logout. `null` when not known.
 - `welcome.assistants` lists every assistant pvai knows, installed or not
   (`installed: false`), so the app can offer to install it.
 

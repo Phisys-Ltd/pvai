@@ -532,6 +532,7 @@ int main(int argc, char **argv)
               "--version) echo \"$(cat \"$d/claude.version\") (Claude Code)\";;\n"
               "update) echo 2.0.0 > \"$d/claude.version\"; echo updated;;\n"
               "auth) if [ \"$2\" = status ]; then [ -e \"$d/claude.in\" ] && echo '{\"loggedIn\": true}' || echo '{\"loggedIn\": false}';\n"
+              "  elif [ \"$2\" = logout ]; then sleep 1; rm -f \"$d/claude.in\"; echo 'Logged out';\n"
               "  else echo 'Opening browser to sign in'; echo 'If the browser did not open, visit: https://claude.com/cai/oauth/authorize?code=true&state=s1';\n"
               "  printf 'Paste code here if prompted > '; read code; [ \"$code\" = good#s1 ] || { echo 'Invalid code'; exit 1; }\n"
               "  touch \"$d/claude.in\"; echo 'Login successful'; fi;;\n"
@@ -542,7 +543,8 @@ int main(int argc, char **argv)
               "update) echo checking; echo 'npm ERR! needs root' >&2; exit 1;;\n"
               "login) if [ \"$2\" = status ]; then [ -e \"$d/codex.in\" ] && { echo 'Logged in using ChatGPT'; exit 0; }; echo 'Not logged in'; exit 1; fi\n"
               "  echo '1. Open this link in your browser and sign in to your account'; echo '   https://auth.openai.com/codex/device';\n"
-              "  echo '2. Enter this one-time code (expires in 15 minutes)'; echo '   ABCD-12345'; sleep 1; touch \"$d/codex.in\";;\nesac\n",
+              "  echo '2. Enter this one-time code (expires in 15 minutes)'; echo '   ABCD-12345'; sleep 1; touch \"$d/codex.in\";;\n"
+              "logout) rm -f \"$d/codex.in\"; echo 'Logged out';;\nesac\n",
               true);
     ::setenv("HOME", home.c_str(), 1);
     ::setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);
@@ -1215,6 +1217,30 @@ int main(int argc, char **argv)
     a.send({{"type", "login-code"}, {"ref", 41}, {"assistant", "claude"}, {"code", "x"}});
     check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 41; }).value("reason", "") == "no-login",
           "a code without a login: no-login");
+
+    // Logout: Claude Code's goes through, a second one meanwhile is busy.
+    a.send({{"type", "logout"}, {"ref", 42}, {"assistant", "claude"}});
+    json logout = a.next("logout", [](const json &m) { return m.value("assistant", "") == "claude" && m.value("state", "") == "running"; });
+    check(!logout.empty(), "logout: running: " + logout.dump());
+    a.send({{"type", "logout"}, {"ref", 43}, {"assistant", "claude"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 43; }).value("reason", "") == "busy", "a second logout meanwhile: busy");
+    logout = a.next("logout", [](const json &m) { return m.value("assistant", "") == "claude" && m.value("state", "") != "running"; }, 5000);
+    check(logout.value("state", "") == "done" && logout.value("text", "") == "Logged out" && logout.value("ref", 0) == 42,
+          "logout: done with the last line: " + logout.dump());
+    check(!a.next("assistants", [](const json &m) {
+              const json list = m.value("assistants", json::array());
+              return !list.empty() && list[0].value("loggedIn", json()) == false;
+          }).empty(),
+          "claude loggedIn false after the logout");
+    a.send({{"type", "logout"}, {"ref", 44}, {"assistant", "claude"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 44; }).value("reason", "") == "not-logged-in",
+          "logout without a login: not-logged-in");
+    a.send({{"type", "logout"}, {"ref", 45}, {"assistant", "nobody"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 45; }).value("reason", "") == "unknown-assistant",
+          "logout of an unknown assistant: unknown-assistant");
+    a.send({{"type", "logout"}, {"ref", 46}, {"assistant", "kimi"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 46; }).value("reason", "") == "not-supported",
+          "logout of Kimi: not-supported");
 
     // A session the app started that ends at once: the app hears why.
     {

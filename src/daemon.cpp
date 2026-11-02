@@ -166,7 +166,7 @@ public:
         backends_.push_back(std::make_unique<CodexBackend>(*this));
         backends_.push_back(std::make_unique<KimiBackend>(*this));
         setup_ = std::make_unique<Setup>([this](const json &event) { broadcast(event); },
-                                         [this](const std::string &name, bool install, bool ok) { setupFinished(name, install, ok); });
+                                         [this](const std::string &name, const std::string &kind, bool ok) { setupFinished(name, kind, ok); });
         loadListen();
         refreshVersions();
     }
@@ -519,17 +519,35 @@ private:
             logLine("login of " + chosen->name() + " started");
     }
 
-    // An install or login ended: the program, its version and its login
-    // are read again, and every app hears the new state.
-    void setupFinished(const std::string &name, bool install, bool ok)
+    void onLogout(Peer *peer, const json &message)
     {
-        logLine(std::string(install ? "install" : "login") + " of " + name + (ok ? " done" : " failed"));
+        const json ref = message.value("ref", json());
+        Backend *chosen = backend(message.value("assistant", ""));
+        std::string reason = !chosen ? "unknown-assistant" : !chosen->installedHere() ? "not-installed" : "";
+        if (reason.empty() && chosen->name() == "kimi")
+            reason = "not-supported";
+        else if (reason.empty() && !setup_->busy(chosen->name()) && chosen->loggedIn() == json(false))
+            reason = "not-logged-in";
+        if (reason.empty())
+            reason = setup_->logout(chosen->name(), chosen->program(), ref);
+        if (!reason.empty())
+            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", reason}});
+        else
+            logLine("logout of " + chosen->name() + " started");
+    }
+
+    // An install, login or logout ended: the program, its version and its login
+    // are read again, and every app hears the new state.
+    void setupFinished(const std::string &name, const std::string &kind, bool ok)
+    {
+        const bool install = kind == "install";
+        logLine(kind + " of " + name + (ok ? " done" : " failed"));
         Backend *chosen = backend(name);
         if (!chosen)
             return;
         if (install)
             chosen->findProgram();
-        if (!install && ok)
+        if (kind == "login" && ok)
             if (auto *kimi = dynamic_cast<KimiBackend *>(chosen))
                 kimi->setLoggedIn(true);
         broadcast(assistantsMessage());
@@ -556,7 +574,7 @@ private:
         }
         return {{"type", "welcome"}, {"host", hostName()}, {"user", userName()}, {"version", kVersion},
                 {"assistants", assistants}, {"installed", installed}, {"conversations", true},
-                {"peers", true}, {"forget", true}, {"model", true}};
+                {"peers", true}, {"forget", true}, {"model", true}, {"logout", true}};
     }
 
     void handle(Peer *peer, const json &message)
@@ -671,6 +689,8 @@ private:
             onMode(peer, message);
         else if (type == "login" || type == "login-code" || type == "login-cancel")
             onLogin(peer, message);
+        else if (type == "logout")
+            onLogout(peer, message);
         else if (type == "update")
             onUpdate(peer, message);
         else if (type == "projects")

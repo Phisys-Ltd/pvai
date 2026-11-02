@@ -3,7 +3,8 @@
 // output read as it comes. An install is a shell script (steps marked with
 // "pvai-step: NAME" lines); a login runs the assistant's own login command
 // in a pseudo-terminal, which shows a link and a code (Claude Code asks for
-// a code back instead).
+// a code back instead). A logout runs the assistant's own logout command
+// like an install runs its script.
 #pragma once
 
 #include "common.h"
@@ -23,9 +24,9 @@ class Setup {
 public:
     using Clock = std::chrono::steady_clock;
     // Every event goes to every app; `finished` runs when a task ended
-    // (the assistant's name, whether it was an install, and success).
+    // (the assistant's name, its kind: install, login or logout, and success).
     using Emit = std::function<void(const json &event)>;
-    using Finished = std::function<void(const std::string &assistant, bool install, bool ok)>;
+    using Finished = std::function<void(const std::string &assistant, const std::string &kind, bool ok)>;
 
     Setup(Emit emit, Finished finished);
     ~Setup();
@@ -36,6 +37,7 @@ public:
     // assistant's program for a login.
     std::string install(const std::string &assistant, const json &ref);
     std::string login(const std::string &assistant, const std::string &binary, const json &ref);
+    std::string logout(const std::string &assistant, const std::string &binary, const json &ref);
     std::string loginCode(const std::string &assistant, const std::string &code);
     std::string loginCancel(const std::string &assistant);
     bool busy(const std::string &assistant) const { return tasks_.count(assistant) > 0; }
@@ -49,10 +51,11 @@ public:
 private:
     struct Task {
         bool install = false;
+        bool logout = false;
         json ref;
         pid_t pid = -1;
         int fd = -1;
-        std::string buffer;  // output not yet a whole line
+        std::string buffer;  // output not yet a whole line (an install's, a logout's)
         std::string output;  // the output so far, without escape sequences (a login's)
         std::string step;    // install: the current step
         std::string state;   // login: waiting, code-needed
@@ -60,6 +63,7 @@ private:
         Clock::time_point until;
     };
 
+    static const char *kindOf(const Task &task) { return task.install ? "install" : task.logout ? "logout" : "login"; }
     void spawn(const std::string &assistant, Task task, const std::vector<std::string> &argv, bool pty);
     void line(const std::string &assistant, Task &task, const std::string &text);
     void loginOutput(const std::string &assistant, Task &task);

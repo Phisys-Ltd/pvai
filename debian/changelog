@@ -1,3 +1,15 @@
+pvai (0.5.39-1) trixie; urgency=medium
+
+  * New command logout: the app can log an assistant out on this host. It
+    runs the assistant's own logout (claude auth logout, codex logout) as a
+    child process and reports it as logout events (running, then done or
+    failed), then sends assistants with loggedIn read again. Rejected with
+    unknown-assistant, not-installed, busy, not-logged-in, and
+    not-supported for Kimi Code, which has no logout command. welcome says
+    logout: true. Running sessions are left as they are.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 08:46:24 +0100
+
 pvai (0.5.38-1) trixie; urgency=medium
 
   * start runs Claude Code by the path the daemon found (PVAI_CLAUDE, PATH,
