@@ -1,3 +1,14 @@
+pvai (0.5.47-1) trixie; urgency=medium
+
+  * Refactoring only, no change in behaviour: text helpers in text.h/.cpp
+    (D5), one child spawner spawnChild with execChild, readAvailable and
+    homeDir (D6), one client loop talkToDaemon for the CLI commands (D3),
+    one sessionCommand table in the daemon (D4), and small ones: one
+    writeAtomically, retryIfBlocked, endSlash, the raw terminal and the
+    SIGWINCH pipe (D9).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 21:00:00 +0100
+
 pvai (0.5.46-1) trixie; urgency=medium
 
   * The first transcript read is the last 8 MiB again; the 2 MiB window
