@@ -1,3 +1,15 @@
+pvai (0.5.51-1) trixie; urgency=medium
+
+  * The screen model counts a joined emoji (family), a flag and a keycap as
+    two columns, as Claude Code does. Before, a reply with one of them left
+    letters of the old line on the screen, the prompt box was unreadable and
+    a prompt was refused as not typed.
+  * A prompt Claude Code already took (its own line above a free box) counts
+    as typed and gets no second Return. A queued prompt that UserPromptSubmit
+    names afterwards leaves the queue.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 23:59:00 +0100
+
 pvai (0.5.50-1) trixie; urgency=medium
 
   * A Claude Code session that waits for its usage limit to reset stays
