@@ -6,6 +6,7 @@
 // open are locked by Kimi and not shared.
 #pragma once
 
+#include "rpc_backend.h"
 #include "session.h"
 
 #include <map>
@@ -15,6 +16,31 @@
 namespace pvai {
 
 class KimiBackend;
+
+// `kimi acp` on a socket pair: its stdin and stdout are one end, the daemon
+// holds the other. Its stderr goes to kimi.log beside the daemon's log.
+class KimiLink : public Link {
+public:
+    KimiLink() = default;
+    ~KimiLink() override { close(); }
+
+    bool open(const std::string &program);
+    void close() override;
+    bool isOpen() const override { return conn_ != nullptr; }
+    int fd() const override { return conn_ ? conn_->fd() : -1; }
+    bool wantsWrite() const override { return conn_ && conn_->wantsWrite(); }
+    long long request(const std::string &method, const json &params) override;
+    void notify(const std::string &method, const json &params) override;
+    void respond(const json &id, const json &result) override;
+    void respondError(const json &id, int code, const std::string &message) override;
+    bool read(std::vector<json> &messages) override;
+    bool flush() override { return !conn_ || conn_->flush(); }
+
+private:
+    std::unique_ptr<Conn> conn_;
+    pid_t child_ = -1;
+    long long nextId_ = 1;
+};
 
 class KimiSession : public BufferedSession {
 public:
@@ -61,58 +87,46 @@ private:
     bool turnRunning_ = false;
 };
 
-class KimiBackend : public Backend {
+class KimiBackend : public RpcBackend {
 public:
     explicit KimiBackend(Host &host);
-    ~KimiBackend() override;
 
     std::string name() const override { return "kimi"; }
     std::string title() const override { return "Kimi Code"; }
     json models() const override { return models_; }
     json modes() const override { return modes_; }
-    bool available() const override { return !bin_.empty(); }
     void update(std::function<void(const UpdateResult &)> done) override;
-    void findProgram() override;
     // A login just went through: the next call tells for sure.
     void setLoggedIn(bool on) { loggedIn_ = on; }
 
     void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) override;
     void start(const StartRequest &request, Started done) override;
 
-    int fd() const override;
-    short events() const override;
     void service() override;
     void tick(Clock::time_point now) override;
     std::optional<Clock::time_point> deadline() const override;
 
     // For its sessions.
-    using Done = std::function<void(const json &result, const json &error)>;
-    bool ready() const { return ready_; }
-    void call(const std::string &method, const json &params, Done done = {});
-    void notify(const std::string &method, const json &params);
-    void respond(const json &id, const json &result);
     const std::string &agentVersion() const { return agentVersion_; }
     // A call failed with authRequired (-32000), or one went through.
     void noteAuth(const json &error);
 
 protected:
-    std::string binary() const override { return bin_; }
+    Link &link() override { return link_; }
+    const Link &link() const override { return link_; }
+    std::string locate() const override;
+    std::string endedText() const override { return "Kimi Code ended"; }
+    void onLost() override;
+    void initializeFailed(const json &error) override;
+    void initialized(const json &result) override;
 
 private:
-    bool spawn();
-    void lost();
     void onRequest(const json &id, const std::string &method, const json &params);
     KimiSession *addSession(const std::string &id, const std::string &cwd);
     void setModels(const json &result);
     void setModes(const json &result);
 
-    std::string bin_;
-    std::unique_ptr<Conn> conn_;
-    pid_t child_ = -1;
-    bool ready_ = false;
-    long long nextId_ = 1;
-    std::map<long long, Done> pending_;
-    Clock::time_point nextTry_ = Clock::now();
+    KimiLink link_;
     json models_ = json::array();
     // Kimi's modes until a session tells better (modes.ts in kimi-code).
     json modes_ = json::array({{{"id", "default"}, {"name", "Ask"}}, {{"id", "plan"}, {"name", "Plan"}},

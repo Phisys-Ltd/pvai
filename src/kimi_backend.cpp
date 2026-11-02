@@ -16,7 +16,6 @@ namespace pvai {
 
 namespace {
 
-constexpr auto kRetry = std::chrono::seconds(10);
 constexpr int kAuthRequired = -32000;
 constexpr std::size_t kMaxAgentLine = 16 * 1024 * 1024; // session/load plays a whole history back
 
@@ -417,81 +416,9 @@ void KimiSession::loaded()
     changed();
 }
 
-// ---- KimiBackend ----
+// ---- KimiLink ----
 
-KimiBackend::KimiBackend(Host &host)
-    : Backend(host)
-    , bin_(kimiBinary())
-{
-}
-
-KimiBackend::~KimiBackend()
-{
-    if (child_ > 0) {
-        ::kill(child_, SIGTERM);
-        ::waitpid(child_, nullptr, 0);
-    }
-}
-
-void KimiBackend::findProgram()
-{
-    if (bin_.empty())
-        bin_ = kimiBinary();
-}
-
-// Installed with npm, which pvai leaves alone: an update changes nothing.
-void KimiBackend::update(std::function<void(const UpdateResult &)> done)
-{
-    done({installed_, installed_, bin_.empty() ? "not installed" : ""});
-}
-
-int KimiBackend::fd() const
-{
-    return conn_ ? conn_->fd() : -1;
-}
-
-short KimiBackend::events() const
-{
-    return static_cast<short>(POLLIN | (conn_ && conn_->wantsWrite() ? POLLOUT : 0));
-}
-
-void KimiBackend::call(const std::string &method, const json &params, Done done)
-{
-    if (!conn_) {
-        if (done)
-            done(json::object(), {{"code", -32603}, {"message", "Kimi Code is not running"}});
-        return;
-    }
-    const long long id = nextId_++;
-    conn_->send({{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", params}});
-    if (done)
-        pending_[id] = std::move(done);
-}
-
-void KimiBackend::notify(const std::string &method, const json &params)
-{
-    if (conn_)
-        conn_->send({{"jsonrpc", "2.0"}, {"method", method}, {"params", params}});
-}
-
-void KimiBackend::respond(const json &id, const json &result)
-{
-    if (conn_)
-        conn_->send({{"jsonrpc", "2.0"}, {"id", id}, {"result", result}});
-}
-
-void KimiBackend::noteAuth(const json &error)
-{
-    const json now = error.is_null() ? json(true) : error.value("code", 0) == kAuthRequired ? json(false) : loggedIn_;
-    if (now != loggedIn_) {
-        loggedIn_ = now;
-        host_.log(std::string("kimi: ") + (now == json(true) ? "logged in" : "not logged in"));
-    }
-}
-
-// `kimi acp` on a socket pair: its stdin and stdout are one end, the daemon
-// holds the other. Its stderr goes to kimi.log beside the daemon's log.
-bool KimiBackend::spawn()
+bool KimiLink::open(const std::string &program)
 {
     int pair[2];
     if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) // SOCK_CLOEXEC is Linux only
@@ -501,7 +428,7 @@ bool KimiBackend::spawn()
     const std::string log = runtimeDir() + "/kimi.log";
     rotateLog(log);
     ChildOptions options;
-    options.argv = {bin_, "acp"};
+    options.argv = {program, "acp"};
     options.newSession = true;
     options.cwd = homeDir();
     options.in = options.out = Stdio::descriptor(pair[1]);
@@ -520,49 +447,7 @@ bool KimiBackend::spawn()
     return true;
 }
 
-void KimiBackend::tick(Clock::time_point now)
-{
-    if (bin_.empty())
-        return;
-    if (conn_) {
-        if (!conn_->flush())
-            lost();
-        return;
-    }
-    if (now < nextTry_)
-        return;
-    nextTry_ = now + kRetry;
-    if (!spawn())
-        return;
-    ready_ = false;
-    call("initialize",
-         {{"protocolVersion", 1},
-          {"clientCapabilities", {{"fs", {{"readTextFile", false}, {"writeTextFile", false}}}, {"terminal", false}}},
-          {"clientInfo", {{"name", "pvai"}, {"title", "PhiVoice AI"}, {"version", kVersion}}}},
-         [this](const json &result, const json &error) {
-             if (!error.is_null()) {
-                 host_.log("kimi: initialize: " + error.dump());
-                 lost();
-                 return;
-             }
-             ready_ = true;
-             agentVersion_ = str(result.value("agentInfo", json()), "version");
-             for (Session *session : host_.sessions())
-                 if (auto *kimi = dynamic_cast<KimiSession *>(session))
-                     kimi->setVersion(agentVersion_);
-         });
-}
-
-std::optional<Clock::time_point> KimiBackend::deadline() const
-{
-    if (bin_.empty() || conn_)
-        return std::nullopt;
-    return nextTry_;
-}
-
-// Kimi ended (or its link broke): its sessions go with it; the next tick
-// starts it again, and `start.resume` brings a conversation back.
-void KimiBackend::lost()
+void KimiLink::close()
 {
     if (child_ > 0) {
         ::kill(child_, SIGTERM);
@@ -570,42 +455,126 @@ void KimiBackend::lost()
         child_ = -1;
     }
     conn_.reset();
+}
+
+long long KimiLink::request(const std::string &method, const json &params)
+{
+    const long long id = nextId_++;
+    conn_->send({{"jsonrpc", "2.0"}, {"id", id}, {"method", method}, {"params", params}});
+    return id;
+}
+
+void KimiLink::notify(const std::string &method, const json &params)
+{
+    if (conn_)
+        conn_->send({{"jsonrpc", "2.0"}, {"method", method}, {"params", params}});
+}
+
+void KimiLink::respond(const json &id, const json &result)
+{
+    if (conn_)
+        conn_->send({{"jsonrpc", "2.0"}, {"id", id}, {"result", result}});
+}
+
+void KimiLink::respondError(const json &id, int code, const std::string &message)
+{
+    if (conn_)
+        conn_->send({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", code}, {"message", message}}}});
+}
+
+bool KimiLink::read(std::vector<json> &messages)
+{
+    return conn_ && conn_->readMessages(messages);
+}
+
+// ---- KimiBackend ----
+
+KimiBackend::KimiBackend(Host &host)
+    : RpcBackend(host)
+{
+    bin_ = kimiBinary();
+}
+
+std::string KimiBackend::locate() const
+{
+    return kimiBinary();
+}
+
+// Installed with npm, which pvai leaves alone: an update changes nothing.
+void KimiBackend::update(std::function<void(const UpdateResult &)> done)
+{
+    done({installed_, installed_, bin_.empty() ? "not installed" : ""});
+}
+
+void KimiBackend::noteAuth(const json &error)
+{
+    const json now = error.is_null() ? json(true) : error.value("code", 0) == kAuthRequired ? json(false) : loggedIn_;
+    if (now != loggedIn_) {
+        loggedIn_ = now;
+        host_.log(std::string("kimi: ") + (now == json(true) ? "logged in" : "not logged in"));
+    }
+}
+
+void KimiBackend::tick(Clock::time_point now)
+{
+    if (bin_.empty())
+        return;
+    if (link_.isOpen()) {
+        if (!link_.flush())
+            lost();
+        return;
+    }
+    if (!retryDue(now))
+        return;
+    if (!link_.open(bin_))
+        return;
     ready_ = false;
-    auto pending = std::move(pending_);
-    pending_.clear();
-    for (auto &[id, done] : pending)
-        done(json::object(), {{"code", -32603}, {"message", "Kimi Code ended"}});
-    for (Session *session : host_.sessions())
-        if (auto *kimi = dynamic_cast<KimiSession *>(session))
-            kimi->end();
-    nextTry_ = Clock::now() + std::chrono::seconds(2);
+    initialize({{"protocolVersion", 1},
+                {"clientCapabilities", {{"fs", {{"readTextFile", false}, {"writeTextFile", false}}}, {"terminal", false}}},
+                {"clientInfo", {{"name", "pvai"}, {"title", "PhiVoice AI"}, {"version", kVersion}}}});
+}
+
+void KimiBackend::initializeFailed(const json &error)
+{
+    host_.log("kimi: initialize: " + error.dump());
+}
+
+void KimiBackend::initialized(const json &result)
+{
+    agentVersion_ = str(result.value("agentInfo", json()), "version");
+    for (KimiSession *session : sessionsOf<KimiSession>())
+        session->setVersion(agentVersion_);
+}
+
+std::optional<Clock::time_point> KimiBackend::deadline() const
+{
+    if (bin_.empty() || link_.isOpen())
+        return std::nullopt;
+    return nextTry_;
+}
+
+// Kimi ended (or its link broke): its sessions go with it; the next tick
+// starts it again, and `start.resume` brings a conversation back.
+void KimiBackend::onLost()
+{
+    for (KimiSession *session : sessionsOf<KimiSession>())
+        session->end();
 }
 
 void KimiBackend::service()
 {
-    if (!conn_)
+    if (!link_.isOpen())
         return;
     std::vector<json> messages;
-    const bool alive = conn_->readMessages(messages);
+    const bool alive = link_.read(messages);
     for (const auto &message : messages) {
         if (!message.is_object())
             continue;
         const std::string method = str(message, "method");
-        auto object = [&](const char *key) -> const json & {
-            static const json empty = json::object();
-            const auto it = message.find(key);
-            return it != message.end() && it->is_object() ? *it : empty;
-        };
+        auto object = [&](const char *key) -> const json & { return objectIn(message, key); };
         try {
             if (method.empty()) {
-                const json id = message.contains("id") ? message["id"] : json();
-                const auto it = id.is_number_integer() ? pending_.find(id.get<long long>()) : pending_.end();
-                if (it == pending_.end())
-                    continue;
-                auto done = std::move(it->second);
-                pending_.erase(it);
-                const json error = message.contains("error") && !message["error"].is_null() ? object("error") : json();
-                done(object("result"), error);
+                dispatchResponse(message);
             } else if (message.contains("id")) {
                 onRequest(message["id"], method, object("params"));
             } else if (method == "session/update") {
@@ -616,10 +585,10 @@ void KimiBackend::service()
         } catch (const json::exception &e) {
             host_.log(std::string("kimi: ") + method + ": " + e.what());
         }
-        if (!conn_)
+        if (!link_.isOpen())
             return;
     }
-    if (!alive || !conn_->flush())
+    if (!alive || !link_.flush())
         lost();
 }
 
@@ -635,8 +604,7 @@ void KimiBackend::onRequest(const json &id, const std::string &method, const jso
         respond(id, {{"outcome", {{"outcome", "cancelled"}}}});
         return;
     }
-    if (conn_)
-        conn_->send({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32601}, {"message", "not supported by pvai"}}}});
+    respondError(id, -32601, "not supported by pvai");
 }
 
 KimiSession *KimiBackend::addSession(const std::string &id, const std::string &cwd)

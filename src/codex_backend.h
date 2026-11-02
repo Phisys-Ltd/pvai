@@ -4,6 +4,7 @@
 #pragma once
 
 #include "codex.h"
+#include "rpc_backend.h"
 #include "session.h"
 
 #include <map>
@@ -63,7 +64,7 @@ private:
     std::string model_;        // a new model for it
 };
 
-class CodexBackend : public Backend {
+class CodexBackend : public RpcBackend {
 public:
     explicit CodexBackend(Host &host);
 
@@ -71,8 +72,6 @@ public:
     std::string title() const override { return "Codex"; }
     json models() const override { return models_; }
     json modes() const override;
-    bool available() const override { return !bin_.empty(); }
-    void findProgram() override;
     void refreshLogin(std::function<void(bool changed)> done) override;
 
     void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) override;
@@ -80,18 +79,11 @@ public:
     void processStarted(unsigned long long id, const json &hello) override;
     void processEnded(unsigned long long id) override;
 
-    int fd() const override { return link_.fd(); }
-    short events() const override;
     void service() override;
     void tick(Clock::time_point now) override;
     std::optional<Clock::time_point> deadline() const override;
 
     // For its sessions.
-    using Done = std::function<void(const json &result, const json &error)>;
-    bool ready() const { return ready_; }
-    void call(const std::string &method, const json &params, Done done = {});
-    void respond(const json &id, const json &result) { link_.respond(id, result); }
-    void respondError(const json &id, int code, const std::string &message) { link_.respondError(id, code, message); }
     void markStopped(const std::string &thread) { stopped_.insert(thread); }
     bool heldByTui(const std::string &thread) const;
     // Lets go of a thread that is not ours (unsubscribes; not taken on again
@@ -103,24 +95,23 @@ public:
     json subagentsOf(const std::string &thread) const;
 
 protected:
-    std::string binary() const override { return bin_; }
+    Link &link() override { return link_; }
+    const Link &link() const override { return link_; }
+    std::string locate() const override { return codexBinary(); }
+    std::string endedText() const override { return "Codex app server ended"; }
+    void onLost() override;
+    void initialized(const json &result) override;
 
 private:
-    void lost();
     void rescan();
     void adopt(const std::string &id);
     CodexSession *addSession(const json &thread, bool detached);
     void setLimits(const json &limits);
-    std::vector<CodexSession *> sessions();
     void listThreads(const std::string &cwd, bool archived, std::function<void(json)> done);
     void noteSubagent(const json &thread);
     bool subagentEvent(const std::string &method, const json &params);
 
-    std::string bin_ = codexBinary();
     CodexLink link_;
-    bool ready_ = false; // initialized
-    std::map<long long, Done> pending_;
-    Clock::time_point nextTry_ = Clock::now();
     int openFailures_ = 0;
     Clock::time_point nextRescan_ = Clock::now();
     std::optional<Clock::time_point> lastStart_;

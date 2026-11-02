@@ -11,7 +11,6 @@ namespace pvai {
 
 namespace {
 
-constexpr auto kRetry = std::chrono::seconds(10);
 constexpr auto kRescan = std::chrono::seconds(15);
 
 // The context of a thread the daemon did not see run: the last token count
@@ -573,8 +572,9 @@ void CodexSession::onRequest(const json &requestId, const std::string &method, c
 // ---- CodexBackend ----
 
 CodexBackend::CodexBackend(Host &host)
-    : Backend(host)
+    : RpcBackend(host)
 {
+    bin_ = codexBinary();
 }
 
 json CodexBackend::modes() const
@@ -583,12 +583,6 @@ json CodexBackend::modes() const
     for (const auto &preset : kCodexPresets)
         modes.push_back({{"id", preset.id}, {"name", preset.name}});
     return modes;
-}
-
-void CodexBackend::findProgram()
-{
-    if (bin_.empty())
-        bin_ = codexBinary();
 }
 
 // `codex login status`: "Logged in using ..." and status 0 when it is.
@@ -602,27 +596,6 @@ void CodexBackend::refreshLogin(std::function<void(bool changed)> done)
         loggedIn_ = now;
         done(changed);
     });
-}
-
-short CodexBackend::events() const
-{
-    return static_cast<short>(POLLIN | (link_.wantsWrite() ? POLLOUT : 0));
-}
-
-void CodexBackend::call(const std::string &method, const json &params, Done done)
-{
-    const long long id = link_.request(method, params);
-    if (done)
-        pending_[id] = std::move(done);
-}
-
-std::vector<CodexSession *> CodexBackend::sessions()
-{
-    std::vector<CodexSession *> out;
-    for (Session *session : host_.sessions())
-        if (auto *codex = dynamic_cast<CodexSession *>(session))
-            out.push_back(codex);
-    return out;
 }
 
 // Connects to the app server when it is not; starts it (Codex's own daemon)
@@ -640,9 +613,8 @@ void CodexBackend::tick(Clock::time_point now)
             lost();
         return;
     }
-    if (now < nextTry_)
+    if (!retryDue(now))
         return;
-    nextTry_ = now + kRetry;
     if (!link_.open()) {
         // A server that keeps failing is asked less often: 10 s, 20 s, 30 s.
         nextTry_ = now + kRetry * std::min(++openFailures_, 3);
@@ -655,32 +627,28 @@ void CodexBackend::tick(Clock::time_point now)
     }
     openFailures_ = 0;
     ready_ = false;
-    call("initialize",
-         {{"clientInfo", {{"name", "pvai"}, {"title", "PhiVoice AI"}, {"version", kVersion}}},
-          {"capabilities", {{"experimentalApi", true}}}},
-         [this](const json &result, const json &error) {
-             if (!error.is_null()) {
-                 lost();
-                 return;
-             }
-             link_.notify("initialized", nullptr);
-             ready_ = true;
-             serverVersion_ = agentVersion(str(result, "userAgent"));
-             for (CodexSession *session : sessions())
-                 session->setVersion(serverVersion_);
-             call("account/rateLimits/read", json::object(),
-                  [this](const json &result, const json &) { setLimits(result.value("rateLimits", json())); });
-             call("model/list", json::object(), [this](const json &result, const json &) {
-                 json models = json::array();
-                 if (result.contains("data") && result["data"].is_array())
-                     for (const auto &model : result["data"])
-                         if (!model.value("hidden", false) && !str(model, "model").empty())
-                             models.push_back(str(model, "model"));
-                 models_ = models;
-             });
-             nextRescan_ = Clock::now() + kRescan;
-             rescan();
-         });
+    initialize({{"clientInfo", {{"name", "pvai"}, {"title", "PhiVoice AI"}, {"version", kVersion}}},
+                {"capabilities", {{"experimentalApi", true}}}});
+}
+
+void CodexBackend::initialized(const json &result)
+{
+    link_.notify("initialized", nullptr);
+    serverVersion_ = agentVersion(str(result, "userAgent"));
+    for (CodexSession *session : sessionsOf<CodexSession>())
+        session->setVersion(serverVersion_);
+    call("account/rateLimits/read", json::object(),
+         [this](const json &result, const json &) { setLimits(result.value("rateLimits", json())); });
+    call("model/list", json::object(), [this](const json &result, const json &) {
+        json models = json::array();
+        if (result.contains("data") && result["data"].is_array())
+            for (const auto &model : result["data"])
+                if (!model.value("hidden", false) && !str(model, "model").empty())
+                    models.push_back(str(model, "model"));
+        models_ = models;
+    });
+    nextRescan_ = Clock::now() + kRescan;
+    rescan();
 }
 
 std::optional<Clock::time_point> CodexBackend::deadline() const
@@ -690,23 +658,12 @@ std::optional<Clock::time_point> CodexBackend::deadline() const
     return link_.isOpen() ? nextRescan_ : nextTry_;
 }
 
-void CodexBackend::lost()
+void CodexBackend::onLost()
 {
-    link_.close();
-    ready_ = false;
-    // The app hears for each start or conversation request that it failed.
-    // (An answer that asks again meets the same end.)
-    while (!pending_.empty()) {
-        auto pending = std::move(pending_);
-        pending_.clear();
-        for (auto &[id, done] : pending)
-            done(json::object(), {{"code", -32603}, {"message", "Codex app server ended"}});
-    }
     adopting_.clear(); // their answers will not come
     subagents_.clear();
-    for (CodexSession *session : sessions())
+    for (CodexSession *session : sessionsOf<CodexSession>())
         session->end();
-    nextTry_ = Clock::now() + std::chrono::seconds(2);
 }
 
 void CodexBackend::service()
@@ -720,21 +677,10 @@ void CodexBackend::service()
         // Codex's messages are the app server's to shape: anything not an
         // object where one belongs reads as an empty one, and a surprise in
         // one message costs that message, not the daemon.
-        auto object = [&](const char *key) -> const json & {
-            static const json empty = json::object();
-            const auto it = message.find(key);
-            return it != message.end() && it->is_object() ? *it : empty;
-        };
+        auto object = [&](const char *key) -> const json & { return objectIn(message, key); };
         try {
             if (method.empty()) {
-                const json id = message.contains("id") ? message["id"] : json();
-                const auto it = id.is_number_integer() ? pending_.find(id.get<long long>()) : pending_.end();
-                if (it == pending_.end())
-                    continue;
-                auto done = std::move(it->second);
-                pending_.erase(it);
-                const json error = message.contains("error") && !message["error"].is_null() ? object("error") : json();
-                done(object("result"), error);
+                dispatchResponse(message);
             } else if (message.contains("id")) {
                 const json &params = object("params");
                 if (auto *session = dynamic_cast<CodexSession *>(host_.session(str(params, "threadId"))))
@@ -967,7 +913,7 @@ void CodexBackend::setLimits(const json &limits)
     if (fresh == limits_)
         return;
     limits_ = fresh;
-    for (CodexSession *session : sessions())
+    for (CodexSession *session : sessionsOf<CodexSession>())
         session->setLimits(limits_);
 }
 

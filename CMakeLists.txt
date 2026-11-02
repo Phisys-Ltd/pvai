@@ -20,6 +20,7 @@ add_executable(pvai
     src/claude.cpp
     src/codex_backend.cpp
     src/kimi_backend.cpp
+    src/rpc_backend.cpp
     src/daemon.cpp
     src/session.cpp
     src/run.cpp

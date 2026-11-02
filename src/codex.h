@@ -5,6 +5,7 @@
 #pragma once
 
 #include "common.h"
+#include "rpc_backend.h"
 
 #include <string>
 #include <vector>
@@ -15,30 +16,30 @@ namespace pvai {
 std::string codexBinary();
 std::string codexSocket();
 
-class CodexLink {
+class CodexLink : public Link {
 public:
     CodexLink() = default;
-    ~CodexLink();
+    ~CodexLink() override;
     CodexLink(const CodexLink &) = delete;
     CodexLink &operator=(const CodexLink &) = delete;
 
     // Connects and upgrades to a WebSocket (blocking, a local socket);
     // false when no app server listens.
     bool open();
-    void close();
-    bool isOpen() const { return fd_ >= 0; }
-    int fd() const { return fd_; }
-    bool wantsWrite() const { return !out_.empty(); }
+    void close() override;
+    bool isOpen() const override { return fd_ >= 0; }
+    int fd() const override { return fd_; }
+    bool wantsWrite() const override { return !out_.empty(); }
 
     // Returns the request's id.
-    long long request(const std::string &method, const json &params);
-    void notify(const std::string &method, const json &params);
-    void respond(const json &id, const json &result);
-    void respondError(const json &id, int code, const std::string &message);
+    long long request(const std::string &method, const json &params) override;
+    void notify(const std::string &method, const json &params) override;
+    void respond(const json &id, const json &result) override;
+    void respondError(const json &id, int code, const std::string &message) override;
 
     // Reads what is there and appends whole messages. False on EOF or error.
-    bool read(std::vector<json> &messages);
-    bool flush(); // false on error
+    bool read(std::vector<json> &messages) override;
+    bool flush() override;
 
 private:
     void sendText(const std::string &payload);
