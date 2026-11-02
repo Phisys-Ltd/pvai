@@ -158,6 +158,7 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
                 }
             }
         }
+        claimKept();
         host_.log(id_ + ": taken on while running, " + (transcript_.empty() ? "no transcript known" : transcript_ + ": " + state_));
     }
 }
@@ -186,6 +187,21 @@ std::vector<Prompt> ClaudeSession::unsent() const
     for (const auto &p : Session::unsent())
         out.push_back(p);
     return out;
+}
+
+// Prompts kept from an ended session of this conversation go in front of
+// the queue, in their order, and are delivered as usual.
+void ClaudeSession::claimKept()
+{
+    if (claudeSession_.empty())
+        return;
+    const std::vector<Prompt> back = host_.takeKept(claudeSession_, cwd_);
+    if (back.empty())
+        return;
+    for (auto it = back.rbegin(); it != back.rend(); ++it)
+        queue_.push_front(*it);
+    host_.log(id_ + ": " + std::to_string(back.size()) + " kept prompt(s) of conversation " + claudeSession_ + " queued again");
+    changed();
 }
 
 // A slash or shell command went in: it ends with its output.
@@ -493,6 +509,7 @@ void ClaudeSession::onHook(const json &event)
     if (const std::string id = event.value("session_id", ""); !id.empty() && id != claudeSession_) {
         claudeSession_ = id;
         known = true;
+        claimKept();
     }
     if (const std::string path = event.value("transcript_path", ""); !path.empty() && path != transcript_) {
         known = true;

@@ -34,6 +34,7 @@ public:
     std::string clear() override;
     json history(int limit) override;
     std::vector<Prompt> unsent() const override;
+    std::string conversationId() const override { return claudeSession_; }
     void tick(Clock::time_point now) override;
     std::optional<Clock::time_point> deadline() const override;
 
@@ -66,6 +67,7 @@ private:
     static bool limitAhead(const json &limited);
     void drain(); // reads the transcript and hands the new entries to the subscribers
     void remember() const;
+    void claimKept();
     void openScreenDialog();
     bool ours(const std::string &claudeSession, const std::string &source) const;
     void noteMode(const std::string &mode);

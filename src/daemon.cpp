@@ -97,6 +97,16 @@ struct PairWindow {
 };
 
 // An agent message waiting for the owner (PROTOCOL.md, "Agent messages").
+// A prompt of an ended Claude session, kept for its conversation.
+struct KeptPrompt {
+    std::string conversation, cwd, session; // session: the ended one, as `dropped` named it
+    Prompt prompt;
+    Clock::time_point expires;
+    unsigned long long seq;
+};
+constexpr auto kKeptLife = std::chrono::hours(24);
+constexpr std::size_t kMaxKeptPerConversation = 16, kMaxKept = 64;
+
 struct Proposal {
     std::string id;
     std::string from; // the sender's session id, empty from a Codex thread
@@ -242,6 +252,7 @@ public:
                 backend->tick(Clock::now());
             directTick();
             expireProposals();
+            expireKept();
             sweepSessions();
             reap();
             if (sessionsDirty_) {
@@ -436,16 +447,99 @@ private:
     }
 
     // A session is over: the prompts it did not take are lost, and every
-    // app hears which (with their whole text).
+    // app hears which (with their whole text). Those of a Claude session
+    // whose conversation is known are kept for 24 h (`kept: true`) for a
+    // session that goes on with it; what the caps push out goes with a
+    // second, plain `dropped`.
     void sessionGone(Session &session)
     {
-        json dropped = json::array();
-        for (const auto &p : session.unsent())
-            dropped.push_back({{"session", session.id()}, {"ref", p.ref}, {"text", p.text}});
-        if (dropped.empty())
+        const std::vector<Prompt> prompts = session.unsent();
+        if (prompts.empty())
             return;
-        logLine(session.id() + ": ended with " + std::to_string(dropped.size()) + " prompt(s) not taken");
+        const std::string conversation = session.conversationId();
+        std::vector<unsigned long long> mine;
+        const auto now = Clock::now();
+        if (!conversation.empty())
+            for (const auto &p : prompts) {
+                kept_.push_back({conversation, session.cwd(), session.id(), p, now + kKeptLife, ++keptSeq_});
+                mine.push_back(keptSeq_);
+            }
+        // What the caps push out, oldest first; of a prompt of this very
+        // session, the first message already says it is not kept.
+        json later = json::array();
+        auto evict = [&](std::deque<KeptPrompt>::iterator it) {
+            if (std::find(mine.begin(), mine.end(), it->seq) == mine.end())
+                later.push_back({{"session", it->session}, {"ref", it->prompt.ref}, {"text", it->prompt.text}});
+            return kept_.erase(it);
+        };
+        if (!conversation.empty()) {
+            auto count = std::count_if(kept_.begin(), kept_.end(), [&](const auto &k) { return k.conversation == conversation; });
+            for (auto it = kept_.begin(); count > static_cast<long>(kMaxKeptPerConversation) && it != kept_.end();) {
+                if (it->conversation == conversation) {
+                    it = evict(it);
+                    --count;
+                } else {
+                    ++it;
+                }
+            }
+        }
+        while (kept_.size() > kMaxKept)
+            evict(kept_.begin());
+        json dropped = json::array();
+        std::size_t keptCount = 0;
+        for (std::size_t i = 0; i < prompts.size(); ++i) {
+            json entry = {{"session", session.id()}, {"ref", prompts[i].ref}, {"text", prompts[i].text}};
+            if (i < mine.size() && std::any_of(kept_.begin(), kept_.end(), [&](const auto &k) { return k.seq == mine[i]; })) {
+                entry["kept"] = true;
+                ++keptCount;
+            }
+            dropped.push_back(entry);
+        }
+        logLine(session.id() + ": ended with " + std::to_string(dropped.size()) + " prompt(s) not taken, " + std::to_string(keptCount)
+                + " kept");
         broadcast({{"type", "dropped"}, {"prompts", dropped}});
+        if (!later.empty())
+            broadcast({{"type", "dropped"}, {"prompts", later}});
+    }
+
+    std::vector<Prompt> takeKept(const std::string &conversation, const std::string &cwd) override
+    {
+        std::vector<Prompt> out;
+        for (auto it = kept_.begin(); it != kept_.end();) {
+            if (it->conversation == conversation && it->cwd == cwd) {
+                out.push_back(it->prompt);
+                it = kept_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        return out;
+    }
+
+    // Kept prompts that go for good: a plain `dropped`. `all` for the daemon
+    // stopping, else the expired ones, or those of one forgotten conversation.
+    void dropKept(const std::function<bool(const KeptPrompt &)> &which)
+    {
+        json dropped = json::array();
+        for (auto it = kept_.begin(); it != kept_.end();) {
+            if (which(*it)) {
+                dropped.push_back({{"session", it->session}, {"ref", it->prompt.ref}, {"text", it->prompt.text}});
+                it = kept_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (!dropped.empty()) {
+            logLine(std::to_string(dropped.size()) + " kept prompt(s) dropped for good");
+            broadcast({{"type", "dropped"}, {"prompts", dropped}});
+        }
+    }
+
+    void expireKept()
+    {
+        const auto now = Clock::now();
+        if (!kept_.empty() && kept_.front().expires <= now)
+            dropKept([&](const KeptPrompt &k) { return k.expires <= now; });
     }
 
     void serviceJobs(const std::vector<pid_t> &readable)
@@ -805,6 +899,8 @@ private:
             Peer *peer = peerBySerial(serial);
             if (!peer)
                 return;
+            if (reason.empty() && assistant == "claude")
+                dropKept([&](const KeptPrompt &k) { return k.conversation == id && k.cwd == cwd; });
             if (reason.empty())
                 peer->conn->send({{"type", "forgotten"}, {"ref", ref}, {"assistant", assistant}, {"cwd", cwd}, {"id", id}});
             else
@@ -1144,6 +1240,8 @@ private:
         } else {
             logLine("stopping");
         }
+        // Kept prompts do not outlive the daemon.
+        dropKept([](const KeptPrompt &) { return true; });
         peer->conn->send({{"type", "shutting-down"}, {"ref", ref}, {"dropped", dropped}});
         stopping_ = true;
     }
@@ -1226,6 +1324,8 @@ private:
             take(job.deadline);
         take(setup_->deadline());
         take(directDeadline());
+        if (!kept_.empty())
+            take(kept_.front().expires);
         if (!next)
             return -1;
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(*next - Clock::now()).count();
@@ -1667,6 +1767,10 @@ private:
     std::vector<std::unique_ptr<Peer>> peers_;
     std::vector<Peer *> dead_;
     std::map<std::string, std::unique_ptr<Session>> sessions_;
+    // Prompts of ended Claude sessions, by conversation and folder (see
+    // sessionGone); in memory only, oldest first.
+    std::deque<KeptPrompt> kept_;
+    unsigned long long keptSeq_ = 0;
     bool sessionsDirty_ = false;
     unsigned long long serial_ = 0;
     std::vector<std::unique_ptr<Backend>> backends_;

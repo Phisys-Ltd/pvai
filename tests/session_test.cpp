@@ -1136,6 +1136,88 @@ int main(int argc, char **argv)
               "a session without a conversation id ends: dropped, full text, no kept: " + dropped.dump());
     }
 
+    // 0.5.52: what a Claude session with a known conversation did not take is
+    // kept; a session that goes on with that conversation queues it again.
+    {
+        auto droppedOf = [&](int ref) {
+            return a.next("dropped", [&](const json &m) {
+                for (const auto &p : m.value("prompts", json::array()))
+                    if (p.value("ref", 0) == ref)
+                        return true;
+                return false;
+            });
+        };
+        {
+            LineClient first;
+            first.send({{"type", "register"}, {"id", "wkeep1"}, {"cwd", project}, {"label", "keep1"}, {"restart", true}, {"verify", true}});
+            hook("wkeep1", {{"hook_event_name", "SessionStart"}, {"session_id", "k-1"}, {"source", "startup"}});
+            hook("wkeep1", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "k-1"}, {"prompt", "busy now"}});
+            check(!waitSession(a, "wkeep1", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "kept: the session is busy");
+            a.send({{"type", "prompt"}, {"ref", 710}, {"session", "wkeep1"}, {"text", "first later"}});
+            a.send({{"type", "prompt"}, {"ref", 711}, {"session", "wkeep1"}, {"text", "second later"}, {"voice", true}});
+            check(!waitSession(a, "wkeep1", [](const json &s) { return s.value("queued", 0) == 2; }).empty(), "kept: two prompts wait");
+        }
+        const json dropped = droppedOf(710);
+        const json list = dropped.value("prompts", json::array());
+        check(list.size() == 2 && list[0].value("ref", 0) == 710 && list[0].value("text", "") == "first later" && list[0].value("kept", false)
+                  && list[1].value("ref", 0) == 711 && list[1].value("kept", false),
+              "a session with a conversation id ends: dropped with kept: " + dropped.dump());
+        LineClient second;
+        second.send({{"type", "register"}, {"id", "wkeep2"}, {"cwd", project}, {"label", "keep2"}, {"restart", true}, {"verify", true}});
+        check(!waitSession(a, "wkeep2", [](const json &) { return true; }).empty(), "kept: a new wrapper registers");
+        hook("wkeep2", {{"hook_event_name", "SessionStart"}, {"session_id", "k-1"}, {"source", "resume"}});
+        check(!waitSession(a, "wkeep2", [](const json &s) { return s.value("queued", 0) == 2; }).empty(),
+              "resuming that conversation queues both again");
+        json typing = second.next("type");
+        check(typing.value("text", "") == "first later", "the first goes in first: " + typing.dump());
+        second.send({{"type", "typed"}, {"ok", true}});
+        hook("wkeep2", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "k-1"}, {"prompt", "first later"}});
+        const json delivered = a.next("delivered", [](const json &m) { return m.value("session", "") == "wkeep2"; });
+        check(delivered.value("ref", 0) == 710, "and is delivered with its old ref: " + delivered.dump());
+        hook("wkeep2", {{"hook_event_name", "Stop"}, {"session_id", "k-1"}, {"last_assistant_message", "ok"}});
+        typing = second.next("type");
+        check(typing.value("text", "").find("second later") != std::string::npos, "then the second: " + typing.dump());
+        second.send({{"type", "typed"}, {"ok", true}});
+        hook("wkeep2", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "k-1"}, {"prompt", "second later"}});
+        check(a.next("delivered", [](const json &m) { return m.value("session", "") == "wkeep2"; }).value("ref", 0) == 711, "the second too");
+
+        // A forgotten conversation drops what was kept for it, for good.
+        writeFile(transcripts + "/k-f.jsonl", userLine("x"));
+        {
+            LineClient third;
+            third.send({{"type", "register"}, {"id", "wkeep3"}, {"cwd", project}, {"label", "keep3"}, {"restart", true}, {"verify", true}});
+            hook("wkeep3", {{"hook_event_name", "SessionStart"}, {"session_id", "k-f"}, {"source", "startup"}});
+            hook("wkeep3", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "k-f"}, {"prompt", "busy"}});
+            a.send({{"type", "prompt"}, {"ref", 720}, {"session", "wkeep3"}, {"text", "lost soon"}});
+            check(!waitSession(a, "wkeep3", [](const json &s) { return s.value("queued", 0) == 1; }).empty(), "forget: a prompt waits");
+        }
+        check(droppedOf(720).value("prompts", json::array())[0].value("kept", false), "forget: it is kept");
+        a.send({{"type", "forget"}, {"ref", 721}, {"assistant", "claude"}, {"cwd", project}, {"id", "k-f"}});
+        const json gone = droppedOf(720);
+        const json goneList = gone.value("prompts", json::array());
+        check(goneList.size() == 1 && goneList[0].value("text", "") == "lost soon" && !goneList[0].contains("kept"),
+              "forgetting the conversation drops it for good, without kept: " + gone.dump());
+    }
+
+    // At most 16 prompts are kept per conversation: the oldest go first.
+    {
+        {
+            LineClient cap;
+            cap.send({{"type", "register"}, {"id", "wcap"}, {"cwd", project}, {"label", "cap"}, {"restart", true}, {"verify", true}});
+            hook("wcap", {{"hook_event_name", "SessionStart"}, {"session_id", "k-cap"}, {"source", "startup"}});
+            hook("wcap", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "k-cap"}, {"prompt", "busy"}});
+            for (int i = 0; i < 17; ++i)
+                a.send({{"type", "prompt"}, {"ref", 800 + i}, {"session", "wcap"}, {"text", "p" + std::to_string(i)}});
+            check(!waitSession(a, "wcap", [](const json &s) { return s.value("queued", 0) == 17; }).empty(), "cap: 17 prompts wait");
+        }
+        const json dropped = a.next("dropped", [](const json &m) { return m.value("prompts", json::array()).size() == 17; });
+        int kept = 0;
+        for (const auto &p : dropped.value("prompts", json::array()))
+            kept += p.value("kept", false) ? 1 : 0;
+        check(kept == 16 && !dropped["prompts"][0].contains("kept") && dropped["prompts"][16].value("kept", false),
+              "only 16 are kept, the oldest is not: " + std::to_string(kept));
+    }
+
     // Subagents: running while their meta file has no `finished`; a task
     // notification starts a turn without UserPromptSubmit.
     const std::string run2 = home + "/elsewhere/run-2.jsonl";

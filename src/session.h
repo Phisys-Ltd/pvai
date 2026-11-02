@@ -46,6 +46,10 @@ public:
     virtual void runProcess(const std::vector<std::string> &argv, std::chrono::seconds timeout,
                             std::function<void(int status, const std::string &output)> done) = 0;
     virtual void log(const std::string &text) = 0;
+    // The prompts kept for an ended conversation of `cwd` (oldest first),
+    // taken out of the daemon's memory: a session that went on with that
+    // conversation queues them again.
+    virtual std::vector<Prompt> takeKept(const std::string &conversation, const std::string &cwd) = 0;
 };
 
 class Session {
@@ -77,6 +81,9 @@ public:
     // What the app sent and the assistant has not taken: a prompt typed
     // and not confirmed yet, then the queue. Not the daemon's own commands.
     virtual std::vector<Prompt> unsent() const;
+    // The assistant's own id of the conversation, once known; the daemon
+    // keeps what this session did not take under it when the session ends.
+    virtual std::string conversationId() const { return {}; }
     // A typed prompt counts only once the assistant confirms it (`delivered`).
     virtual bool confirmsDelivery() const { return false; }
     virtual std::string answer(const std::string &choice) = 0;

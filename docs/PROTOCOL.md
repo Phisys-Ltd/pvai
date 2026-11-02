@@ -143,6 +143,25 @@ daemon knows every live one on its host.
 - `queued`: prompts waiting for `idle`. They go in one at a time, oldest first,
   each when the previous turn has ended. A prompt that is being typed
   counts until it is `delivered`.
+- Kept prompts (since 0.5.52): when a Claude Code session ends with prompts
+  it did not take (the queue, and a prompt typed and not yet confirmed),
+  the daemon keeps them in memory for 24 hours, under the conversation
+  (`claudeSession`) and `cwd`, and says so with `kept: true` in `dropped`.
+  Only when `claudeSession` was known: a session that ended before its
+  first hook has none, and its prompts are lost (`dropped` without `kept`).
+  A session that goes on with that conversation in that folder (`start`
+  with `resume`, a `pvai run` of it, an in-place `restart`, or Claude Code
+  resuming it in a running session; the match is made when the session
+  learns its `claudeSession`) gets the prompts queued again, in their old
+  order, in front of its own queue: `queued` counts them, and each one is
+  `delivered` later with the `ref` of its `prompt`, as usual. When the 24
+  hours pass, when the daemon stops (`pvai daemon stop|restart`), or when
+  the conversation is forgotten (`forget`), the daemon sends a second
+  `dropped` for the same refs without `kept`. At most 16 prompts are kept
+  per conversation and 64 in all; the oldest are pushed out first, with a
+  plain `dropped` (for a prompt of the ending session itself, already in
+  the first one, without `kept`). Kept prompts are not written to disk: a
+  daemon restart loses them.
 - Delivery under a `pvai run` of 0.5.15 or later: the wrapper pastes a
   prompt only into Claude Code's prompt box when the screen shows it free
   (the lines between two rules, starting with `❯`, no dialog's footer
@@ -389,7 +408,7 @@ Daemon to app:
 | `assistants` | `assistants`, `installed` | (since 0.5.24) `welcome.assistants` and `welcome.installed` again, to every app, when an install, a login or a logout changed them |
 | `proposals` | `proposals: [Proposal]` | the agent messages waiting for the owner, sent after `welcome` and after every change (see "Agent messages") |
 | `dismissed` | `ref`, `proposal` | answer to `dismiss`; `proposal` is gone from `proposals` (also when it was unknown) |
-| `dropped` | `prompts: [{session, ref, text}]` | (since 0.5.21, extended 0.5.52) prompts that will not be typed: a session ended with a queue or a prompt typed and not yet confirmed (Claude Code exited, `stop`, a restart that failed, the daemon dropped its wrapper; Codex and Kimi: the thread or session ended), or the daemon is stopping by `pvai daemon stop|restart --force`. `ref` is the one of their `prompt`; `text` is the whole prompt (before 0.5.52 the first 80 bytes, and only on a forced stop). To every app. Without `--force` the daemon does not stop while any prompt is queued (`pvai` gets `rejected` with `queued` over loopback, from `{"type": "shutdown", "ref", "force"}`) |
+| `dropped` | `prompts: [{session, ref, text, kept?}]` | (since 0.5.21, extended 0.5.52) prompts that will not be typed: a session ended with a queue or a prompt typed and not yet confirmed (Claude Code exited, `stop`, a restart that failed, the daemon dropped its wrapper; Codex and Kimi: the thread or session ended), or the daemon is stopping by `pvai daemon stop|restart --force`. `ref` is the one of their `prompt`; `text` is the whole prompt (before 0.5.52 the first 80 bytes, and only on a forced stop). `kept: true` (since 0.5.52, Claude Code only) says the daemon keeps that prompt for the conversation (see "Kept prompts"); it is omitted otherwise. A prompt kept and later lost for good (24 h, `daemon stop`, `forget`, the caps) comes in a second `dropped` with the same `session` and `ref`, without `kept`. To every app. Without `--force` the daemon does not stop while any prompt is queued (`pvai` gets `rejected` with `queued` over loopback, from `{"type": "shutdown", "ref", "force"}`) |
 | `entry` | `session`, `entry: Entry` | one new piece of the conversation |
 | `pong` | | keepalive |
 | `error` | `code`, `text` | `auth` (then the daemon closes), `bad-message`, `unknown-session` (`text` is the id) |
