@@ -1,3 +1,14 @@
+pvai (0.5.48-1) trixie; urgency=medium
+
+  * base32Decode accepts upper case as lower case, as PROTOCOL.md says.
+  * Session helpers in one place (D2): BufferedSession for Codex and Kimi,
+    usageChanged, setVersion, resumeFromDialog, contextOf and sortByStart.
+  * Codex and Kimi share the JSON-RPC bookkeeping (D1): RpcBackend and the
+    Link interface. Calls on a closed Codex link now fail at once, as
+    Kimi's always did.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 22:00:00 +0100
+
 pvai (0.5.47-1) trixie; urgency=medium
 
   * Refactoring only, no change in behaviour: text helpers in text.h/.cpp
