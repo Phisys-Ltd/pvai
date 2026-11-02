@@ -3,6 +3,7 @@
 #include "transcript.h"
 
 #include <cstdio>
+#include <ctime>
 #include <fstream>
 #include <string>
 #include <unistd.h>
@@ -99,6 +100,19 @@ int main()
     check(!turnOf("wake2", prev + note), "a task notification alone is no turn");
     check(!turnOf("wake2b", prev + noteAttachment), "an attachment notification alone is no turn");
     check(!turnOf("wake3", prev + note + asst + done), "a notification turn that ended is no turn");
+    auto stamped = [&](long long ago) {
+        char buf[32];
+        const std::time_t at = std::time(nullptr) - ago;
+        std::tm tm{};
+        gmtime_r(&at, &tm);
+        std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%S.000Z", &tm);
+        pvai::json line = pvai::json::parse(noteAttachment);
+        line["timestamp"] = buf;
+        return line.dump() + "\n";
+    };
+    check(turnOf("wake5", prev + stamped(60)), "a notification 1 min old, not answered yet: running");
+    check(!turnOf("wake6", prev + stamped(2 * 3600)), "a notification 2 h old, alone: not running");
+    check(!turnOf("wake7", prev + stamped(60) + asst + done), "a fresh notification whose turn ended: not running");
     check(turnOf("wake4", prev + userLine(34, "do it")), "an owner prompt starts a turn at once");
 
     tail.follow(idle);

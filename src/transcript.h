@@ -108,6 +108,7 @@ private:
     json limited_;
     std::size_t limitHits_ = 0, limitClears_ = 0, turnEndCount_ = 0;
     bool turnRunning_ = false, turnEnds_ = false, windowed_ = false;
+    long long noteAt_ = 0; // an unanswered task notification, written then
 };
 
 } // namespace pvai

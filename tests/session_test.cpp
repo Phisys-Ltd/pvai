@@ -983,6 +983,20 @@ int main(int argc, char **argv)
         const std::string tool = R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}})";
         writeFile(wakeFile, prompt + "\n" + answer + "\n" + end + "\n" + notice + "\n" + tool + "\n");
         writeFile(runtime + "/pvai/wwake.claude", json({{"claudeSession", "wake-1"}, {"transcript", wakeFile}}).dump() + "\n");
+        char stamp[32];
+        const std::time_t soon = std::time(nullptr) - 30;
+        std::tm tm{};
+        gmtime_r(&soon, &tm);
+        std::strftime(stamp, sizeof stamp, "%Y-%m-%dT%H:%M:%S.000Z", &tm);
+        const std::string freshFile = home + "/elsewhere/fresh.jsonl";
+        json freshNotice = json::parse(notice);
+        freshNotice["timestamp"] = stamp;
+        writeFile(freshFile, prompt + "\n" + answer + "\n" + end + "\n" + freshNotice.dump() + "\n");
+        writeFile(runtime + "/pvai/wfresh.claude", json({{"claudeSession", "fresh-1"}, {"transcript", freshFile}}).dump() + "\n");
+        LineClient fresh;
+        fresh.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wfresh"}, {"cwd", project}, {"label", "fresh"}, {"running", true}, {"restart", true}});
+        check(!waitSession(a, "wfresh", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),
+              "taken over with a fresh unanswered task notification: busy");
         LineClient wake;
         wake.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wwake"}, {"cwd", project}, {"label", "wake"}, {"running", true}, {"restart", true}});
         check(!waitSession(a, "wwake", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),

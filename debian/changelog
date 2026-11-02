@@ -1,3 +1,12 @@
+pvai (0.5.55-1) trixie; urgency=medium
+
+  * A daemon restarted right after a task notification reads the session as
+    busy when the notification is under ten minutes old and Claude Code has
+    not answered it yet; the answer is only written when it is complete. An
+    older notification still starts no turn.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 03:00:00 +0100
+
 pvai (0.5.54-1) trixie; urgency=medium
 
   * A prompt the daemon typed decides the voice state by its own flags, not

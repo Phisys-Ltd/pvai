@@ -151,26 +151,47 @@ std::string commandFile(const std::string &command)
 
 namespace {
 
+bool isWake(const json &line);
+
+// A task notification younger than this, not answered yet, is a turn Claude
+// Code is about to run (or runs: the answer is written when it is complete).
+constexpr long long kNotificationFresh = 10 * 60;
+
+bool freshNote(long long noteAt)
+{
+    return noteAt > 0 && static_cast<long long>(std::time(nullptr)) - noteAt < kNotificationFresh;
+}
+
 // The turn state machine of turnRunning, one transcript line at a time.
-void turnStep(const json &entry, bool &running, bool &ends)
+// noteAt: when the task notification nobody answered yet was written.
+void turnStep(const json &entry, bool &running, bool &ends, long long &noteAt)
 {
     if (!entry.is_object() || entry.value("isSidechain", false))
         return;
     const std::string type = entry.value("type", "");
+    if (isWake(entry)) {
+        noteAt = unixTime(entry.value("timestamp", ""));
+        return;
+    }
     if (type == "system" && (entry.value("subtype", "") == "turn_duration" || entry.value("subtype", "") == "stop_hook_summary")) {
         running = false;
         ends = true;
+        noteAt = 0;
     } else if (type == "user" && !isBookkeeping(entry) && entry.contains("message") && entry["message"].is_object()) {
         const json content = entry["message"].value("content", json());
         const std::string text = content.is_string() ? content.get<std::string>()
                                : content.is_array() && !content.empty() && content[0].is_object() ? content[0].value("text", "") : "";
-        if (text.rfind("[Request interrupted by user", 0) == 0)
+        if (text.rfind("[Request interrupted by user", 0) == 0) {
             running = false;
-        else if (content.is_string() && text.rfind("<command-name>", 0) != 0 && text.rfind("<local-command", 0) != 0
-                 && text.rfind("<bash-", 0) != 0 && text.rfind("<task-notification", 0) != 0)
+            noteAt = 0;
+        } else if (content.is_string() && text.rfind("<command-name>", 0) != 0 && text.rfind("<local-command", 0) != 0
+                   && text.rfind("<bash-", 0) != 0 && text.rfind("<task-notification", 0) != 0) {
             running = true;
+            noteAt = 0;
+        }
     } else if (type == "assistant") {
         running = true;
+        noteAt = 0;
     }
 }
 
@@ -200,20 +221,21 @@ bool turnRunning(const std::string &path)
     in.seekg(std::max<std::streamoff>(0, size - 4 * 1024 * 1024));
     std::string line;
     bool running = false, ends = false;
+    long long noteAt = 0;
     if (size > 4 * 1024 * 1024)
         std::getline(in, line); // a partial first line
     while (std::getline(in, line)) {
         if (skippable(line.data(), line.size()))
             continue;
-        turnStep(json::parse(line, nullptr, false), running, ends);
+        turnStep(json::parse(line, nullptr, false), running, ends, noteAt);
     }
-    return ends && running;
+    return ends && (running || freshNote(noteAt));
 }
 
 std::optional<bool> TranscriptTail::turnRunningSeen() const
 {
     if (turnEnds_)
-        return turnRunning_;
+        return turnRunning_ || freshNote(noteAt_);
     if (windowed_)
         return std::nullopt; // no turn end in the window: the file may have one further back
     return false;
@@ -241,6 +263,7 @@ void TranscriptTail::resetState()
     limited_ = nullptr;
     limitHits_ = limitClears_ = turnEndCount_ = 0;
     turnRunning_ = turnEnds_ = windowed_ = false;
+    noteAt_ = 0;
     recent_.clear();
 }
 
@@ -283,7 +306,7 @@ std::vector<json> TranscriptTail::poll()
         const json line = json::parse(partial_.begin() + static_cast<long>(start), partial_.begin() + static_cast<long>(end), nullptr, false);
         if (!line.is_object())
             continue;
-        turnStep(line, turnRunning_, turnEnds_);
+        turnStep(line, turnRunning_, turnEnds_, noteAt_);
         try {
             take(line, out);
         } catch (const json::exception &) {
