@@ -189,7 +189,8 @@ json ClaudeSession::describe() const
 
 bool ClaudeSession::wrapperTooOld() const
 {
-    return compareVersions(wrapperVersion_, kMinWrapperVersion) < 0;
+    // A wrapper that reports no version (before 0.5.52) is stale but served.
+    return !wrapperVersion_.empty() && compareVersions(wrapperVersion_, kMinWrapperVersion) < 0;
 }
 
 std::vector<Prompt> ClaudeSession::unsent() const

@@ -284,9 +284,10 @@ daemon knows every live one on its host.
   daemon's `welcome.version` (a missing one counts), else omitted. The
   wrapper keeps running the old code after pvai is updated, and `restart`
   does not replace it: end the session and `start` it again with `resume`.
-  A wrapper older than 0.5.44 (`wrapperVersion` below that, or `null`) does
+  A wrapper that reports a version older than 0.5.44 does
   not relay keys and screens as the daemon expects: `answer`, `clearInput`, `mode`,
   `model` and `restart` to its session are `rejected` with `stale-wrapper`.
+  A missing version (`null`, wrappers before 0.5.52) is `stale` but served.
   Prompts still go through (typing works with any wrapper). Versions are
   compared by their dotted numbers, part by part. The wrapper's first line
   to the daemon is `{"type": "register", "version", "id", "label", "cwd",
@@ -403,7 +404,7 @@ Daemon to app:
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `answer`, `clearInput`, `mode`, `model` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` is older than 0.5.44, see `Session.stale`); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `answer`, `clearInput`, `mode`, `model` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `inputCleared` | `ref`, `session` | the keys for `clearInput` went in; `draft` and the state follow from the screen |

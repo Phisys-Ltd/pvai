@@ -1236,17 +1236,19 @@ int main(int argc, char **argv)
         const json current = sessionIn(all, "wv-now");
         check(current.value("wrapperVersion", "") == PVAI_VERSION && !current.contains("stale"),
               "the daemon's own version is not stale: " + current.dump());
-        // answer to a wrapper before kMinWrapperVersion is refused; a prompt is not.
+        // A wrapper that reports a version before kMinWrapperVersion is refused; a missing one is served.
         hook("wv-none", {{"hook_event_name", "SessionStart"}, {"session_id", "wv-1"}, {"source", "startup"}});
         hook("wv-none", {{"hook_event_name", "PermissionRequest"}, {"session_id", "wv-1"}, {"tool_name", "Bash"}, {"tool_input", {{"command", "ls"}}}});
         check(!waitSession(a, "wv-none", [](const json &s) { return s.value("state", "") == "waiting"; }).empty(), "stale: a dialog waits");
         a.send({{"type", "answer"}, {"ref", 900}, {"session", "wv-none"}, {"choice", "allow"}});
-        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 900; }).value("reason", "") == "stale-wrapper",
-              "an answer to a stale wrapper is rejected stale-wrapper");
-        for (const char *type : {"mode", "model", "restart", "clearInput"}) {
-            a.send({{"type", type}, {"ref", 901}, {"session", "wv-none"}, {"mode", "plan"}, {"model", "opus"}});
+        check(a.next("answered", [](const json &m) { return m.value("ref", 0) == 900; }).value("session", "") == "wv-none",
+              "an answer to a wrapper without a version is served");
+        ancient.send({{"type", "register"}, {"version", "0.5.43"}, {"id", "wv-43"}, {"cwd", project}, {"label", "old43"}, {"restart", true}, {"verify", true}});
+        check(!waitSession(a, "wv-43", [](const json &s) { return s.value("stale", false); }).empty(), "0.5.43 registers, stale");
+        for (const char *type : {"answer", "mode", "model", "restart", "clearInput"}) {
+            a.send({{"type", type}, {"ref", 901}, {"session", "wv-43"}, {"mode", "plan"}, {"model", "opus"}, {"choice", "allow"}});
             check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 901; }).value("reason", "") == "stale-wrapper",
-                  std::string(type) + " to a stale wrapper is rejected stale-wrapper");
+                  std::string(type) + " to a wrapper of 0.5.43 is rejected stale-wrapper");
         }
         a.send({{"type", "answer"}, {"ref", 902}, {"session", "wv-old"}, {"choice", "allow"}});
         check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 902; }).value("reason", "") == "no-dialog",
