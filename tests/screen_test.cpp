@@ -98,6 +98,32 @@ int main()
     feed(wide, "\xF0\x9F\x8E\x99x");
     check(wide.row(0) == "\xF0\x9F\x8E\x99x", "an emoji and the letter after it: " + wide.row(0));
 
+    // Emoji follow Emoji_Presentation: two columns with it (U+1F50A, U+26A1,
+    // U+1F916), one without (U+1F399, U+2600, U+1F6E0), as Claude Code draws.
+    struct Emoji { const char *utf8; int columns; };
+    for (const Emoji &e : {Emoji{"\xF0\x9F\x94\x8A", 2}, Emoji{"\xE2\x9A\xA1", 2}, Emoji{"\xF0\x9F\xA4\x96", 2},
+                          Emoji{"\xF0\x9F\x8E\x99", 1}, Emoji{"\xE2\x98\x80", 1}, Emoji{"\xF0\x9F\x9B\xA0", 1}}) {
+        pvai::Screen probe(2, 10);
+        feed(probe, std::string(e.utf8) + "ab\r\x1b[3CZ"); // a width of one leaves "abZ", of two "aZ"
+        const std::string want = std::string(e.utf8) + (e.columns == 1 ? "abZ" : "aZ");
+        check(probe.row(0) == want, std::string("width of ") + e.utf8 + " is " + std::to_string(e.columns) + ": " + probe.row(0));
+    }
+    // With variation selector 16 a text-style symbol is two columns, as Claude Code draws it.
+    pvai::Screen vs16(2, 10);
+    feed(vs16, "\xF0\x9F\x8E\x99\xEF\xB8\x8F" "ab\r\x1b[3CZ");
+    check(vs16.row(0) == "\xF0\x9F\x8E\x99\xEF\xB8\x8F" "aZ", "a symbol with VS16 takes two columns: " + vs16.row(0));
+
+    // A prompt typed with the mic mark, drawn as Claude Code 2.1.316 does: the
+    // mark is one column, later updates move by absolute column.
+    pvai::Screen mic(8, 60);
+    std::string rules;
+    for (int i = 0; i < 20; ++i)
+        rules += "\xE2\x94\x80";
+    feed(mic, "\x1b[2J\x1b[H" + rules + rules + rules + "\r\n\xE2\x9D\xAF\xC2\xA0\xF0\x9F\x8E\x99 O\x1b[K\r\n" + rules + rules + rules);
+    feed(mic, "\x1b[1A\r\x1b[5Ckay\x1b[9G, wie\x1b[K\x1b[1B");
+    std::string micBox;
+    check(pvai::promptBox(mic, micBox) && micBox == "\xE2\x9D\xAF\xC2\xA0\xF0\x9F\x8E\x99 Okay, wie", "the prompt box with the mic mark: [" + micBox + "]");
+
     std::printf(failures ? "FAILED\n" : "all passed\n");
     pvai::Screen select_(14, 70);
     // Claude Code's select list (/model with usage credits): its footer is "Enter to select".

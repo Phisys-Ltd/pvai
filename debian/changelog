@@ -1,3 +1,12 @@
+pvai (0.5.42-1) trixie; urgency=medium
+
+  * The screen model counts emoji columns as Claude Code does: two for
+    Emoji_Presentation code points (U+1F50A, U+26A1), one for the others
+    (U+1F399 mic mark, U+2600), two with a variation selector 16. Spoken
+    prompts no longer garble in the prompt box and fail the typed check.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 19:20:00 +0100
+
 pvai (0.5.41-1) trixie; urgency=medium
 
   * A model switch of a Claude Code session reports what Claude Code did:

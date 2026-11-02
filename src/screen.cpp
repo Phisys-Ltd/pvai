@@ -8,9 +8,115 @@ namespace pvai {
 
 namespace {
 
+// Unicode Emoji_Presentation=Yes ranges, merged and sorted, generated from
+// emoji-data.txt of Unicode 18.0.0 (unicode.org/Public/UCD/latest/ucd/emoji).
+// Claude Code (Bun.stringWidth) gives exactly these two columns; emoji that
+// only have text presentation by default (U+1F399, U+2600, U+1F6E0) take one.
+struct Range {
+    char32_t first, last;
+};
+constexpr Range kEmojiPresentation[] = {
+    {0x231a, 0x231b},
+    {0x23e9, 0x23ec},
+    {0x23f0, 0x23f0},
+    {0x23f3, 0x23f3},
+    {0x25fd, 0x25fe},
+    {0x2614, 0x2615},
+    {0x2648, 0x2653},
+    {0x267f, 0x267f},
+    {0x2693, 0x2693},
+    {0x26a1, 0x26a1},
+    {0x26aa, 0x26ab},
+    {0x26bd, 0x26be},
+    {0x26c4, 0x26c5},
+    {0x26ce, 0x26ce},
+    {0x26d4, 0x26d4},
+    {0x26ea, 0x26ea},
+    {0x26f2, 0x26f3},
+    {0x26f5, 0x26f5},
+    {0x26fa, 0x26fa},
+    {0x26fd, 0x26fd},
+    {0x2705, 0x2705},
+    {0x270a, 0x270b},
+    {0x2728, 0x2728},
+    {0x274c, 0x274c},
+    {0x274e, 0x274e},
+    {0x2753, 0x2755},
+    {0x2757, 0x2757},
+    {0x2795, 0x2797},
+    {0x27b0, 0x27b0},
+    {0x27bf, 0x27bf},
+    {0x2b1b, 0x2b1c},
+    {0x2b50, 0x2b50},
+    {0x2b55, 0x2b55},
+    {0x1f004, 0x1f004},
+    {0x1f0cf, 0x1f0cf},
+    {0x1f18e, 0x1f18e},
+    {0x1f191, 0x1f19a},
+    {0x1f1e6, 0x1f1ff},
+    {0x1f201, 0x1f201},
+    {0x1f21a, 0x1f21a},
+    {0x1f22f, 0x1f22f},
+    {0x1f232, 0x1f236},
+    {0x1f238, 0x1f23a},
+    {0x1f250, 0x1f251},
+    {0x1f300, 0x1f320},
+    {0x1f32d, 0x1f335},
+    {0x1f337, 0x1f37c},
+    {0x1f37e, 0x1f393},
+    {0x1f3a0, 0x1f3ca},
+    {0x1f3cf, 0x1f3d3},
+    {0x1f3e0, 0x1f3f0},
+    {0x1f3f4, 0x1f3f4},
+    {0x1f3f8, 0x1f43e},
+    {0x1f440, 0x1f440},
+    {0x1f442, 0x1f4fc},
+    {0x1f4ff, 0x1f53d},
+    {0x1f54b, 0x1f54e},
+    {0x1f550, 0x1f567},
+    {0x1f57a, 0x1f57a},
+    {0x1f595, 0x1f596},
+    {0x1f5a4, 0x1f5a4},
+    {0x1f5fb, 0x1f64f},
+    {0x1f680, 0x1f6c5},
+    {0x1f6cc, 0x1f6cc},
+    {0x1f6d0, 0x1f6d2},
+    {0x1f6d5, 0x1f6d9},
+    {0x1f6dc, 0x1f6df},
+    {0x1f6eb, 0x1f6ec},
+    {0x1f6f4, 0x1f6fc},
+    {0x1f7e0, 0x1f7eb},
+    {0x1f7f0, 0x1f7f0},
+    {0x1f90c, 0x1f93a},
+    {0x1f93c, 0x1f945},
+    {0x1f947, 0x1f9ff},
+    {0x1fa70, 0x1fa7c},
+    {0x1fa80, 0x1fac6},
+    {0x1fac8, 0x1fac8},
+    {0x1facc, 0x1fadd},
+    {0x1fadf, 0x1faeb},
+    {0x1faef, 0x1fafa},
+};
+
+bool emojiPresentation(char32_t cp)
+{
+    std::size_t lo = 0, hi = std::size(kEmojiPresentation);
+    while (lo < hi) {
+        const std::size_t mid = (lo + hi) / 2;
+        if (cp < kEmojiPresentation[mid].first)
+            hi = mid;
+        else if (cp > kEmojiPresentation[mid].last)
+            lo = mid + 1;
+        else
+            return true;
+    }
+    return false;
+}
+
 // Columns a character takes: 0 for combining marks and joiners, 2 for wide
-// East Asian characters and most emoji, 1 otherwise. An approximation of
-// wcwidth that is good enough to keep the columns of a dialog in place.
+// East Asian characters and emoji with Emoji_Presentation, 1 otherwise. An
+// approximation of wcwidth that is good enough to keep the columns of a
+// dialog in place.
 int width(char32_t cp)
 {
     if ((cp >= 0x300 && cp <= 0x36f) || cp == 0x200b || cp == 0x200c || cp == 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f)
@@ -18,8 +124,7 @@ int width(char32_t cp)
         return 0;
     if ((cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf && cp != 0x303f) || (cp >= 0xac00 && cp <= 0xd7a3)
         || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60)
-        || (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x1f300 && cp <= 0x1f64f) || (cp >= 0x1f900 && cp <= 0x1f9ff)
-        || (cp >= 0x1f680 && cp <= 0x1f6ff) || (cp >= 0x20000 && cp <= 0x3fffd))
+        || (cp >= 0xffe0 && cp <= 0xffe6) || (cp >= 0x20000 && cp <= 0x3fffd) || emojiPresentation(cp))
         return 2;
     return 1;
 }
@@ -161,8 +266,17 @@ void Screen::lineFeed()
 void Screen::put(const std::string &ch, int w)
 {
     if (w == 0) {
-        if (lastR_ >= 0)
-            grid()[lastR_][lastC_] += ch;
+        if (lastR_ < 0)
+            return;
+        auto &cell = grid()[lastR_][lastC_];
+        // Variation selector 16 makes a text-style symbol two columns wide,
+        // as Claude Code draws it.
+        if (ch == "\xEF\xB8\x8F" && lastR_ == r_ && c_ == lastC_ + 1 && c_ + 1 < cols_ && !wrapPending_
+            && (grid()[r_][c_].empty() || grid()[r_][c_] == " ")) {
+            grid()[r_][c_] = "\x01";
+            ++c_;
+        }
+        cell += ch;
         return;
     }
     if (wrapPending_ || c_ + w > cols_) {
