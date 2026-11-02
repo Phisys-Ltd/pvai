@@ -1086,6 +1086,10 @@ private:
         Session *session = this->session(id);
         if (!session)
             return reject(peer, ref, id, "unknown-session");
+        // A wrapper older than kMinWrapperVersion types prompts, no more.
+        static const std::set<std::string> needsWrapper = {"answer", "clearInput", "mode", "model", "restart"};
+        if (needsWrapper.count(command.type) && session->wrapperTooOld())
+            return reject(peer, ref, id, "stale-wrapper");
         if (const std::string reason = command.run(*session, message, ref); !reason.empty())
             return reject(peer, ref, id, reason);
         if (command.okType)
@@ -1242,7 +1246,11 @@ private:
         }
         // Kept prompts do not outlive the daemon.
         dropKept([](const KeptPrompt &) { return true; });
-        peer->conn->send({{"type", "shutting-down"}, {"ref", ref}, {"dropped", dropped}});
+        json wrappers = json::array();
+        for (Session *session : sessions())
+            if (const auto *claude = dynamic_cast<ClaudeSession *>(session))
+                wrappers.push_back(claude->wrapperVersion());
+        peer->conn->send({{"type", "shutting-down"}, {"ref", ref}, {"dropped", dropped}, {"wrappers", wrappers}});
         stopping_ = true;
     }
 

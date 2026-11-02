@@ -180,7 +180,8 @@ json Session::describe() const
             {"dialogInfo", dialog_.empty() || !dialogInfo_.is_object() ? json() : dialogInfo_},
             {"usage", usage_},
             {"mode", mode_},
-            {"claudeSession", nullptr}};
+            {"claudeSession", nullptr},
+            {"wrapperVersion", nullptr}};
 }
 
 std::vector<Prompt> Session::unsent() const

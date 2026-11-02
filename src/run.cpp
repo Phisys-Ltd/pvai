@@ -475,7 +475,7 @@ int runWrapper(const WrapperOptions &options)
     };
     bool registered = false;
     auto registerSelf = [&] {
-        daemon->send({{"type", "register"}, {"id", id}, {"label", options.label}, {"cwd", cwd},
+        daemon->send({{"type", "register"}, {"version", kVersion}, {"id", id}, {"label", options.label}, {"cwd", cwd},
                       {"pid", static_cast<int>(::getpid())}, {"running", registered}, {"detached", detached},
                       {"restart", true}, {"verify", true}, {"modes", true}, {"clear", true}, {"paced", true}});
         if (draft.dirty() || shellShown)

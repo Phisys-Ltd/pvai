@@ -35,6 +35,9 @@ std::string oneLine(std::string_view text, std::size_t limit);
 std::string str(const json &object, const char *key);
 // Unix seconds of an ISO 8601 stamp ("2026-10-28T19:20:28.623Z"), 0 if it is none.
 long long unixTime(const std::string &stamp);
+// -1, 0 or 1: `a` before, equal to or after `b`, comparing dotted numbers
+// part by part ("0.5.9" < "0.5.10"); a missing or non-numeric part is 0.
+int compareVersions(std::string_view a, std::string_view b);
 // The first of `keys` that holds a string in `object`, if it is an object.
 std::optional<std::string> firstString(const json &object, std::initializer_list<const char *> keys);
 // The "question" of every entry of `holder["questions"]`, one per line.

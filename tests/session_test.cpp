@@ -621,7 +621,7 @@ int main(int argc, char **argv)
 
     // ---- Claude in a terminal: a fake wrapper and hooks.
     LineClient wrapper;
-    wrapper.send({{"type", "register"}, {"id", "wterm"}, {"cwd", project}, {"label", "term"}});
+    wrapper.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wterm"}, {"cwd", project}, {"label", "term"}});
     // (An old wrapper: no `restart` in its registration.)
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "starting"; }).empty(), "a wrapper registers, starting");
     hook("wterm", {{"hook_event_name", "SessionStart"}, {"session_id", "running-1"}, {"source", "startup"}});
@@ -750,7 +750,7 @@ int main(int argc, char **argv)
     // confirms it; one that did not go in waits in front of the queue.
     {
         LineClient ver;
-        ver.send({{"type", "register"}, {"id", "wver"}, {"cwd", project}, {"label", "ver"}, {"restart", true}, {"verify", true}});
+        ver.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wver"}, {"cwd", project}, {"label", "ver"}, {"restart", true}, {"verify", true}});
         hook("wver", {{"hook_event_name", "SessionStart"}, {"session_id", "v-1"}, {"source", "startup"}});
         check(!waitSession(a, "wver", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a verifying wrapper's session");
         a.send({{"type", "prompt"}, {"ref", 30}, {"session", "wver"}, {"text", "eins"}});
@@ -808,7 +808,7 @@ int main(int argc, char **argv)
     // the terminal; dialog keys; big hook events.
     {
         LineClient rw;
-        rw.send({{"type", "register"}, {"id", "wretry"}, {"cwd", project}, {"label", "retry"}, {"restart", true}, {"verify", true}});
+        rw.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wretry"}, {"cwd", project}, {"label", "retry"}, {"restart", true}, {"verify", true}});
         hook("wretry", {{"hook_event_name", "SessionStart"}, {"session_id", "r-1"}, {"source", "startup"}});
         check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a retry wrapper's session");
         rw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
@@ -866,7 +866,7 @@ int main(int argc, char **argv)
               "big: a cut never splits a UTF-8 character");
 
         LineClient tw;
-        tw.send({{"type", "register"}, {"id", "wtrust"}, {"cwd", project}, {"label", "trust"}, {"restart", true}, {"verify", true}});
+        tw.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wtrust"}, {"cwd", project}, {"label", "trust"}, {"restart", true}, {"verify", true}});
         tw.send({{"type", "dialog"}, {"kind", "trust"}});
         check(!waitSession(a, "wtrust", [](const json &s) { return s.value("dialog", "") == "trust"; }).empty(), "trust: the dialog is shown");
         hook("wtrust", {{"hook_event_name", "SessionStart"}, {"session_id", "t-1"}, {"source", "startup"}});
@@ -878,7 +878,7 @@ int main(int argc, char **argv)
     // shell mode, and the queue goes on.
     {
         LineClient clr;
-        clr.send({{"type", "register"}, {"id", "wclr"}, {"cwd", project}, {"label", "clr"}, {"restart", true}, {"verify", true}, {"clear", true}});
+        clr.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wclr"}, {"cwd", project}, {"label", "clr"}, {"restart", true}, {"verify", true}, {"clear", true}});
         hook("wclr", {{"hook_event_name", "SessionStart"}, {"session_id", "c-1"}, {"source", "startup"}});
         json idle = waitSession(a, "wclr", [](const json &s) { return s.value("state", "") == "idle"; });
         check(idle.value("inputClearable", false), "an idle session under a new wrapper is clearable: " + idle.dump());
@@ -912,7 +912,7 @@ int main(int argc, char **argv)
     // next and text answer them, the review comes last.
     {
         LineClient qw;
-        qw.send({{"type", "register"}, {"id", "wq"}, {"cwd", project}, {"label", "q"}, {"restart", true}, {"verify", true}, {"clear", true}, {"paced", true}});
+        qw.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wq"}, {"cwd", project}, {"label", "q"}, {"restart", true}, {"verify", true}, {"clear", true}, {"paced", true}});
         hook("wq", {{"hook_event_name", "SessionStart"}, {"session_id", "q-1"}, {"source", "startup"}});
         check(!waitSession(a, "wq", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a question session");
         hook("wq", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "q-1"}, {"prompt", "frag"}});
@@ -970,8 +970,8 @@ int main(int argc, char **argv)
         writeFile(runtime + "/pvai/wmid.claude", json({{"claudeSession", "mid-1"}, {"transcript", runFile}}).dump() + "\n");
         writeFile(runtime + "/pvai/wdone.claude", json({{"claudeSession", "done-1"}, {"transcript", doneFile}}).dump() + "\n");
         LineClient mid, done;
-        mid.send({{"type", "register"}, {"id", "wmid"}, {"cwd", project}, {"label", "mid"}, {"running", true}, {"restart", true}});
-        done.send({{"type", "register"}, {"id", "wdone"}, {"cwd", project}, {"label", "done"}, {"running", true}, {"restart", true}});
+        mid.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wmid"}, {"cwd", project}, {"label", "mid"}, {"running", true}, {"restart", true}});
+        done.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wdone"}, {"cwd", project}, {"label", "done"}, {"running", true}, {"restart", true}});
         check(!waitSession(a, "wmid", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),
               "mid-turn after a daemon restart: busy");
         check(!waitSession(a, "wdone", [](const json &s) { return s.value("state", "") == "idle"; }).empty(),
@@ -982,7 +982,7 @@ int main(int argc, char **argv)
     // Shift+Tab until the footer shows it, once round the cycle at most.
     {
         LineClient mw;
-        mw.send({{"type", "register"}, {"id", "wmode"}, {"cwd", project}, {"label", "mode"}, {"restart", true}, {"verify", true},
+        mw.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wmode"}, {"cwd", project}, {"label", "mode"}, {"restart", true}, {"verify", true},
                  {"modes", true}});
         hook("wmode", {{"hook_event_name", "SessionStart"}, {"session_id", "m-1"}, {"source", "startup"}, {"permission_mode", "default"}});
         check(!waitSession(a, "wmode", [](const json &s) { return s.value("mode", json()) == "default"; }).empty(),
@@ -1007,7 +1007,7 @@ int main(int argc, char **argv)
         check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 52; }).value("reason", "") == "unknown-mode",
               "an unknown mode is refused");
         LineClient old;
-        old.send({{"type", "register"}, {"id", "wold"}, {"cwd", project}, {"label", "old"}, {"restart", true}, {"verify", true}});
+        old.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wold"}, {"cwd", project}, {"label", "old"}, {"restart", true}, {"verify", true}});
         hook("wold", {{"hook_event_name", "SessionStart"}, {"session_id", "o-1"}, {"source", "startup"}});
         check(!waitSession(a, "wold", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "an older wrapper");
         a.send({{"type", "mode"}, {"ref", 53}, {"session", "wold"}, {"mode", "plan"}});
@@ -1100,7 +1100,7 @@ int main(int argc, char **argv)
     // A session the app started that ends at once: the app hears why.
     {
         LineClient early;
-        early.send({{"type", "register"}, {"id", "wearly"}, {"cwd", project}, {"label", "early"}, {"detached", true}, {"restart", true}});
+        early.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wearly"}, {"cwd", project}, {"label", "early"}, {"detached", true}, {"restart", true}});
         check(!waitSession(a, "wearly", [](const json &) { return true; }).empty(), "a detached session registers");
         early.send({{"type", "exited"}, {"status", 1}, {"screen", "line 1\nNot logged in \xC2\xB7 Please run /login"}});
         const json ended = a.next("attention", [](const json &m) { return m.value("session", "") == "wearly"; });
@@ -1109,7 +1109,7 @@ int main(int argc, char **argv)
     }
     {
         LineClient stopped;
-        stopped.send({{"type", "register"}, {"id", "wstop"}, {"cwd", project}, {"label", "stop"}, {"detached", true}, {"restart", true}});
+        stopped.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wstop"}, {"cwd", project}, {"label", "stop"}, {"detached", true}, {"restart", true}});
         check(!waitSession(a, "wstop", [](const json &) { return true; }).empty(), "another detached session");
         a.send({{"type", "stop"}, {"ref", 35}, {"session", "wstop"}});
         check(stopped.next("terminate").value("type", "") == "terminate", "stop terminates it");
@@ -1124,7 +1124,7 @@ int main(int argc, char **argv)
         const std::string longText = std::string(300, 'x') + " the end";
         {
             LineClient dying;
-            dying.send({{"type", "register"}, {"id", "wdrop"}, {"cwd", project}, {"label", "drop"}, {"restart", true}, {"verify", true}});
+            dying.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wdrop"}, {"cwd", project}, {"label", "drop"}, {"restart", true}, {"verify", true}});
             check(!waitSession(a, "wdrop", [](const json &) { return true; }).empty(), "dropped: a session registers");
             a.send({{"type", "prompt"}, {"ref", 700}, {"session", "wdrop"}, {"text", longText}});
             check(!waitSession(a, "wdrop", [](const json &s) { return s.value("queued", 0) == 1; }).empty(), "dropped: one prompt waits");
@@ -1149,7 +1149,7 @@ int main(int argc, char **argv)
         };
         {
             LineClient first;
-            first.send({{"type", "register"}, {"id", "wkeep1"}, {"cwd", project}, {"label", "keep1"}, {"restart", true}, {"verify", true}});
+            first.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wkeep1"}, {"cwd", project}, {"label", "keep1"}, {"restart", true}, {"verify", true}});
             hook("wkeep1", {{"hook_event_name", "SessionStart"}, {"session_id", "k-1"}, {"source", "startup"}});
             hook("wkeep1", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "k-1"}, {"prompt", "busy now"}});
             check(!waitSession(a, "wkeep1", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "kept: the session is busy");
@@ -1163,7 +1163,7 @@ int main(int argc, char **argv)
                   && list[1].value("ref", 0) == 711 && list[1].value("kept", false),
               "a session with a conversation id ends: dropped with kept: " + dropped.dump());
         LineClient second;
-        second.send({{"type", "register"}, {"id", "wkeep2"}, {"cwd", project}, {"label", "keep2"}, {"restart", true}, {"verify", true}});
+        second.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wkeep2"}, {"cwd", project}, {"label", "keep2"}, {"restart", true}, {"verify", true}});
         check(!waitSession(a, "wkeep2", [](const json &) { return true; }).empty(), "kept: a new wrapper registers");
         hook("wkeep2", {{"hook_event_name", "SessionStart"}, {"session_id", "k-1"}, {"source", "resume"}});
         check(!waitSession(a, "wkeep2", [](const json &s) { return s.value("queued", 0) == 2; }).empty(),
@@ -1185,7 +1185,7 @@ int main(int argc, char **argv)
         writeFile(transcripts + "/k-f.jsonl", userLine("x"));
         {
             LineClient third;
-            third.send({{"type", "register"}, {"id", "wkeep3"}, {"cwd", project}, {"label", "keep3"}, {"restart", true}, {"verify", true}});
+            third.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wkeep3"}, {"cwd", project}, {"label", "keep3"}, {"restart", true}, {"verify", true}});
             hook("wkeep3", {{"hook_event_name", "SessionStart"}, {"session_id", "k-f"}, {"source", "startup"}});
             hook("wkeep3", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "k-f"}, {"prompt", "busy"}});
             a.send({{"type", "prompt"}, {"ref", 720}, {"session", "wkeep3"}, {"text", "lost soon"}});
@@ -1203,7 +1203,7 @@ int main(int argc, char **argv)
     {
         {
             LineClient cap;
-            cap.send({{"type", "register"}, {"id", "wcap"}, {"cwd", project}, {"label", "cap"}, {"restart", true}, {"verify", true}});
+            cap.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wcap"}, {"cwd", project}, {"label", "cap"}, {"restart", true}, {"verify", true}});
             hook("wcap", {{"hook_event_name", "SessionStart"}, {"session_id", "k-cap"}, {"source", "startup"}});
             hook("wcap", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "k-cap"}, {"prompt", "busy"}});
             for (int i = 0; i < 17; ++i)
@@ -1216,6 +1216,44 @@ int main(int argc, char **argv)
             kept += p.value("kept", false) ? 1 : 0;
         check(kept == 16 && !dropped["prompts"][0].contains("kept") && dropped["prompts"][16].value("kept", false),
               "only 16 are kept, the oldest is not: " + std::to_string(kept));
+    }
+
+    // 0.5.52: the wrapper's version, and what an old wrapper cannot do.
+    {
+        LineClient none, old, now, ancient;
+        none.send({{"type", "register"}, {"id", "wv-none"}, {"cwd", project}, {"label", "none"}, {"restart", true}, {"verify", true}});
+        old.send({{"type", "register"}, {"version", "0.5.44"}, {"id", "wv-old"}, {"cwd", project}, {"label", "old"}, {"restart", true}, {"verify", true}});
+        now.send({{"type", "register"}, {"version", PVAI_VERSION}, {"id", "wv-now"}, {"cwd", project}, {"label", "now"}, {"restart", true}});
+        const json all = a.next("sessions", [](const json &m) {
+            return !sessionIn(m, "wv-none").empty() && !sessionIn(m, "wv-old").empty() && !sessionIn(m, "wv-now").empty();
+        });
+        const json noVersion = sessionIn(all, "wv-none");
+        check(noVersion.contains("wrapperVersion") && noVersion["wrapperVersion"].is_null() && noVersion.value("stale", false),
+              "a wrapper without a version: wrapperVersion null, stale: " + noVersion.dump());
+        const json oldOne = sessionIn(all, "wv-old");
+        check(oldOne.value("wrapperVersion", "") == "0.5.44" && oldOne.value("stale", false),
+              "an older version is shown and stale: " + oldOne.dump());
+        const json current = sessionIn(all, "wv-now");
+        check(current.value("wrapperVersion", "") == PVAI_VERSION && !current.contains("stale"),
+              "the daemon's own version is not stale: " + current.dump());
+        // answer to a wrapper before kMinWrapperVersion is refused; a prompt is not.
+        hook("wv-none", {{"hook_event_name", "SessionStart"}, {"session_id", "wv-1"}, {"source", "startup"}});
+        hook("wv-none", {{"hook_event_name", "PermissionRequest"}, {"session_id", "wv-1"}, {"tool_name", "Bash"}, {"tool_input", {{"command", "ls"}}}});
+        check(!waitSession(a, "wv-none", [](const json &s) { return s.value("state", "") == "waiting"; }).empty(), "stale: a dialog waits");
+        a.send({{"type", "answer"}, {"ref", 900}, {"session", "wv-none"}, {"choice", "allow"}});
+        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 900; }).value("reason", "") == "stale-wrapper",
+              "an answer to a stale wrapper is rejected stale-wrapper");
+        for (const char *type : {"mode", "model", "restart", "clearInput"}) {
+            a.send({{"type", type}, {"ref", 901}, {"session", "wv-none"}, {"mode", "plan"}, {"model", "opus"}});
+            check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 901; }).value("reason", "") == "stale-wrapper",
+                  std::string(type) + " to a stale wrapper is rejected stale-wrapper");
+        }
+        a.send({{"type", "answer"}, {"ref", 902}, {"session", "wv-old"}, {"choice", "allow"}});
+        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 902; }).value("reason", "") == "no-dialog",
+              "0.5.44 is new enough: the answer reaches the session");
+        a.send({{"type", "prompt"}, {"ref", 903}, {"session", "wv-none"}, {"text", "still typed"}});
+        check(a.next("accepted", [](const json &m) { return m.value("ref", 0) == 903; }).value("session", "") == "wv-none",
+              "a prompt goes through to a stale wrapper");
     }
 
     // Subagents: running while their meta file has no `finished`; a task

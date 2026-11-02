@@ -127,6 +127,8 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
     , screenModes_(registration.value("modes", false))
 {
     canClear_ = registration.value("clear", false);
+    if (const json v = registration.value("version", json()); v.is_string())
+        wrapperVersion_ = cut(oneLine(v.get<std::string>(), 64), 32);
     canPace_ = registration.value("paced", false);
     // A wrapper that registers again after a daemon restart has a running
     // Claude Code: idle, unless its transcript shows a turn going on.
@@ -159,6 +161,9 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
             }
         }
         claimKept();
+        if (wrapperVersion_ != kVersion)
+            host_.log(id_ + ": taken on, its pvai run is " + (wrapperVersion_.empty() ? std::string("older than 0.5.52") : wrapperVersion_)
+                      + ", the daemon " + kVersion);
         host_.log(id_ + ": taken on while running, " + (transcript_.empty() ? "no transcript known" : transcript_ + ": " + state_));
     }
 }
@@ -167,6 +172,9 @@ json ClaudeSession::describe() const
 {
     json entry = Session::describe();
     entry["claudeSession"] = claudeSession_.empty() ? json() : json(claudeSession_);
+    entry["wrapperVersion"] = wrapperVersion_.empty() ? json() : json(wrapperVersion_);
+    if (wrapperVersion_ != kVersion)
+        entry["stale"] = true;
     json running = json::array();
     for (const auto &[id, agent] : subagents_)
         if (!agent.entry.is_null())
@@ -177,6 +185,11 @@ json ClaudeSession::describe() const
     if (inFlight_) // typed, not confirmed yet
         entry["queued"] = entry.value("queued", 0) + 1;
     return entry;
+}
+
+bool ClaudeSession::wrapperTooOld() const
+{
+    return compareVersions(wrapperVersion_, kMinWrapperVersion) < 0;
 }
 
 std::vector<Prompt> ClaudeSession::unsent() const

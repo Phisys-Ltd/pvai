@@ -398,6 +398,7 @@ int runPropose(const std::string &to, std::string text, bool fromStdin, const st
 int runDaemonControl(bool restart, bool force)
 {
     bool refused = false;
+    int older = 0; // sessions whose `pvai run` is not this version
     const Talk talk = talkToDaemon(false, true, {{"type", "shutdown"}, {"ref", "cli"}, {"force", force}}, 5000,
                                    [&](Conn &, const json &message) {
         const std::string type = message.is_object() ? message.value("type", "") : "";
@@ -411,6 +412,9 @@ int runDaemonControl(bool restart, bool force)
             return true;
         }
         if (type == "shutting-down") {
+            for (const auto &w : message.value("wrappers", json::array()))
+                if (!w.is_string() || w.get<std::string>() != kVersion)
+                    ++older;
             for (const auto &d : message.value("dropped", json::array()))
                 std::printf("dropped: %s ref %s: %s\n", d.value("session", "").c_str(), d.value("ref", json()).dump().c_str(),
                             cut(oneLine(d.value("text", ""), 400), 80).c_str());
@@ -444,8 +448,14 @@ int runDaemonControl(bool restart, bool force)
         }
         std::printf("daemon stopped\n");
     }
-    if (!restart)
+    auto tellOlder = [&] {
+        if (older > 0)
+            std::printf("%d session(s) run an older pvai; restart them to update\n", older);
+    };
+    if (!restart) {
+        tellOlder();
         return 0;
+    }
     const int fresh = openDaemon(true);
     if (fresh < 0) {
         std::fprintf(stderr, "pvai: no new daemon\n");
@@ -453,6 +463,7 @@ int runDaemonControl(bool restart, bool force)
     }
     ::close(fresh);
     std::printf("daemon started\n");
+    tellOlder();
     return 0;
 }
 

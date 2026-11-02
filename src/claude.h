@@ -13,6 +13,11 @@
 
 namespace pvai {
 
+// The oldest `pvai run` that answers `answer`, `clearInput`, `mode`, `model`
+// and `restart` as the daemon expects (0.5.44: the `key` class of `input`,
+// the screen after a prompt that was not typed). Typing works with any.
+constexpr const char *kMinWrapperVersion = "0.5.44";
+
 class ClaudeSession : public Session {
 public:
     // `wrapper` is the `pvai run` connection; the session ends with it.
@@ -35,6 +40,8 @@ public:
     json history(int limit) override;
     std::vector<Prompt> unsent() const override;
     std::string conversationId() const override { return claudeSession_; }
+    bool wrapperTooOld() const override;
+    const std::string &wrapperVersion() const { return wrapperVersion_; }
     void tick(Clock::time_point now) override;
     std::optional<Clock::time_point> deadline() const override;
 
@@ -83,6 +90,7 @@ private:
     Conn &wrapper_;
     bool canRestart_ = false;
     std::string claudeSession_;
+    std::string wrapperVersion_; // `register.version`, empty before 0.5.52
     std::string transcript_;
     TranscriptTail tail_;
     Clock::time_point nextTail_ = Clock::now();

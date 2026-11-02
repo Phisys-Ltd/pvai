@@ -84,6 +84,9 @@ public:
     // The assistant's own id of the conversation, once known; the daemon
     // keeps what this session did not take under it when the session ends.
     virtual std::string conversationId() const { return {}; }
+    // The `pvai run` that holds the session is too old for the requests that
+    // need it to do more than type (see kMinWrapperVersion).
+    virtual bool wrapperTooOld() const { return false; }
     // A typed prompt counts only once the assistant confirms it (`delivered`).
     virtual bool confirmsDelivery() const { return false; }
     virtual std::string answer(const std::string &choice) = 0;

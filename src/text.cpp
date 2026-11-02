@@ -70,4 +70,23 @@ std::string questionOf(const json &holder)
     return text;
 }
 
+int compareVersions(std::string_view a, std::string_view b)
+{
+    auto next = [](std::string_view &v) {
+        long n = 0;
+        std::size_t i = 0;
+        while (i < v.size() && v[i] >= '0' && v[i] <= '9' && n < 100000000)
+            n = n * 10 + (v[i++] - '0');
+        const std::size_t dot = v.find('.');
+        v = dot == std::string_view::npos ? std::string_view() : v.substr(dot + 1);
+        return n;
+    };
+    while (!a.empty() || !b.empty()) {
+        const long x = next(a), y = next(b);
+        if (x != y)
+            return x < y ? -1 : 1;
+    }
+    return 0;
+}
+
 } // namespace pvai
