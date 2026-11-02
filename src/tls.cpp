@@ -46,13 +46,9 @@ std::string readFile(const std::string &path)
 
 bool writeSecret(const std::string &path, const std::string &data, mode_t mode)
 {
-    const std::string temp = path + ".new";
-    const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
-    if (fd < 0)
-        return false;
-    const bool ok = writeAll(fd, data) && ::fsync(fd) == 0;
-    ::close(fd);
-    return ok && ::rename(temp.c_str(), path.c_str()) == 0;
+    AtomicOptions options;
+    options.mode = mode;
+    return writeAtomically(path, data, options) == Written::Ok;
 }
 
 X509 *certFromPem(const std::string &pem)

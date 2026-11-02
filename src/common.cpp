@@ -527,6 +527,21 @@ void cutStrings(json &value, std::size_t max)
 
 } // namespace
 
+Written writeAtomically(const std::string &path, const std::string &data, const AtomicOptions &options)
+{
+    const std::string temp = path + options.suffix;
+    const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, options.mode);
+    if (fd < 0)
+        return Written::WriteFailed;
+    const bool ok = writeAll(fd, data) && (!options.sync || ::fsync(fd) == 0);
+    ::close(fd);
+    if (!ok)
+        return Written::WriteFailed;
+    if (options.chmod)
+        ::chmod(temp.c_str(), *options.chmod);
+    return ::rename(temp.c_str(), path.c_str()) == 0 ? Written::Ok : Written::RenameFailed;
+}
+
 void rotateLog(const std::string &path)
 {
     std::error_code ec;

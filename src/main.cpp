@@ -208,20 +208,21 @@ int changeSettings(const std::function<json(json)> &change, bool create, bool qu
     std::filesystem::create_directories(dir, ec);
     if (exists)
         std::ofstream(path + ".pvai-bak") << settings.dump(2) << "\n";
-    const std::string temp = path + ".pvai-new";
-    {
-        std::ofstream out(temp);
-        out << wanted.dump(2) << "\n";
-        if (!out) {
-            std::fprintf(stderr, "pvai: cannot write %s\n", temp.c_str());
-            return 1;
-        }
-    }
+    AtomicOptions options;
+    options.mode = 0666; // as an ofstream creates it
+    options.suffix = ".pvai-new";
+    options.sync = false;
     if (exists)
-        ::chmod(temp.c_str(), st.st_mode & 07777);
-    if (::rename(temp.c_str(), path.c_str()) != 0) {
+        options.chmod = st.st_mode & 07777;
+    switch (writeAtomically(path, wanted.dump(2) + "\n", options)) {
+    case Written::WriteFailed:
+        std::fprintf(stderr, "pvai: cannot write %s\n", (path + options.suffix).c_str());
+        return 1;
+    case Written::RenameFailed:
         std::fprintf(stderr, "pvai: cannot replace %s: %s\n", path.c_str(), std::strerror(errno));
         return 1;
+    case Written::Ok:
+        break;
     }
     std::fprintf(quiet ? stderr : stdout, "pvai: %s %s (the old file is %s.pvai-bak)\n", written, path.c_str(), path.c_str());
     return 0;
@@ -262,15 +263,12 @@ void markOnboardingDone()
         }
     if (!changed)
         return;
-    const std::string temp = path + ".tmp";
-    const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    const std::string text = config.dump(2) + "\n";
-    const bool ok = fd >= 0 && ::write(fd, text.data(), text.size()) == static_cast<ssize_t>(text.size());
-    if (fd >= 0)
-        ::close(fd);
+    AtomicOptions options;
+    options.suffix = ".tmp";
+    options.sync = false;
     if (exists)
-        ::chmod(temp.c_str(), st.st_mode & 07777);
-    if (!ok || ::rename(temp.c_str(), path.c_str()) != 0)
+        options.chmod = st.st_mode & 07777;
+    if (writeAtomically(path, config.dump(2) + "\n", options) != Written::Ok)
         std::fprintf(stderr, "pvai: cannot write %s: %s\n", path.c_str(), std::strerror(errno));
 }
 

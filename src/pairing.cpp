@@ -175,13 +175,7 @@ bool Devices::save(const std::vector<Device> &devices) const
     json list = json::array();
     for (const auto &d : devices)
         list.push_back({{"fingerprint", d.fingerprint}, {"name", d.name}, {"added", d.added}, {"lastSeen", d.lastSeen}});
-    const std::string temp = path_ + ".new";
-    const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0)
-        return false;
-    const bool ok = writeAll(fd, list.dump(2) + "\n") && ::fsync(fd) == 0;
-    ::close(fd);
-    return ok && ::rename(temp.c_str(), path_.c_str()) == 0;
+    return writeAtomically(path_, list.dump(2) + "\n") == Written::Ok;
 }
 
 std::optional<Device> Devices::find(const std::string &fingerprint) const

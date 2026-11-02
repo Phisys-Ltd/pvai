@@ -61,6 +61,27 @@ void onWinch(int)
     errno = saved;
 }
 
+// The terminal as it is now (g_savedTermios) goes raw, and back at exit.
+void enterRawTerminal()
+{
+    termios raw = g_savedTermios;
+    ::cfmakeraw(&raw);
+    ::tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
+    g_rawTerminal = true;
+    std::atexit(restoreTerminal);
+}
+
+// A resize of the terminal makes g_winchPipe[0] readable.
+void watchWindowSize()
+{
+    if (::pipe(g_winchPipe) == 0) {
+        setNonBlocking(g_winchPipe[0]);
+        setCloseOnExec(g_winchPipe[0]);
+        setCloseOnExec(g_winchPipe[1]);
+        ::signal(SIGWINCH, onWinch);
+    }
+}
+
 void forwardSignal(int signal)
 {
     if (g_child > 0)
@@ -395,18 +416,9 @@ int runWrapper(const WrapperOptions &options)
     std::optional<Clock::time_point> restartKillAt;
 
     if (tty) {
-        termios raw = g_savedTermios;
-        ::cfmakeraw(&raw);
-        ::tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
-        g_rawTerminal = true;
-        std::atexit(restoreTerminal);
+        enterRawTerminal();
     }
-    if (::pipe(g_winchPipe) == 0) {
-        setNonBlocking(g_winchPipe[0]);
-        setCloseOnExec(g_winchPipe[0]);
-        setCloseOnExec(g_winchPipe[1]);
-        ::signal(SIGWINCH, onWinch);
-    }
+    watchWindowSize();
     ::signal(SIGTERM, forwardSignal);
     ::signal(SIGHUP, forwardSignal);
 
@@ -866,15 +878,8 @@ int runAttach(const std::string &id)
         return 1;
     }
     ::tcgetattr(STDIN_FILENO, &g_savedTermios);
-    termios raw = g_savedTermios;
-    ::cfmakeraw(&raw);
-    ::tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
-    g_rawTerminal = true;
-    std::atexit(restoreTerminal);
-    if (::pipe(g_winchPipe) == 0) {
-        setNonBlocking(g_winchPipe[0]);
-        ::signal(SIGWINCH, onWinch);
-    }
+    enterRawTerminal();
+    watchWindowSize();
     auto sendSize = [&] {
         winsize ws{};
         ::ioctl(STDIN_FILENO, TIOCGWINSZ, &ws);

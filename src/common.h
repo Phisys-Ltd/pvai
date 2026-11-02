@@ -7,6 +7,7 @@
 #include <sys/types.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -110,6 +111,16 @@ void sendLine(int fd, const json &message); // blocking, errors ignored
 // A log above 8 MB moves to <path>.old before it is opened for appending
 // (the runtime directory is RAM on Linux).
 void rotateLog(const std::string &path);
+enum class Written { Ok, WriteFailed, RenameFailed };
+struct AtomicOptions {
+    mode_t mode = 0600;           // of a new temp file (before the umask)
+    std::string suffix = ".new";  // the temp file is path + suffix
+    bool sync = true;             // fsync before the rename
+    std::optional<mode_t> chmod;  // set on the temp file before the rename
+};
+// `data` to path + suffix, then renamed over `path`, so that nobody reads half
+// a file. errno is the rename's after RenameFailed.
+Written writeAtomically(const std::string &path, const std::string &data, const AtomicOptions &options = {});
 // Cuts every string of a hook event's tool_input and its last_assistant_message
 // to kHookStringMax (with a marker), so the event stays far below the line limit.
 void cutHookEvent(json &event);

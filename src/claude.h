@@ -71,6 +71,8 @@ private:
     void delivered();
     void notDelivered(const std::string &screen, bool retry);
     void unblock();
+    void retryIfBlocked();
+    void endSlash();
 
     Conn &wrapper_;
     bool canRestart_ = false;

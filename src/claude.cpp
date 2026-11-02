@@ -231,10 +231,7 @@ std::string ClaudeSession::answer(const std::string &choice)
         if (it == keys.end() && !(key.size() == 1 && ((key[0] >= '0' && key[0] <= '9') || (key[0] >= 'a' && key[0] <= 'z'))))
             return "bad-choice";
         wrapper_.send({{"type", "keys"}, {"data", it != keys.end() ? it->second : key}});
-        if (blocked_) {
-            retryOnPrompt_ = true;
-            retryAt_ = Clock::now() + kRetryAfter;
-        }
+        retryIfBlocked();
         return {};
     }
     // The owner sees the screen and says the prompt is free: the next
@@ -250,10 +247,7 @@ std::string ClaudeSession::answer(const std::string &choice)
         return "bad-choice";
     if (dialog_ == "screen") {
         wrapper_.send({{"type", "keys"}, {"data", choice == "deny" ? "\x1b" : "\r"}});
-        if (blocked_) {
-            retryOnPrompt_ = true;
-            retryAt_ = Clock::now() + kRetryAfter;
-        }
+        retryIfBlocked();
         return {};
     }
     const bool trustDialog = dialog_ == "trust";
@@ -347,10 +341,7 @@ void ClaudeSession::interrupt()
         return;
     wrapper_.send({{"type", "keys"}, {"data", "\x1b"}});
     if (dialog_ == "screen") { // Esc closes it; the screen says when
-        if (blocked_) {
-            retryOnPrompt_ = true;
-            retryAt_ = Clock::now() + kRetryAfter;
-        }
+        retryIfBlocked();
         return;
     }
     if (state_ == "waiting") {
@@ -423,10 +414,7 @@ std::string ClaudeSession::clear()
     if (!clearable())
         return "busy";
     wrapper_.send({{"type", "clear"}});
-    if (blocked_) {
-        retryOnPrompt_ = true;
-        retryAt_ = Clock::now() + kRetryAfter;
-    }
+    retryIfBlocked();
     return {};
 }
 
@@ -518,9 +506,7 @@ void ClaudeSession::onHook(const json &event)
         if (state_ == "starting" || (state_ == "waiting" && trust) || source == "clear" || source == "resume")
             state_ = "idle";
         if (source == "clear") { // a new transcript: its output count starts at 0
-            slashPending_ = false;
-            if (slashModel_)
-                modelDone("failed", "interrupted");
+            endSlash();
         }
     } else if (name == "UserPromptSubmit") {
         state_ = "busy";
@@ -528,9 +514,7 @@ void ClaudeSession::onHook(const json &event)
     } else if (name == "Stop") {
         state_ = "idle";
         forceIdle_ = false;
-        slashPending_ = false;
-        if (slashModel_)
-            modelDone("failed", "interrupted");
+        endSlash();
         say(event.value("last_assistant_message", ""));
     } else if (name == "PermissionRequest") {
         // Claude Code shows a permission dialog for this tool call; its
@@ -871,6 +855,23 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry)
     if (!asked)
         attention("screen", screen.substr(0, screen.find('\n')));
     changed();
+}
+
+// The keys went to a screen the daemon is waiting on: look at it again in a moment.
+void ClaudeSession::retryIfBlocked()
+{
+    if (blocked_) {
+        retryOnPrompt_ = true;
+        retryAt_ = Clock::now() + kRetryAfter;
+    }
+}
+
+// A slash command is over (or never ran): a model change that waited for it fails.
+void ClaudeSession::endSlash()
+{
+    slashPending_ = false;
+    if (slashModel_)
+        modelDone("failed", "interrupted");
 }
 
 void ClaudeSession::unblock()
