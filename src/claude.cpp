@@ -159,9 +159,7 @@ json ClaudeSession::describe() const
     for (const auto &[id, agent] : subagents_)
         if (!agent.entry.is_null())
             running.push_back(agent.entry);
-    std::sort(running.begin(), running.end(), [](const json &a, const json &b) {
-        return a.value("startedAt", 0LL) < b.value("startedAt", 0LL);
-    });
+    sortByStart(running);
     entry["subagents"] = std::move(running);
     if (inFlight_) // typed, not confirmed yet
         entry["queued"] = entry.value("queued", 0) + 1;
@@ -621,7 +619,7 @@ void ClaudeSession::onStatus(const json &status)
     const bool news = withoutCost != oldWithoutCost;
     usage_ = usage;
     if (news)
-        host_.broadcast({{"type", "usage"}, {"session", id_}, {"usage", usage_}});
+        usageChanged();
 }
 
 // The owner typed into the session. Into a dialog Claude waited on: they
@@ -1038,7 +1036,7 @@ void ClaudeSession::pollTranscript()
     auto fresh = tail_.poll();
     if (usage_.is_object() && usage_.value("cache", json()) != tail_.cache()) {
         usage_["cache"] = tail_.cache();
-        host_.broadcast({{"type", "usage"}, {"session", id_}, {"usage", usage_}});
+        usageChanged();
     }
     // A background task or agent finished and Claude Code took it up: a
     // turn without UserPromptSubmit, ended by Stop as usual.

@@ -16,7 +16,7 @@ namespace pvai {
 
 class KimiBackend;
 
-class KimiSession : public Session {
+class KimiSession : public BufferedSession {
 public:
     KimiSession(Host &host, KimiBackend &backend, const std::string &id, const std::string &cwd);
 
@@ -28,30 +28,26 @@ public:
     std::string setModel(const std::string &model, const json &ref) override;
     std::string stop() override;
     void interrupt() override;
-    json history(int limit) override;
 
     // From the agent.
     void onUpdate(const json &update);
     void onPermission(const json &requestId, const json &params);
     // A new or loaded session's model and context (session/new, load).
     void setConfig(const json &result);
-    void setVersion(const std::string &version);
     // session/load has played the history back: what follows is live.
     void loaded();
 
 protected:
     bool canSubmit() const override;
     void submit(const Prompt &prompt) override;
+    bool quiet() const override { return replaying_; }
 
 private:
     void flushText();
-    void pushEntries(std::vector<json> fresh);
     void reply(const std::string &optionId); // empty: cancelled
     void turnEnded(const json &result, const json &error);
-    void usageChanged();
 
     KimiBackend &backend_;
-    std::deque<json> entries_;
     bool replaying_ = true;   // session/load is playing the history back
     bool voiceSent_ = false;  // the voice context went with a prompt
     // The message being streamed: who writes it, its text so far, when.

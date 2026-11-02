@@ -13,7 +13,7 @@ namespace pvai {
 
 class CodexBackend;
 
-class CodexSession : public Session {
+class CodexSession : public BufferedSession {
 public:
     CodexSession(Host &host, CodexBackend &backend, const json &thread, bool detached);
 
@@ -35,14 +35,12 @@ public:
     void setSettings(const json &approval, const json &sandbox, const json &model);
     std::string stop() override;
     void interrupt() override;
-    json history(int limit) override;
 
     // From the app server.
     void onNotification(const std::string &method, const json &params);
     void onRequest(const json &requestId, const std::string &method, const json &params);
     void setOlderItems(const json &data);
     void setLimits(const json &limits);
-    void setVersion(const std::string &version);
 
 protected:
     bool canSubmit() const override;
@@ -50,13 +48,10 @@ protected:
 
 private:
     std::vector<json> entries(const json &item, long long ms);
-    void pushEntries(std::vector<json> fresh);
     void reply(bool allow);
-    void usageChanged();
 
     CodexBackend &backend_;
     bool detached_;
-    std::deque<json> entries_;
     std::string turnId_;       // the running turn
     bool turnPending_ = false; // turn/start sent, turn/started not seen yet
     json request_;             // the approval the thread waits on: id, method, params

@@ -1,5 +1,8 @@
 #include "session.h"
 
+#include "transcript.h"
+
+#include <algorithm>
 #include <cctype>
 #include <ctime>
 
@@ -73,6 +76,66 @@ void Session::changed()
         loggedState_ = state_;
     }
     host_.sessionsChanged();
+}
+
+void Session::usageChanged()
+{
+    host_.broadcast({{"type", "usage"}, {"session", id_}, {"usage", usage_}});
+}
+
+void Session::setVersion(const std::string &version)
+{
+    if (usage_.value("version", json()) == json(version))
+        return;
+    usage_["version"] = version;
+    usageChanged();
+}
+
+void Session::resumeFromDialog()
+{
+    if (state_ == "waiting") {
+        state_ = "busy";
+        dialog_.clear();
+    }
+}
+
+json BufferedSession::history(int limit)
+{
+    const std::size_t n = std::min<std::size_t>(entries_.size(), static_cast<std::size_t>(std::max(0, limit)));
+    json out = json::array();
+    for (auto it = entries_.end() - static_cast<long>(n); it != entries_.end(); ++it)
+        out.push_back(*it);
+    return out;
+}
+
+void BufferedSession::trimEntries()
+{
+    while (entries_.size() > TranscriptTail::kKeep)
+        entries_.pop_front();
+}
+
+void BufferedSession::pushEntries(std::vector<json> fresh)
+{
+    for (const auto &entry : fresh)
+        entries_.push_back(entry);
+    trimEntries();
+    if (!quiet())
+        sendEntries(std::move(fresh));
+}
+
+json contextOf(const json &used, const json &size)
+{
+    json percent = nullptr;
+    if (used.is_number() && size.is_number() && size.get<long long>() > 0)
+        percent = (used.get<long long>() * 100 + size.get<long long>() / 2) / size.get<long long>();
+    return {{"percent", percent}, {"tokens", used.is_number() ? used : json(0)}, {"size", size}};
+}
+
+void sortByStart(json &entries)
+{
+    std::sort(entries.begin(), entries.end(), [](const json &a, const json &b) {
+        return a.value("startedAt", 0LL) < b.value("startedAt", 0LL);
+    });
 }
 
 json Session::describe() const

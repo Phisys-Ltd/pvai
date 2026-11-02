@@ -116,7 +116,7 @@ bool isQuestion(const json &params)
 // ---- KimiSession ----
 
 KimiSession::KimiSession(Host &host, KimiBackend &backend, const std::string &id, const std::string &cwd)
-    : Session(host, id, cwd, {})
+    : BufferedSession(host, id, cwd, {})
     , backend_(backend)
 {
     state_ = "starting";
@@ -218,10 +218,7 @@ void KimiSession::reply(const std::string &optionId)
     request_ = nullptr;
     backend_.respond(id, {{"outcome", optionId.empty() ? json{{"outcome", "cancelled"}}
                                                        : json{{"outcome", "selected"}, {"optionId", optionId}}}});
-    if (state_ == "waiting") {
-        state_ = "busy";
-        dialog_.clear();
-    }
+    resumeFromDialog();
 }
 
 std::string KimiSession::stop()
@@ -240,25 +237,6 @@ void KimiSession::interrupt()
     if (turnRunning_)
         backend_.notify("session/cancel", {{"sessionId", id_}});
     changed();
-}
-
-json KimiSession::history(int limit)
-{
-    const std::size_t n = std::min<std::size_t>(entries_.size(), static_cast<std::size_t>(std::max(0, limit)));
-    json out = json::array();
-    for (auto it = entries_.end() - static_cast<long>(n); it != entries_.end(); ++it)
-        out.push_back(*it);
-    return out;
-}
-
-void KimiSession::pushEntries(std::vector<json> fresh)
-{
-    for (const auto &entry : fresh)
-        entries_.push_back(entry);
-    while (entries_.size() > TranscriptTail::kKeep)
-        entries_.pop_front();
-    if (!replaying_)
-        sendEntries(std::move(fresh));
 }
 
 // A streamed message is one entry once it is complete: when something else
@@ -320,10 +298,7 @@ void KimiSession::onUpdate(const json &update)
                           {"id", id + ":result"}, {"time", nowIso()}}});
     } else if (kind == "usage_update") {
         const json used = update.value("used", json()), size = update.value("size", json());
-        json percent = nullptr;
-        if (used.is_number() && size.is_number() && size.get<long long>() > 0)
-            percent = (used.get<long long>() * 100 + size.get<long long>() / 2) / size.get<long long>();
-        const json context = {{"percent", percent}, {"tokens", used.is_number() ? used : json(0)}, {"size", size}};
+        const json context = contextOf(used, size);
         if (context != usage_["context"]) {
             usage_["context"] = context;
             usageChanged();
@@ -431,14 +406,6 @@ void KimiSession::setConfig(const json &result)
     }
 }
 
-void KimiSession::setVersion(const std::string &version)
-{
-    if (usage_.value("version", json()) == json(version))
-        return;
-    usage_["version"] = version;
-    usageChanged();
-}
-
 void KimiSession::loaded()
 {
     flushText();
@@ -448,11 +415,6 @@ void KimiSession::loaded()
     historyReset();
     deliver();
     changed();
-}
-
-void KimiSession::usageChanged()
-{
-    host_.broadcast({{"type", "usage"}, {"session", id_}, {"usage", usage_}});
 }
 
 // ---- KimiBackend ----

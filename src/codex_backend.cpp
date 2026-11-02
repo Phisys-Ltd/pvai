@@ -14,16 +14,6 @@ namespace {
 constexpr auto kRetry = std::chrono::seconds(10);
 constexpr auto kRescan = std::chrono::seconds(15);
 
-// What the context bar shows: the last request's tokens against the model's
-// window.
-json contextOf(long long tokens, const json &size)
-{
-    json percent = nullptr;
-    if (size.is_number() && size.get<long long>() > 0)
-        percent = (tokens * 100 + size.get<long long>() / 2) / size.get<long long>();
-    return {{"percent", percent}, {"tokens", tokens}, {"size", size}};
-}
-
 // The context of a thread the daemon did not see run: the last token count
 // in its rollout file (Codex's own format, read from the end), or null.
 json rolloutContext(const std::string &path)
@@ -165,7 +155,7 @@ std::string agentVersion(const std::string &userAgent)
 // ---- CodexSession ----
 
 CodexSession::CodexSession(Host &host, CodexBackend &backend, const json &thread, bool detached)
-    : Session(host, str(thread, "id"), str(thread, "cwd"), {})
+    : BufferedSession(host, str(thread, "id"), str(thread, "cwd"), {})
     , backend_(backend)
     , detached_(detached)
 {
@@ -249,10 +239,7 @@ void CodexSession::reply(bool allow)
     } else {
         backend_.respond(request["id"], result);
     }
-    if (state_ == "waiting") {
-        state_ = "busy";
-        dialog_.clear();
-    }
+    resumeFromDialog();
 }
 
 namespace {
@@ -361,15 +348,6 @@ void CodexSession::interrupt()
     changed();
 }
 
-json CodexSession::history(int limit)
-{
-    const std::size_t n = std::min<std::size_t>(entries_.size(), static_cast<std::size_t>(std::max(0, limit)));
-    json out = json::array();
-    for (auto it = entries_.end() - static_cast<long>(n); it != entries_.end(); ++it)
-        out.push_back(*it);
-    return out;
-}
-
 // thread/items/list, newest first: what came before the daemon saw it.
 void CodexSession::setOlderItems(const json &data)
 {
@@ -380,8 +358,7 @@ void CodexSession::setOlderItems(const json &data)
     // What arrived live meanwhile is newer.
     older.insert(older.end(), entries_.begin(), entries_.end());
     entries_ = std::move(older);
-    while (entries_.size() > TranscriptTail::kKeep)
-        entries_.pop_front();
+    trimEntries();
     historyReset();
 }
 
@@ -390,19 +367,6 @@ void CodexSession::setLimits(const json &limits)
     usage_["fiveHour"] = limits["fiveHour"];
     usage_["sevenDay"] = limits["sevenDay"];
     usageChanged();
-}
-
-void CodexSession::setVersion(const std::string &version)
-{
-    if (usage_.value("version", json()) == json(version))
-        return;
-    usage_["version"] = version;
-    usageChanged();
-}
-
-void CodexSession::usageChanged()
-{
-    host_.broadcast({{"type", "usage"}, {"session", id_}, {"usage", usage_}});
 }
 
 // An item as protocol entries.
@@ -476,15 +440,6 @@ std::vector<json> CodexSession::entries(const json &item, long long ms)
         emit({{"kind", "command"}, {"text", "/compact"}});
     }
     return out;
-}
-
-void CodexSession::pushEntries(std::vector<json> fresh)
-{
-    for (const auto &entry : fresh)
-        entries_.push_back(entry);
-    while (entries_.size() > TranscriptTail::kKeep)
-        entries_.pop_front();
-    sendEntries(std::move(fresh));
 }
 
 void CodexSession::onNotification(const std::string &method, const json &params)
@@ -583,10 +538,7 @@ void CodexSession::onNotification(const std::string &method, const json &params)
     } else if (method == "serverRequest/resolved") {
         if (!request_.is_null() && request_["id"] == params.value("requestId", json())) {
             request_ = nullptr;
-            if (state_ == "waiting") {
-                state_ = "busy";
-                dialog_.clear();
-            }
+            resumeFromDialog();
             changed();
         }
     }
@@ -901,9 +853,7 @@ json CodexBackend::subagentsOf(const std::string &thread) const
     for (const auto &[id, agent] : subagents_)
         if (agent.parent == thread && agent.active)
             out.push_back(agent.entry);
-    std::sort(out.begin(), out.end(), [](const json &a, const json &b) {
-        return a.value("startedAt", 0LL) < b.value("startedAt", 0LL);
-    });
+    sortByStart(out);
     return out;
 }
 

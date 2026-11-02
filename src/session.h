@@ -102,6 +102,9 @@ public:
     virtual void tick(Clock::time_point) {}
     virtual std::optional<Clock::time_point> deadline() const { return std::nullopt; }
 
+    // The assistant's own version, shown in `usage`; a change is news.
+    void setVersion(const std::string &version);
+
     // Gone from `sessions` at the end of the daemon's loop.
     void end();
     bool ended() const { return ended_; }
@@ -120,6 +123,11 @@ protected:
     void sendEntries(std::vector<json> entries);
     // The session list moved; a new state goes into the daemon's log.
     void changed();
+    // `usage` to every app.
+    void usageChanged();
+    // The owner or the assistant answered a dialog the session waited on:
+    // the turn goes on.
+    void resumeFromDialog();
 
     Host &host_;
     std::string id_;
@@ -153,6 +161,23 @@ protected:
 private:
     bool ended_ = false;
     std::string loggedState_ = "starting";
+};
+
+// A session that keeps its last entries itself (the assistant has no
+// transcript file to read): `history` answers from the buffer.
+class BufferedSession : public Session {
+public:
+    using Session::Session;
+    json history(int limit) override;
+
+protected:
+    // Buffers the entries and sends them to the subscribers (unless quiet()).
+    void pushEntries(std::vector<json> fresh);
+    // Drops the oldest entries beyond what `history` keeps.
+    void trimEntries();
+    virtual bool quiet() const { return false; }
+
+    std::deque<json> entries_;
 };
 
 // An ended conversation that `start` can resume.
@@ -243,6 +268,11 @@ std::string speakLine(const std::string &answer);
 std::string firstSentence(const std::string &answer);
 std::string basename(const std::string &path);
 std::string isoTime(long long ms);
+// The context bar: `used` tokens against the model's window `size`; the
+// percent is null unless both are numbers and the window is not empty.
+json contextOf(const json &used, const json &size);
+// Subagent entries, the earliest `startedAt` first.
+void sortByStart(json &entries);
 // The first word of a `--version` output that starts with a digit.
 std::string versionIn(const std::string &output);
 
