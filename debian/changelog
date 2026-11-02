@@ -1,3 +1,14 @@
+pvai (0.5.50-1) trixie; urgency=medium
+
+  * A Claude Code session that waits for its usage limit to reset stays
+    busy and shows it: Session.limited, attention kind limited, limited and
+    resumed history entries. It clears when Claude Code goes on.
+  * A turn end in the transcript without a Stop hook ends the turn after
+    3 s (not while a limit waits).
+  * pvai start, stop and the other requests print only their result line.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 23:40:00 +0100
+
 pvai (0.5.49-1) trixie; urgency=medium
 
   * The tests share tests/support.h (D7): check, TestHome, DaemonProcess,
