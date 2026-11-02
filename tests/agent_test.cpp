@@ -4,110 +4,21 @@
 // target session.
 //
 // usage: pvai-agent-test /path/to/pvai
-#include "common.h"
-
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/wait.h>
-#include <signal.h>
-#include <unistd.h>
-
-#include <cstdio>
-#include <cstdlib>
-#include <filesystem>
-#include <string>
-#include <thread>
+#include "support.h"
 
 using namespace pvai;
+using namespace pvai::test;
 
 namespace {
 
 std::string g_pvai;
-int g_failed = 0;
 
-void check(bool ok, const std::string &what)
+RunResult run(const std::string &args, const std::string &env = "", const std::string &input = "")
 {
-    std::printf("%s %s\n", ok ? "ok  " : "FAIL", what.c_str());
-    if (!ok)
-        ++g_failed;
+    return runPvai(g_pvai, args, env, input);
 }
 
-struct Result {
-    int status = -1;
-    std::string out;
-};
-
-// Runs pvai with `env` before it and `input` on stdin.
-Result run(const std::string &args, const std::string &env = "", const std::string &input = "")
-{
-    Result result;
-    const std::string command = (input.empty() ? "" : "printf %s '" + input + "' | ") + env + " " + g_pvai + " "
-        + args + " 2>&1";
-    FILE *pipe = ::popen(command.c_str(), "r");
-    if (!pipe)
-        return result;
-    char buffer[4096];
-    while (std::fgets(buffer, sizeof buffer, pipe))
-        result.out += buffer;
-    const int status = ::pclose(pipe);
-    result.status = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    while (!result.out.empty() && result.out.back() == '\n')
-        result.out.pop_back();
-    return result;
-}
-
-// A line client on the daemon's unix socket.
-struct Client {
-    int fd = -1;
-    std::string buffer;
-
-    Client()
-    {
-        fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-        sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        const std::string path = daemonSocket();
-        std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path.c_str());
-        ::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr);
-        timeval limit{2, 0};
-        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof limit);
-    }
-    ~Client() { ::close(fd); }
-
-    void send(const json &message)
-    {
-        const std::string line = message.dump() + "\n";
-        (void)::write(fd, line.data(), line.size());
-    }
-
-    // The next message, null after 2 s.
-    json next()
-    {
-        for (;;) {
-            if (const auto end = buffer.find('\n'); end != std::string::npos) {
-                const std::string line = buffer.substr(0, end);
-                buffer.erase(0, end + 1);
-                return json::parse(line, nullptr, false);
-            }
-            char chunk[4096];
-            const ssize_t n = ::read(fd, chunk, sizeof chunk);
-            if (n <= 0)
-                return nullptr;
-            buffer.append(chunk, static_cast<std::size_t>(n));
-        }
-    }
-
-    // The next message of that type, skipping others.
-    json next(const std::string &type)
-    {
-        for (json message = next(); !message.is_null(); message = next())
-            if (message.is_object() && message.value("type", "") == type)
-                return message;
-        return nullptr;
-    }
-};
-
-std::size_t count(const json &proposals) { return proposals.is_null() ? 0 : proposals["proposals"].size(); }
+std::size_t count(const json &proposals) { return proposals.empty() ? 0 : proposals["proposals"].size(); }
 
 } // namespace
 
@@ -119,36 +30,24 @@ int main(int argc, char **argv)
     }
     ::signal(SIGPIPE, SIG_IGN);
     g_pvai = std::filesystem::absolute(argv[1]).string();
-    char home[] = "/tmp/pvai-test-XXXXXX";
-    if (!::mkdtemp(home))
-        return 2;
-    const std::string runtime = std::string(home) + "/run";
-    std::filesystem::create_directories(runtime);
-    std::filesystem::permissions(runtime, std::filesystem::perms::owner_all);
-    ::setenv("HOME", home, 1);
-    ::setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);
+    const TestHome home;
     ::setenv("PVAI_CODEX", "", 1);
     ::unsetenv(kEnvId);
     const int appPort = 20000 + static_cast<int>(::getpid() % 20000);
 
-    const pid_t daemon = ::fork();
-    if (daemon == 0) {
-        const std::string port = std::to_string(appPort);
-        ::execl(g_pvai.c_str(), "pvai", "daemon", "--port", port.c_str(), static_cast<char *>(nullptr));
-        ::_exit(127);
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    DaemonProcess daemon;
+    daemon.start(g_pvai, appPort);
 
     // Without an app it still waits, and says so.
-    Result r = run("propose taifun/w1 'hello there'", "PVAI_ID=wsender");
+    RunResult r = run("propose taifun/w1 'hello there'", "PVAI_ID=wsender");
     check(r.status == 0 && r.out.find("no app connected now") != std::string::npos, "propose without an app: " + r.out);
 
     // An app sees it after welcome, with the sender's label once it is known.
-    Client wrapper;
+    LineClient wrapper;
     wrapper.send({{"type", "register"}, {"id", "wsender"}, {"label", "sender-label"}, {"cwd", "/x"}, {"running", true}});
-    Client app;
+    LineClient app;
     app.send({{"type", "hello"}, {"client", "test-app"}, {"version", "0"}});
-    check(!app.next("welcome").is_null(), "the app is welcome");
+    check(!app.next("welcome").empty(), "the app is welcome");
     json list = app.next("proposals");
     check(count(list) == 1, "proposals follow welcome");
     if (count(list) == 1) {
@@ -186,7 +85,7 @@ int main(int argc, char **argv)
           "the proposal carries replyTo: " + list.dump());
     r = run("propose --reply nonsense " + self + "/w1 text");
     check(r.status == 1 && r.out.find("bad-reply") != std::string::npos, "a bad reply id: " + r.out);
-    Client second, third;
+    LineClient second, third;
     second.send({{"type", "register"}, {"id", "wtwo"}, {"label", "sender-label"}, {"cwd", "/x"}, {"running", true}});
     third.send({{"type", "register"}, {"id", "wthree"}, {"label", "only-one"}, {"cwd", "/x"}, {"running", true}});
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
@@ -200,7 +99,7 @@ int main(int argc, char **argv)
         app.send({{"type", "dismiss"}, {"ref", 70 + static_cast<int>(i)}, {"proposal", list["proposals"][i].value("id", "")}});
         app.next("dismissed");
     }
-    while (!app.next().is_null()) {
+    while (!app.next().empty()) {
     }
 
     // Dismiss: gone from the list; an unknown one is answered alike.
@@ -208,10 +107,10 @@ int main(int argc, char **argv)
     list = app.next("proposals");
     check(count(list) == 1, "dismiss removes it from the list");
     json answer = app.next("dismissed");
-    check(!answer.is_null() && answer.value("proposal", "") == first && answer.value("ref", 0) == 7, "dismissed answers");
+    check(!answer.empty() && answer.value("proposal", "") == first && answer.value("ref", 0) == 7, "dismissed answers");
     app.send({{"type", "dismiss"}, {"ref", 8}, {"proposal", "pnothere0"}});
     answer = app.next("dismissed");
-    check(!answer.is_null() && answer.value("proposal", "") == "pnothere0", "an unknown proposal is dismissed too");
+    check(!answer.empty() && answer.value("proposal", "") == "pnothere0", "an unknown proposal is dismissed too");
 
     // Ten a minute per session, sixteen open in all.
     int ok = 0;
@@ -246,7 +145,7 @@ int main(int argc, char **argv)
           "peers with the app's list: " + r.out);
 
     // A released message: the first line tells who wrote and how to answer.
-    while (!app.next().is_null()) {
+    while (!app.next().empty()) {
     }
     app.send({{"type", "prompt"}, {"ref", 9}, {"session", "wsender"}, {"text", "please check"}, {"from", "M4/w8bb65867"},
               {"fromLabel", "phi-claude-voice"}});
@@ -257,7 +156,7 @@ int main(int argc, char **argv)
           "the released prompt starts with the sender line: " + typed.dump());
 
     // A plain prompt has no such line.
-    Client hook;
+    LineClient hook;
     hook.send({{"type", "hook"}, {"id", "wsender"}, {"event", {{"hook_event_name", "Stop"}}}});
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     app.send({{"type", "prompt"}, {"ref", 10}, {"session", "wsender"}, {"text", "plain"}});
@@ -266,7 +165,7 @@ int main(int argc, char **argv)
 
     // With the proposal's id and what it answers: both in the line, and the
     // way to answer names it.
-    Client hook2;
+    LineClient hook2;
     hook2.send({{"type", "hook"}, {"id", "wsender"}, {"event", {{"hook_event_name", "Stop"}, {"session_id", "x"}}}});
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     app.send({{"type", "prompt"}, {"ref", 11}, {"session", "wsender"}, {"text", "done"}, {"from", "M4/w8bb65867"},
@@ -281,9 +180,9 @@ int main(int argc, char **argv)
     // unless forced, and then the apps hear which went.
     app.send({{"type", "prompt"}, {"ref", 12}, {"session", "wsender"}, {"text", "waits"}});
     json accepted = app.next("accepted");
-    while (!accepted.is_null() && accepted.value("ref", 0) != 12)
+    while (!accepted.empty() && accepted.value("ref", 0) != 12)
         accepted = app.next("accepted");
-    check(!accepted.is_null() && accepted.value("delivery", "") == "queued", "a prompt waits behind the running turn");
+    check(!accepted.empty() && accepted.value("delivery", "") == "queued", "a prompt waits behind the running turn");
     r = run("daemon stop");
     check(r.status == 1 && r.out.find("not stopped: prompts are waiting") != std::string::npos
               && r.out.find("wsender \"sender-label\": 1 queued") != std::string::npos,
@@ -292,13 +191,10 @@ int main(int argc, char **argv)
     check(r.status == 0 && r.out.find("dropped: wsender ref 12: waits") != std::string::npos && r.out.find("daemon stopped") != std::string::npos,
           "--force stops it and names what went: " + r.out);
     const json dropped = app.next("dropped");
-    check(!dropped.is_null() && dropped.value("prompts", json::array()).size() == 1
+    check(!dropped.empty() && dropped.value("prompts", json::array()).size() == 1
               && dropped["prompts"][0].value("ref", 0) == 12 && dropped["prompts"][0].value("session", "") == "wsender",
           "every app gets dropped: " + dropped.dump());
-    int status = -1;
-    ::waitpid(daemon, &status, 0);
+    const int status = daemon.wait();
     check(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the daemon ended by itself");
-    std::filesystem::remove_all(home);
-    std::printf("%s\n", g_failed ? "FAILED" : "all passed");
-    return g_failed ? 1 : 0;
+    return finish();
 }

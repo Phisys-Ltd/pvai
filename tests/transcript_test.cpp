@@ -1,4 +1,5 @@
 // What the transcript tail makes of the user lines Claude Code writes.
+#include "support.h"
 #include "transcript.h"
 
 #include <cstdio>
@@ -8,14 +9,7 @@
 
 namespace {
 
-int failures = 0;
-
-void check(bool ok, const std::string &what)
-{
-    std::printf("%s %s\n", ok ? "ok  " : "FAIL", what.c_str());
-    if (!ok)
-        ++failures;
-}
+using pvai::test::check;
 
 std::string userLine(int n, const std::string &text)
 {
@@ -37,10 +31,8 @@ int main()
     check(!isMachinePrompt("<bash-inputs>x"), "only whole tag names");
     check(!isMachinePrompt("plain"), "plain text is the owner's");
 
-    char dir[] = "/tmp/pvai-transcript-XXXXXX";
-    if (!::mkdtemp(dir))
-        return 1;
-    const std::string path = std::string(dir) + "/t.jsonl";
+    const pvai::test::TestHome home("/tmp/pvai-transcript-", false);
+    const std::string path = home.path + "/t.jsonl";
     std::ofstream(path) << userLine(1, "<bash-input>ssh pi5 uptime</bash-input>")
                         << userLine(2, "<bash-stdout>\x1b[1mup\x1b[0m 3 days</bash-stdout><bash-stderr>warn\n</bash-stderr>")
                         << userLine(3, "<bash-stdout></bash-stdout><bash-stderr></bash-stderr>")
@@ -58,7 +50,7 @@ int main()
 
     // An idle compaction after a finished turn (Claude Code 2.1.31x): the
     // summary is no prompt, and no turn runs.
-    const std::string idle = std::string(dir) + "/idle.jsonl";
+    const std::string idle = home.path + "/idle.jsonl";
     pvai::json summary = pvai::json::parse(userLine(12, "This session is being continued from a previous conversation"));
     summary["isCompactSummary"] = true;
     summary["isVisibleInTranscriptOnly"] = true;
@@ -72,7 +64,7 @@ int main()
 
     // A background task's notification (string content) after a finished
     // turn is no turn: without a Stop it would hold the session busy.
-    const std::string notified = std::string(dir) + "/notified.jsonl";
+    const std::string notified = home.path + "/notified.jsonl";
     std::ofstream(notified) << userLine(20, "hello")
                             << R"({"type":"assistant","uuid":"u21","message":{"content":[{"type":"text","text":"hi"}]}})" "\n"
                             << R"({"type":"system","subtype":"turn_duration","uuid":"s20"})" "\n"
@@ -84,7 +76,7 @@ int main()
         got += e.value("kind", "") + ":" + e.value("text", "") + "|";
     check(got == "prompt:hello|text:hi|command:/compact|", "a compaction is a /compact entry, its summary none: " + got);
     // The text of the last local command's output.
-    const std::string local = std::string(dir) + "/local.jsonl";
+    const std::string local = home.path + "/local.jsonl";
     std::ofstream(local) << userLine(20, "<command-name>/model</command-name>")
                          << userLine(21, "<local-command-stdout>Kept model as \x1b[1mOpus 5.5\x1b[22m\n</local-command-stdout>");
     tail.follow(local);
@@ -95,7 +87,7 @@ int main()
     tail.poll();
     check(tail.localOutputs() == 2 && tail.lastLocalOutput().empty(), "an empty output clears it");
     // A line of the wrong shape is skipped; the lines after it still parse.
-    const std::string bad = std::string(dir) + "/bad.jsonl";
+    const std::string bad = home.path + "/bad.jsonl";
     std::ofstream(bad) << R"({"type":1})" "\n"
                        << R"({"type":"user","message":5})" "\n"
                        << R"({"type":"system","subtype":"local_command"})" "\n"
@@ -105,10 +97,5 @@ int main()
     for (const auto &e : tail.poll())
         got += e.value("kind", "") + ":" + e.value("text", "") + "|";
     check(got == "prompt:after the bad lines|", "malformed lines are skipped: " + got);
-    std::remove(bad.c_str());
-    std::remove(local.c_str());
-    std::remove(idle.c_str());
-    std::remove(path.c_str());
-    ::rmdir(dir);
-    return failures ? 1 : 0;
+    return pvai::test::finish();
 }

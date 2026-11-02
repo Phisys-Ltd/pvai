@@ -1,19 +1,13 @@
 // The screen model and the dialogs read off it, from drawn output.
 #include "screen.h"
+#include "support.h"
 
 #include <cstdio>
 #include <string>
 
 namespace {
 
-int failures = 0;
-
-void check(bool ok, const std::string &what)
-{
-    std::printf("%s %s\n", ok ? "ok  " : "FAIL", what.c_str());
-    if (!ok)
-        ++failures;
-}
+using pvai::test::check;
 
 void feed(pvai::Screen &screen, const std::string &data) { screen.feed(data.data(), data.size()); }
 
@@ -124,12 +118,11 @@ int main()
     std::string micBox;
     check(pvai::promptBox(mic, micBox) && micBox == "\xE2\x9D\xAF\xC2\xA0\xF0\x9F\x8E\x99 Okay, wie", "the prompt box with the mic mark: [" + micBox + "]");
 
-    std::printf(failures ? "FAILED\n" : "all passed\n");
     pvai::Screen select_(14, 70);
     // Claude Code's select list (/model with usage credits): its footer is "Enter to select".
     feed(select_, "\x1b[2J\x1b[H" + rule + "\r\n You've used your included Fable usage for this week\r\n\r\n \xE2\x9D\xAF 1. Switch to Opus and continue\r\n   2. Continue with usage credits\r\n   3. Manage on claude.ai\r\n\r\n \xE2\x86\x91/\xE2\x86\x93 to navigate \xC2\xB7 Enter to select \xC2\xB7 Esc to cancel");
     const std::string select = pvai::screenDialog(select_);
     check(select.find("Continue with usage credits") != std::string::npos && select.find("Enter to select") != std::string::npos,
           "a select list is a dialog: [" + select + "]");
-    return failures ? 1 : 0;
+    return pvai::test::finish();
 }

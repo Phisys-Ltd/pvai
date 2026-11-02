@@ -8,6 +8,7 @@
 //
 // usage: pvai-direct-test /path/to/pvai
 #include "pairing.h"
+#include "support.h"
 #include "tls.h"
 
 #include <cctype>
@@ -32,31 +33,18 @@
 #include <thread>
 
 using namespace pvai;
+using namespace pvai::test;
 
 namespace {
 
 std::string g_pvai;
 int g_port = 0;
-int g_failed = 0;
 bool g_aliases = true; // 127.0.0.2 and up can be bound
-pid_t g_daemon = -1;
+DaemonProcess g_daemon;
 
-void startDaemon()
-{
-    g_daemon = ::fork();
-    if (g_daemon == 0) {
-        const std::string port = std::to_string(g_port + 1);
-        ::execl(g_pvai.c_str(), "pvai", "daemon", "--port", port.c_str(), static_cast<char *>(nullptr));
-        ::_exit(127);
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-}
+void startDaemon() { g_daemon.start(g_pvai, g_port + 1); }
 
-void stopDaemon()
-{
-    ::kill(g_daemon, SIGTERM);
-    ::waitpid(g_daemon, nullptr, 0);
-}
+void stopDaemon() { g_daemon.stop(); }
 
 // Before a case that needs an address without failures behind it.
 void freshAddress()
@@ -78,27 +66,7 @@ bool canBind(unsigned source)
     return ok;
 }
 
-void check(bool ok, const std::string &what)
-{
-    std::printf("%s %s\n", ok ? "ok  " : "FAIL", what.c_str());
-    if (!ok)
-        ++g_failed;
-}
-
-std::string run(const std::string &args)
-{
-    std::string out;
-    FILE *pipe = ::popen((g_pvai + " " + args + " 2>&1").c_str(), "r");
-    if (!pipe)
-        return out;
-    char buffer[4096];
-    while (std::fgets(buffer, sizeof buffer, pipe))
-        out += buffer;
-    ::pclose(pipe);
-    while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
-        out.pop_back();
-    return out;
-}
+std::string run(const std::string &args) { return runPvai(g_pvai, args).out; }
 
 struct Link {
     std::string fp, code;
@@ -136,6 +104,7 @@ TestDevice newDevice(const std::string &name)
     BIO_free(bio);
     return d;
 }
+
 
 // A TLS client connection from 127.0.0.<source>.
 struct Client {
@@ -257,14 +226,8 @@ int main(int argc, char **argv)
     }
     ::signal(SIGPIPE, SIG_IGN);
     g_pvai = std::filesystem::absolute(argv[1]).string();
-    char home[] = "/tmp/pvai-test-XXXXXX";
-    if (!::mkdtemp(home))
-        return 2;
-    const std::string runtime = std::string(home) + "/run";
-    std::filesystem::create_directories(runtime);
-    std::filesystem::permissions(runtime, std::filesystem::perms::owner_all);
-    ::setenv("HOME", home, 1);
-    ::setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);
+    const TestHome testHome;
+    const std::string home = testHome.path;
     ::setenv("PVAI_CODEX", "", 1); // no Codex app server in the test's home
     g_port = 20000 + static_cast<int>(::getpid() % 20000);
     // PVAI_TEST_NO_ALIASES=1 takes the macOS way on Linux too.
@@ -354,7 +317,7 @@ int main(int argc, char **argv)
     }
     // A device list that cannot be written: revoke says so and revokes nothing.
     {
-        const std::string blocker = std::string(home) + "/.config/pvai/devices.json.new";
+        const std::string blocker = home + "/.config/pvai/devices.json.new";
         std::filesystem::create_directories(blocker);
         const std::string answer = run("revoke C 2>&1; echo status=$?");
         check(answer.find("could not write") != std::string::npos && answer.find("status=1") != std::string::npos
@@ -386,7 +349,5 @@ int main(int argc, char **argv)
     }
 
     stopDaemon();
-    std::filesystem::remove_all(home);
-    std::printf("%s\n", g_failed ? "FAILED" : "all passed");
-    return g_failed ? 1 : 0;
+    return finish();
 }

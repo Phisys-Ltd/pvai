@@ -4,42 +4,17 @@
 // `codex` are small scripts here, so nothing real starts.
 //
 // usage: pvai-session-test /path/to/pvai
-#include "common.h"
+#include "support.h"
 
-#include <poll.h>
-#include <signal.h>
-#ifdef __linux__
-#include <sys/prctl.h>
-#endif
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
-#include <atomic>
-#include <cstdio>
-#include <cstdlib>
-#include <deque>
-#include <filesystem>
 #include <fstream>
-#include <mutex>
-#include <string>
-#include <thread>
 
 using namespace pvai;
+using namespace pvai::test;
 namespace fs = std::filesystem;
 
 namespace {
 
 std::string g_pvai;
-int g_failed = 0;
-
-void check(bool ok, const std::string &what)
-{
-    std::printf("%s %s\n", ok ? "ok  " : "FAIL", what.c_str());
-    if (!ok)
-        ++g_failed;
-}
 
 void writeFile(const std::string &path, const std::string &text, bool executable = false)
 {
@@ -55,72 +30,6 @@ std::string readFile(const std::string &path)
     return std::string(std::istreambuf_iterator<char>(in), {});
 }
 
-// A line client on the daemon's unix socket.
-struct Client {
-    int fd = -1;
-    std::string buffer;
-
-    Client()
-    {
-        fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-        sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", daemonSocket().c_str());
-        ::connect(fd, reinterpret_cast<sockaddr *>(&addr), sizeof addr);
-    }
-    ~Client() { ::close(fd); }
-
-    void send(const json &message)
-    {
-        const std::string line = message.dump() + "\n";
-        (void)::write(fd, line.data(), line.size());
-    }
-
-    // The next message within `ms`; an empty object after (so that a
-    // missing answer fails a check instead of the test).
-    json next(int ms = 2000)
-    {
-        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
-        for (;;) {
-            if (const auto end = buffer.find('\n'); end != std::string::npos) {
-                const std::string line = buffer.substr(0, end);
-                buffer.erase(0, end + 1);
-                return json::parse(line, nullptr, false);
-            }
-            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now()).count();
-            pollfd p{fd, POLLIN, 0};
-            if (left <= 0 || ::poll(&p, 1, static_cast<int>(left)) <= 0)
-                return json::object();
-            char chunk[65536];
-            const ssize_t n = ::read(fd, chunk, sizeof chunk);
-            if (n <= 0)
-                return json::object();
-            buffer.append(chunk, static_cast<std::size_t>(n));
-        }
-    }
-
-    // The next message of that type (and, if given, matching `pred`).
-    json next(const std::string &type, const std::function<bool(const json &)> &pred = {}, int ms = 3000)
-    {
-        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
-        while (std::chrono::steady_clock::now() < until) {
-            const json message =
-                next(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now()).count()));
-            if (message.empty())
-                break;
-            if (message.is_object() && message.value("type", "") == type && (!pred || pred(message)))
-                return message;
-        }
-        return json::object();
-    }
-
-    void drain()
-    {
-        while (!next(100).empty()) {
-        }
-    }
-};
-
 json app()
 {
     return {{"type", "hello"}, {"client", "test-app"}, {"version", "0"}};
@@ -128,7 +37,7 @@ json app()
 
 void hook(const std::string &id, json event)
 {
-    Client c;
+    LineClient c;
     c.send({{"type", "hook"}, {"id", id}, {"event", std::move(event)}});
     c.next(300);
 }
@@ -150,7 +59,7 @@ json sub(const json &j, const char *key)
 }
 
 // The next `sessions` list in which `id` matches `pred`.
-json waitSession(Client &client, const std::string &id, const std::function<bool(const json &)> &pred, int ms = 3000)
+json waitSession(LineClient &client, const std::string &id, const std::function<bool(const json &)> &pred, int ms = 3000)
 {
     const json found = client.next("sessions", [&](const json &m) {
         const json s = sessionIn(m, id);
@@ -161,48 +70,14 @@ json waitSession(Client &client, const std::string &id, const std::function<bool
 
 // ---- A fake Codex app server: one WebSocket client on its control socket.
 
-class FakeCodex {
+class FakeCodex : public FakeServer {
 public:
-    explicit FakeCodex(const std::string &path)
-    {
-        fs::create_directories(fs::path(path).parent_path());
-        listen_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
-        sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path.c_str());
-        ::bind(listen_, reinterpret_cast<sockaddr *>(&addr), sizeof addr);
-        ::listen(listen_, 4);
-        thread_ = std::thread([this] { loop(); });
-    }
-    ~FakeCodex()
-    {
-        stop_ = true;
-        thread_.join();
-        ::close(listen_);
-    }
-
-    void send(const json &message)
-    {
-        std::lock_guard lock(mutex_);
-        out_.push_back(message);
-    }
+    explicit FakeCodex(const std::string &path) : FakeServer(path) { start(); }
+    ~FakeCodex() override { stop(); }
 
     // The first message from the daemon with that method (or a response with
     // that id) since the start, waiting up to 3 s; null when none came.
-    json received(const std::function<bool(const json &)> &pred, int ms = 3000)
-    {
-        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
-        while (std::chrono::steady_clock::now() < until) {
-            {
-                std::lock_guard lock(mutex_);
-                for (const auto &m : in_)
-                    if (pred(m))
-                        return m;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
-        return nullptr;
-    }
+    json received(const std::function<bool(const json &)> &pred, int ms = 3000) { return take(pred, ms, false); }
     json call(const std::string &method, const std::function<bool(const json &)> &params = {}, int ms = 3000)
     {
         return received([&](const json &m) { return m.value("method", "") == method && (!params || params(m.value("params", json()))); }, ms);
@@ -217,51 +92,21 @@ public:
                 {"status", {{"type", kidActive ? "active" : "idle"}, {"activeFlags", json::array()}}}};
     }
 
-private:
-    void loop()
+protected:
+    // The WebSocket upgrade.
+    void onAccept(int fd) override
     {
-        while (!stop_) {
-            pollfd p[2] = {{listen_, POLLIN, 0}, {client_, POLLIN, 0}};
-            ::poll(p, 2, 20);
-            if (p[0].revents & POLLIN)
-                accept();
-            if (client_ >= 0 && (p[1].revents & (POLLIN | POLLHUP))) {
-                char chunk[65536];
-                const ssize_t n = ::read(client_, chunk, sizeof chunk);
-                if (n <= 0) {
-                    ::close(client_);
-                    client_ = -1;
-                } else {
-                    in_raw_.append(chunk, static_cast<std::size_t>(n));
-                    frames();
-                }
-            }
-            std::deque<json> out;
-            {
-                std::lock_guard lock(mutex_);
-                out.swap(out_);
-            }
-            for (const auto &m : out)
-                frame(m.dump());
-        }
-        if (client_ >= 0)
-            ::close(client_);
-    }
-
-    void accept()
-    {
-        const int fd = ::accept(listen_, nullptr, nullptr);
         std::string request;
         char c;
         while (request.find("\r\n\r\n") == std::string::npos && ::read(fd, &c, 1) == 1)
             request += c;
         const std::string reply = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
         (void)::write(fd, reply.data(), reply.size());
-        client_ = fd;
     }
 
-    void frame(const std::string &payload)
+    std::string encode(const json &message) override
     {
+        const std::string payload = message.dump();
         std::string f(1, static_cast<char>(0x81));
         if (payload.size() < 126) {
             f += static_cast<char>(payload.size());
@@ -271,12 +116,12 @@ private:
             f += static_cast<char>(payload.size() & 0xff);
         }
         f += payload;
-        if (client_ >= 0)
-            (void)::write(client_, f.data(), f.size());
+        return f;
     }
 
-    void frames()
+    void onData(const std::string &chunk) override
     {
+        in_raw_.append(chunk);
         for (;;) {
             if (in_raw_.size() < 2)
                 return;
@@ -297,18 +142,15 @@ private:
             if (opcode != 1)
                 continue;
             const json message = json::parse(payload, nullptr, false);
-            {
-                std::lock_guard lock(mutex_);
-                in_.push_back(message);
-            }
-            answer(message);
+            push(message);
+            onMessage(message);
         }
     }
 
-    void reply(const json &id, const json &result) { frame(json({{"jsonrpc", "2.0"}, {"id", id}, {"result", result}}).dump()); }
+    void reply(const json &id, const json &result) { writeNow({{"jsonrpc", "2.0"}, {"id", id}, {"result", result}}); }
 
     // What the app server would say to each call.
-    void answer(const json &m)
+    void onMessage(const json &m) override
     {
         const std::string method = m.value("method", "");
         if (!m.contains("id") || method.empty())
@@ -333,7 +175,7 @@ private:
             else if (tid == "t-kid")
                 reply(id, {{"thread", kid()}});
             else
-                frame(json({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32600}, {"message", "no such thread"}}}}).dump());
+                writeNow({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32600}, {"message", "no such thread"}}}});
         } else if (method == "thread/items/list") {
             json data = json::array();
             if (params.value("threadId", "") == "t-tui")
@@ -358,13 +200,6 @@ private:
             reply(id, json::object());
     }
 
-    int listen_ = -1;
-    int client_ = -1;
-    std::atomic<bool> stop_{false};
-    std::thread thread_;
-    std::mutex mutex_;
-    std::deque<json> out_;
-    std::deque<json> in_;
     std::string in_raw_;
 };
 
@@ -373,58 +208,16 @@ private:
 // Kimi Code's `kimi acp`: the daemon starts bin/kimi, which runs this test
 // binary as a relay (--fake-kimi) between its stdio and this socket; the
 // test plays the agent, one JSON-RPC message per line.
-class FakeKimi {
+class FakeKimi : public FakeServer {
 public:
-    explicit FakeKimi(const std::string &path)
-    {
-        listen_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
-        sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path.c_str());
-        ::bind(listen_, reinterpret_cast<sockaddr *>(&addr), sizeof addr);
-        ::listen(listen_, 4);
-        thread_ = std::thread([this] { loop(); });
-    }
-    ~FakeKimi()
-    {
-        stop_ = true;
-        thread_.join();
-        ::close(listen_);
-    }
+    explicit FakeKimi(const std::string &path) : FakeServer(path, true) { start(); }
+    ~FakeKimi() override { stop(); }
 
-    void send(const json &message)
-    {
-        std::lock_guard lock(mutex_);
-        out_ += message.dump() + "\n";
-    }
     void update(const std::string &session, const json &update)
     {
         send({{"jsonrpc", "2.0"}, {"method", "session/update"}, {"params", {{"sessionId", session}, {"update", update}}}});
     }
-    void respond(const json &request, const json &result)
-    {
-        send({{"jsonrpc", "2.0"}, {"id", request["id"]}, {"result", result}});
-    }
 
-    // The first message from the daemon since the last take() that matches,
-    // waiting up to `ms`; null when none came. It is taken off the list.
-    json take(const std::function<bool(const json &)> &pred, int ms = 3000)
-    {
-        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
-        while (std::chrono::steady_clock::now() < until) {
-            {
-                std::lock_guard lock(mutex_);
-                for (auto it = in_.begin(); it != in_.end(); ++it)
-                    if (pred(*it)) {
-                        json m = *it;
-                        in_.erase(it);
-                        return m;
-                    }
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
-        return nullptr;
-    }
     json call(const std::string &method, int ms = 3000)
     {
         return take([&](const json &m) { return m.value("method", "") == method; }, ms);
@@ -433,52 +226,6 @@ public:
     {
         return take([&](const json &m) { return !m.contains("method") && m.value("id", json()) == id; }, ms);
     }
-
-private:
-    void loop()
-    {
-        std::string buffer;
-        while (!stop_) {
-            pollfd p[2] = {{listen_, POLLIN, 0}, {client_, POLLIN, 0}};
-            ::poll(p, 2, 20);
-            if (p[0].revents & POLLIN)
-                client_ = ::accept(listen_, nullptr, nullptr);
-            if (client_ >= 0 && (p[1].revents & (POLLIN | POLLHUP))) {
-                char chunk[65536];
-                const ssize_t n = ::read(client_, chunk, sizeof chunk);
-                if (n <= 0) {
-                    ::close(client_);
-                    client_ = -1;
-                } else {
-                    buffer.append(chunk, static_cast<std::size_t>(n));
-                    for (auto end = buffer.find('\n'); end != std::string::npos; end = buffer.find('\n')) {
-                        json m = json::parse(buffer.substr(0, end), nullptr, false);
-                        buffer.erase(0, end + 1);
-                        std::lock_guard lock(mutex_);
-                        in_.push_back(std::move(m));
-                    }
-                }
-            }
-            std::string out;
-            {
-                std::lock_guard lock(mutex_);
-                if (client_ >= 0)
-                    out.swap(out_);
-            }
-            if (!out.empty())
-                (void)::write(client_, out.data(), out.size());
-        }
-        if (client_ >= 0)
-            ::close(client_);
-    }
-
-    int listen_ = -1;
-    int client_ = -1;
-    std::atomic<bool> stop_{false};
-    std::thread thread_;
-    std::mutex mutex_;
-    std::deque<json> in_;
-    std::string out_;
 };
 
 // --fake-kimi SOCKET: stdin to the socket, the socket to stdout.
@@ -516,13 +263,9 @@ int main(int argc, char **argv)
     }
     ::signal(SIGPIPE, SIG_IGN);
     g_pvai = fs::canonical(argv[1]).string();
-    char homeBuf[] = "/tmp/pvai-test-XXXXXX";
-    if (!::mkdtemp(homeBuf))
-        return 2;
-    const std::string home = homeBuf;
-    const std::string runtime = home + "/run";
-    fs::create_directories(runtime);
-    fs::permissions(runtime, fs::perms::owner_all);
+    const TestHome testHome;
+    const std::string home = testHome.path;
+    const std::string runtime = testHome.runtime;
     const std::string bin = home + "/bin";
     // claude: a version that `update` raises, and a session that records
     // its arguments and waits. codex: an update that fails.
@@ -546,8 +289,6 @@ int main(int argc, char **argv)
               "  echo '2. Enter this one-time code (expires in 15 minutes)'; echo '   ABCD-12345'; sleep 1; touch \"$d/codex.in\";;\n"
               "logout) rm -f \"$d/codex.in\"; echo 'Logged out';;\nesac\n",
               true);
-    ::setenv("HOME", home.c_str(), 1);
-    ::setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);
     ::setenv("PATH", (bin + ":" + std::getenv("PATH")).c_str(), 1);
     ::setenv("PVAI_CODEX", (bin + "/codex").c_str(), 1);
     ::setenv("PVAI_CLAUDE", (bin + "/claude").c_str(), 1);
@@ -585,31 +326,23 @@ int main(int argc, char **argv)
     FakeCodex codex(home + "/.codex/app-server-control/app-server-control.sock");
     FakeKimi kimi(kimiSocket);
 
-    const pid_t daemon = ::fork();
-    if (daemon == 0) {
-#ifdef __linux__
-        ::prctl(PR_SET_PDEATHSIG, SIGTERM); // gone with the test, even when it crashes
-#endif
-        const std::string port = std::to_string(appPort);
-        ::execl(g_pvai.c_str(), "pvai", "daemon", "--port", port.c_str(), static_cast<char *>(nullptr));
-        ::_exit(127);
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    DaemonProcess daemon;
+    daemon.start(g_pvai, appPort, 1200, true);
 
     // A field of the wrong JSON type is one peer's error, not the daemon's end.
     {
-        Client bad;
+        LineClient bad;
         bad.send({{"type", 1}});
         const json answer = bad.next("error");
         check(answer.value("code", "") == "bad-message", "a non-string type is answered with bad-message: " + answer.dump());
-        Client typed;
+        LineClient typed;
         typed.send({{"type", "hello"}, {"client", 5}});
         check(typed.next("error").value("code", "") == "bad-message", "a wrong-typed field in a known message too");
-        Client ok;
+        LineClient ok;
         ok.send(app());
         check(ok.next("welcome").value("type", "") == "welcome", "the daemon still answers after wrong-typed messages");
     }
-    Client a;
+    LineClient a;
     a.send(app());
     json welcome = a.next("welcome");
     const json assistants = welcome.value("assistants", json());
@@ -635,7 +368,7 @@ int main(int argc, char **argv)
         kimi.send({{"jsonrpc", "2.0"}, {"id", call["id"]}, {"error", {{"code", -32000}, {"message", "Authentication required"}}}});
         check(a.next("rejected").value("reason", "") == "not-logged-in", "without a login: rejected not-logged-in");
         {
-            Client b;
+            LineClient b;
             b.send(app());
             const json again = b.next("welcome").value("assistants", json());
             check(again.size() == 3 && again[2].value("loggedIn", true) == false, "and welcome says loggedIn false");
@@ -857,7 +590,7 @@ int main(int argc, char **argv)
 
     // ---- A TUI started by pvai codex: its threads leave when it ends.
     {
-        Client tui;
+        LineClient tui;
         tui.send({{"type", "attach"}, {"assistant", "codex"}, {"cwd", "/tmp"}, {"resume", "t-tui"}, {"pid", 1}});
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         codex.send({{"method", "thread/started"}, {"params", {{"thread", {{"id", "t-tui2"}, {"parentThreadId", nullptr}}}}}});
@@ -886,7 +619,7 @@ int main(int argc, char **argv)
           "not by archiving");
 
     // ---- Claude in a terminal: a fake wrapper and hooks.
-    Client wrapper;
+    LineClient wrapper;
     wrapper.send({{"type", "register"}, {"id", "wterm"}, {"cwd", project}, {"label", "term"}});
     // (An old wrapper: no `restart` in its registration.)
     check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "starting"; }).empty(), "a wrapper registers, starting");
@@ -922,7 +655,7 @@ int main(int argc, char **argv)
     a.send({{"type", "stop"}, {"ref", 13}, {"session", "wterm"}});
     check(a.next("rejected").value("reason", "") == "not-detached", "a terminal session is the owner's to end");
     {
-        Client status;
+        LineClient status;
         status.send({{"type", "status"}, {"id", "wterm"}, {"status", {{"version", "1.0.0"}, {"model", {{"display_name", "Opus"}}}}}});
         json usage = a.next("usage", [](const json &m) { return m.value("session", "") == "wterm"; });
         check(sub(usage, "usage").value("version", "") == "1.0.0", "usage.version from the status line");
@@ -1004,7 +737,7 @@ int main(int argc, char **argv)
     hook("wterm", {{"hook_event_name", "SessionStart"}, {"session_id", "nested-9"}, {"source", "startup"}});
     hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "nested-9"}, {"prompt", "x"}});
     {
-        Client status;
+        LineClient status;
         status.send({{"type", "status"}, {"id", "wterm"}, {"status", {{"session_id", "nested-9"}, {"version", "9.9.9"}}}});
     }
     check(waitSession(a, "wterm", [](const json &s) {
@@ -1015,7 +748,7 @@ int main(int argc, char **argv)
     // A wrapper that verifies (0.5.15): a prompt counts once Claude Code
     // confirms it; one that did not go in waits in front of the queue.
     {
-        Client ver;
+        LineClient ver;
         ver.send({{"type", "register"}, {"id", "wver"}, {"cwd", project}, {"label", "ver"}, {"restart", true}, {"verify", true}});
         hook("wver", {{"hook_event_name", "SessionStart"}, {"session_id", "v-1"}, {"source", "startup"}});
         check(!waitSession(a, "wver", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a verifying wrapper's session");
@@ -1073,7 +806,7 @@ int main(int argc, char **argv)
     // 0.5.44: a typed ok:false without a screen is retried; trust answered in
     // the terminal; dialog keys; big hook events.
     {
-        Client rw;
+        LineClient rw;
         rw.send({{"type", "register"}, {"id", "wretry"}, {"cwd", project}, {"label", "retry"}, {"restart", true}, {"verify", true}});
         hook("wretry", {{"hook_event_name", "SessionStart"}, {"session_id", "r-1"}, {"source", "startup"}});
         check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a retry wrapper's session");
@@ -1131,7 +864,7 @@ int main(int argc, char **argv)
         check(json::accept(umlaut.dump()) && umlaut["last_assistant_message"].get<std::string>().find("\xC3\xA4") == std::string::npos,
               "big: a cut never splits a UTF-8 character");
 
-        Client tw;
+        LineClient tw;
         tw.send({{"type", "register"}, {"id", "wtrust"}, {"cwd", project}, {"label", "trust"}, {"restart", true}, {"verify", true}});
         tw.send({{"type", "dialog"}, {"kind", "trust"}});
         check(!waitSession(a, "wtrust", [](const json &s) { return s.value("dialog", "") == "trust"; }).empty(), "trust: the dialog is shown");
@@ -1143,7 +876,7 @@ int main(int argc, char **argv)
     // clear (0.5.30): empties the prompt box, a draft or a command left in
     // shell mode, and the queue goes on.
     {
-        Client clr;
+        LineClient clr;
         clr.send({{"type", "register"}, {"id", "wclr"}, {"cwd", project}, {"label", "clr"}, {"restart", true}, {"verify", true}, {"clear", true}});
         hook("wclr", {{"hook_event_name", "SessionStart"}, {"session_id", "c-1"}, {"source", "startup"}});
         json idle = waitSession(a, "wclr", [](const json &s) { return s.value("state", "") == "idle"; });
@@ -1177,7 +910,7 @@ int main(int argc, char **argv)
     // AskUserQuestion (0.5.33): the questions with their choices; option,
     // next and text answer them, the review comes last.
     {
-        Client qw;
+        LineClient qw;
         qw.send({{"type", "register"}, {"id", "wq"}, {"cwd", project}, {"label", "q"}, {"restart", true}, {"verify", true}, {"clear", true}, {"paced", true}});
         hook("wq", {{"hook_event_name", "SessionStart"}, {"session_id", "q-1"}, {"source", "startup"}});
         check(!waitSession(a, "wq", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a question session");
@@ -1205,7 +938,7 @@ int main(int argc, char **argv)
             }
             return std::string("none");
         };
-        auto wrapperKeys = [](Client &w) { return w.next("keys").value("data", ""); };
+        auto wrapperKeys = [](LineClient &w) { return w.next("keys").value("data", ""); };
         check(answer(60, "option:2") == "answered" && wrapperKeys(qw) == "2", "option:2 is the digit");
         check(!waitSession(a, "wq", [](const json &s) { return sub(s, "dialogInfo")["questions"][0]["selected"] == json::array({2}); }).empty(),
               "a multi-select choice is toggled on");
@@ -1235,7 +968,7 @@ int main(int argc, char **argv)
         writeFile(doneFile, prompt + "\n" + answer + "\n" + end + "\n");
         writeFile(runtime + "/pvai/wmid.claude", json({{"claudeSession", "mid-1"}, {"transcript", runFile}}).dump() + "\n");
         writeFile(runtime + "/pvai/wdone.claude", json({{"claudeSession", "done-1"}, {"transcript", doneFile}}).dump() + "\n");
-        Client mid, done;
+        LineClient mid, done;
         mid.send({{"type", "register"}, {"id", "wmid"}, {"cwd", project}, {"label", "mid"}, {"running", true}, {"restart", true}});
         done.send({{"type", "register"}, {"id", "wdone"}, {"cwd", project}, {"label", "done"}, {"running", true}, {"restart", true}});
         check(!waitSession(a, "wmid", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),
@@ -1247,7 +980,7 @@ int main(int argc, char **argv)
     // The permission mode: from the hooks and the footer; a change is
     // Shift+Tab until the footer shows it, once round the cycle at most.
     {
-        Client mw;
+        LineClient mw;
         mw.send({{"type", "register"}, {"id", "wmode"}, {"cwd", project}, {"label", "mode"}, {"restart", true}, {"verify", true},
                  {"modes", true}});
         hook("wmode", {{"hook_event_name", "SessionStart"}, {"session_id", "m-1"}, {"source", "startup"}, {"permission_mode", "default"}});
@@ -1272,7 +1005,7 @@ int main(int argc, char **argv)
         a.send({{"type", "mode"}, {"ref", 52}, {"session", "wmode"}, {"mode", "fast"}});
         check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 52; }).value("reason", "") == "unknown-mode",
               "an unknown mode is refused");
-        Client old;
+        LineClient old;
         old.send({{"type", "register"}, {"id", "wold"}, {"cwd", project}, {"label", "old"}, {"restart", true}, {"verify", true}});
         hook("wold", {{"hook_event_name", "SessionStart"}, {"session_id", "o-1"}, {"source", "startup"}});
         check(!waitSession(a, "wold", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "an older wrapper");
@@ -1287,7 +1020,7 @@ int main(int argc, char **argv)
     check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 34; }).value("reason", "") == "not-installed",
           "start without claude installed: not-installed");
     {
-        Client b;
+        LineClient b;
         b.send(app());
         const json list = b.next("welcome").value("assistants", json());
         check(!list.empty() && list[0].value("name", "") == "claude" && !list[0].value("installed", true),
@@ -1365,7 +1098,7 @@ int main(int argc, char **argv)
 
     // A session the app started that ends at once: the app hears why.
     {
-        Client early;
+        LineClient early;
         early.send({{"type", "register"}, {"id", "wearly"}, {"cwd", project}, {"label", "early"}, {"detached", true}, {"restart", true}});
         check(!waitSession(a, "wearly", [](const json &) { return true; }).empty(), "a detached session registers");
         early.send({{"type", "exited"}, {"status", 1}, {"screen", "line 1\nNot logged in \xC2\xB7 Please run /login"}});
@@ -1374,7 +1107,7 @@ int main(int argc, char **argv)
               "an early end is an attention with the last lines: " + ended.dump());
     }
     {
-        Client stopped;
+        LineClient stopped;
         stopped.send({{"type", "register"}, {"id", "wstop"}, {"cwd", project}, {"label", "stop"}, {"detached", true}, {"restart", true}});
         check(!waitSession(a, "wstop", [](const json &) { return true; }).empty(), "another detached session");
         a.send({{"type", "stop"}, {"ref", 35}, {"session", "wstop"}});
@@ -1554,16 +1287,7 @@ int main(int argc, char **argv)
     check(a.next("conversations").value("conversations", json()) == json::array(), "and has no conversations");
 
     // ---- Hooks: pvai run puts them in place, once.
-    auto shell = [](const std::string &command) {
-        std::string out;
-        if (FILE *pipe = ::popen((command + " 2>&1 </dev/null").c_str(), "r")) {
-            char buffer[4096];
-            while (std::fgets(buffer, sizeof buffer, pipe))
-                out += buffer;
-            ::pclose(pipe);
-        }
-        return out;
-    };
+    auto shell = [](const std::string &command) { return runCommand(command + " </dev/null", false).out; };
     const std::string settings = home + "/.claude/settings.json";
     writeFile(settings, R"({"model": "opus", "statusLine": {"type": "command", "command": "my-line"}})");
     const std::string claudeJson = home + "/.claude.json";
@@ -1594,9 +1318,6 @@ int main(int argc, char **argv)
     check(shell(g_pvai + " uninstall-hooks").find("no pvai hooks") != std::string::npos,
           "a second uninstall-hooks leaves the file alone");
 
-    ::kill(daemon, SIGTERM);
-    ::waitpid(daemon, nullptr, 0);
-    fs::remove_all(home);
-    std::printf("%s\n", g_failed ? "FAILED" : "all passed");
-    return g_failed ? 1 : 0;
+    daemon.stop();
+    return finish();
 }
