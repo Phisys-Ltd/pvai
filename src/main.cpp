@@ -280,57 +280,75 @@ int uninstallHooks()
                           "pvai's hooks and status line removed from");
 }
 
-int localClient(const json &first, bool follow, bool startDaemon = false)
+int noDaemon()
+{
+    std::fprintf(stderr, "pvai: no daemon\n");
+    return 1;
+}
+
+enum class Talk { Done, NoDaemon, Timeout, Closed };
+
+// Connects to the daemon (starting it when asked), says hello (a client of
+// the app's kind), sends `first` when it is a message, and hands every
+// answer to `handler` until that returns true. Timeout: nothing came within
+// `timeoutMs` (-1: no limit); Closed: the daemon went away.
+// `retryInterrupted`: a signal during the wait is no timeout.
+Talk talkToDaemon(bool startDaemon, bool hello, const json &first, int timeoutMs,
+                  const std::function<bool(Conn &, const json &)> &handler, bool retryInterrupted = false)
 {
     const int fd = openDaemon(startDaemon);
-    if (fd < 0) {
-        std::fprintf(stderr, "pvai: no daemon\n");
-        return 1;
-    }
+    if (fd < 0)
+        return Talk::NoDaemon;
     Conn conn(fd);
-    conn.send({{"type", "hello"}, {"client", "pvai"}, {"version", kVersion}});
+    if (hello)
+        conn.send({{"type", "hello"}, {"client", "pvai"}, {"version", kVersion}});
     if (!first.is_null())
         conn.send(first);
     for (;;) {
         pollfd p{conn.fd(), static_cast<short>(POLLIN | (conn.wantsWrite() ? POLLOUT : 0)), 0};
-        if (::poll(&p, 1, follow ? -1 : 3000) <= 0)
-            return follow ? 1 : 2;
+        const int ready = ::poll(&p, 1, timeoutMs);
+        if (ready < 0 ? !(retryInterrupted && errno == EINTR) : ready == 0)
+            return Talk::Timeout;
         std::vector<json> messages;
         const bool alive = conn.readMessages(messages) && conn.flush();
-        for (const auto &message : messages) {
-            std::cout << message.dump() << std::endl;
-            const std::string type = message.is_object() ? message.value("type", "") : "";
-            if (!follow && (type == "accepted" || type == "answered" || type == "inputCleared" || type == "forgotten" || type == "started" || type == "stopping"))
-                return 0;
-            if (!follow && (type == "rejected" || (type == "sessions" && first.is_null())))
-                return type == "rejected" ? 1 : 0;
-        }
+        for (const auto &message : messages)
+            if (handler(conn, message))
+                return Talk::Done;
         if (!alive)
-            return 1;
+            return Talk::Closed;
     }
+}
+
+int localClient(const json &first, bool follow, bool startDaemon = false)
+{
+    int status = 1;
+    const Talk talk = talkToDaemon(startDaemon, true, first, follow ? -1 : 3000, [&](Conn &, const json &message) {
+        std::cout << message.dump() << std::endl;
+        const std::string type = message.is_object() ? message.value("type", "") : "";
+        if (!follow && (type == "accepted" || type == "answered" || type == "inputCleared" || type == "forgotten" || type == "started" || type == "stopping")) {
+            status = 0;
+            return true;
+        }
+        if (!follow && (type == "rejected" || (type == "sessions" && first.is_null()))) {
+            status = type == "rejected" ? 1 : 0;
+            return true;
+        }
+        return false;
+    });
+    if (talk == Talk::NoDaemon)
+        return noDaemon();
+    if (talk == Talk::Timeout)
+        return follow ? 1 : 2;
+    return talk == Talk::Done ? status : 1;
 }
 
 // A request to the daemon that is no app's: no hello; `each` sees every
 // answer and returns true when it was the last.
 int adminRequest(const json &request, bool startDaemon, const std::function<bool(const json &)> &each)
 {
-    const int fd = openDaemon(startDaemon);
-    if (fd < 0)
-        return -1;
-    Conn conn(fd);
-    conn.send(request);
-    for (;;) {
-        pollfd p{conn.fd(), static_cast<short>(POLLIN | (conn.wantsWrite() ? POLLOUT : 0)), 0};
-        if (::poll(&p, 1, -1) < 0 && errno != EINTR)
-            return 1;
-        std::vector<json> messages;
-        const bool alive = conn.readMessages(messages) && conn.flush();
-        for (const auto &message : messages)
-            if (message.is_object() && each(message))
-                return 0;
-        if (!alive)
-            return 1;
-    }
+    const Talk talk = talkToDaemon(startDaemon, false, request, -1,
+                                   [&](Conn &, const json &message) { return message.is_object() && each(message); }, true);
+    return talk == Talk::NoDaemon ? -1 : talk == Talk::Done ? 0 : 1;
 }
 
 // An agent message for the owner to release in the app; never waits for it.
@@ -338,45 +356,34 @@ int runPropose(const std::string &to, std::string text, bool fromStdin, const st
 {
     if (fromStdin)
         text.assign(std::istreambuf_iterator<char>(std::cin), {});
-    const int fd = openDaemon(false);
-    if (fd < 0) {
-        std::fprintf(stderr, "pvai: no daemon\n");
-        return 1;
-    }
     const char *from = std::getenv(kEnvId);
-    Conn conn(fd);
-    conn.send({{"type", "hello"}, {"client", "pvai"}, {"version", kVersion}});
     json propose = {{"type", "propose"}, {"ref", "cli"}, {"to", to}, {"text", text}, {"from", from ? from : ""}};
     if (!replyTo.empty())
         propose["replyTo"] = replyTo;
-    conn.send(propose);
-    for (;;) {
-        pollfd p{conn.fd(), static_cast<short>(POLLIN | (conn.wantsWrite() ? POLLOUT : 0)), 0};
-        if (::poll(&p, 1, 3000) <= 0)
-            return 1;
-        std::vector<json> messages;
-        const bool alive = conn.readMessages(messages) && conn.flush();
-        for (const auto &message : messages) {
-            const std::string type = message.is_object() ? message.value("type", "") : "";
-            if (type == "proposed") {
-                const int apps = message.value("apps", 0);
-                std::printf("%s to %s: ", message.value("id", "").c_str(), message.value("to", to).c_str());
-                if (apps > 0)
-                    std::printf("waiting for the owner in the app (%d app%s connected)\n", apps, apps == 1 ? "" : "s");
-                else
-                    std::printf("waiting for the owner in the app (no app connected now; it waits up to 24 hours)\n");
-                return 0;
-            }
-            if (type == "rejected") {
-                const std::string reason = message.value("reason", "");
-                std::fprintf(stderr, "pvai: not proposed: %s%s\n", reason.c_str(),
-                             reason == "ambiguous-target" ? " (several sessions have that label: use the id, see pvai peers)" : "");
-                return 1;
-            }
+    int status = 1;
+    const Talk talk = talkToDaemon(false, true, propose, 3000, [&](Conn &, const json &message) {
+        const std::string type = message.is_object() ? message.value("type", "") : "";
+        if (type == "proposed") {
+            const int apps = message.value("apps", 0);
+            std::printf("%s to %s: ", message.value("id", "").c_str(), message.value("to", to).c_str());
+            if (apps > 0)
+                std::printf("waiting for the owner in the app (%d app%s connected)\n", apps, apps == 1 ? "" : "s");
+            else
+                std::printf("waiting for the owner in the app (no app connected now; it waits up to 24 hours)\n");
+            status = 0;
+            return true;
         }
-        if (!alive)
-            return 1;
-    }
+        if (type == "rejected") {
+            const std::string reason = message.value("reason", "");
+            std::fprintf(stderr, "pvai: not proposed: %s%s\n", reason.c_str(),
+                         reason == "ambiguous-target" ? " (several sessions have that label: use the id, see pvai peers)" : "");
+            return true;
+        }
+        return false;
+    });
+    if (talk == Talk::NoDaemon)
+        return noDaemon();
+    return talk == Talk::Done ? status : 1;
 }
 
 // The sessions an agent can write to: this host's, then the other hosts'
@@ -387,47 +394,43 @@ int runPropose(const std::string &to, std::string text, bool fromStdin, const st
 // listed. restart starts a new daemon once the old one has let go.
 int runDaemonControl(bool restart, bool force)
 {
-    const int fd = openDaemon(false);
-    if (fd < 0) {
+    bool refused = false;
+    const Talk talk = talkToDaemon(false, true, {{"type", "shutdown"}, {"ref", "cli"}, {"force", force}}, 5000,
+                                   [&](Conn &, const json &message) {
+        const std::string type = message.is_object() ? message.value("type", "") : "";
+        if (type == "rejected" && message.value("reason", "") == "queued") {
+            std::fprintf(stderr, "pvai: not stopped: prompts are waiting\n");
+            for (const auto &w : message.value("waiting", json::array()))
+                std::fprintf(stderr, "  %s \"%s\": %d queued\n", w.value("session", "").c_str(), w.value("label", "").c_str(),
+                             w.value("queued", 0));
+            std::fprintf(stderr, "pvai daemon %s --force drops them\n", restart ? "restart" : "stop");
+            refused = true;
+            return true;
+        }
+        if (type == "shutting-down") {
+            for (const auto &d : message.value("dropped", json::array()))
+                std::printf("dropped: %s ref %s: %s\n", d.value("session", "").c_str(), d.value("ref", json()).dump().c_str(),
+                            d.value("text", "").c_str());
+            return true;
+        }
+        return false;
+    });
+    if (talk == Talk::NoDaemon) {
         if (!restart) {
             std::printf("no daemon running\n");
             return 0;
         }
     } else {
-        Conn conn(fd);
-        conn.send({{"type", "hello"}, {"client", "pvai"}, {"version", kVersion}});
-        conn.send({{"type", "shutdown"}, {"ref", "cli"}, {"force", force}});
-        bool done = false;
-        while (!done) {
-            pollfd p{conn.fd(), static_cast<short>(POLLIN | (conn.wantsWrite() ? POLLOUT : 0)), 0};
-            if (::poll(&p, 1, 5000) <= 0) {
-                std::fprintf(stderr, "pvai: the daemon did not answer\n");
-                return 1;
-            }
-            std::vector<json> messages;
-            const bool alive = conn.readMessages(messages) && conn.flush();
-            for (const auto &message : messages) {
-                const std::string type = message.is_object() ? message.value("type", "") : "";
-                if (type == "rejected" && message.value("reason", "") == "queued") {
-                    std::fprintf(stderr, "pvai: not stopped: prompts are waiting\n");
-                    for (const auto &w : message.value("waiting", json::array()))
-                        std::fprintf(stderr, "  %s \"%s\": %d queued\n", w.value("session", "").c_str(), w.value("label", "").c_str(),
-                                     w.value("queued", 0));
-                    std::fprintf(stderr, "pvai daemon %s --force drops them\n", restart ? "restart" : "stop");
-                    return 1;
-                }
-                if (type == "shutting-down") {
-                    for (const auto &d : message.value("dropped", json::array()))
-                        std::printf("dropped: %s ref %s: %s\n", d.value("session", "").c_str(), d.value("ref", json()).dump().c_str(),
-                                    d.value("text", "").c_str());
-                    done = true;
-                }
-            }
-            if (!alive && !done) {
-                std::fprintf(stderr, "pvai: the daemon closed the connection\n");
-                return 1;
-            }
+        if (talk == Talk::Timeout) {
+            std::fprintf(stderr, "pvai: the daemon did not answer\n");
+            return 1;
         }
+        if (talk == Talk::Closed) {
+            std::fprintf(stderr, "pvai: the daemon closed the connection\n");
+            return 1;
+        }
+        if (refused)
+            return 1;
         // Gone once its socket stops answering.
         for (int i = 0; i < 50; ++i) {
             const int probe = connectUnix(daemonSocket());
@@ -454,69 +457,50 @@ int runDaemonControl(bool restart, bool force)
 // Follows the task's events; a login that wants a code back reads it.
 int runSetup(const std::string &verb, const std::string &assistant)
 {
-    const int fd = openDaemon(true);
-    if (fd < 0) {
-        std::fprintf(stderr, "pvai: no daemon\n");
-        return 1;
-    }
-    Conn conn(fd);
-    conn.send({{"type", "hello"}, {"client", "pvai"}, {"version", kVersion}});
-    conn.send({{"type", verb}, {"ref", "cli"}, {"assistant", assistant}});
     std::string shown;
-    for (;;) {
-        pollfd p{conn.fd(), static_cast<short>(POLLIN | (conn.wantsWrite() ? POLLOUT : 0)), 0};
-        if (::poll(&p, 1, -1) <= 0)
-            return 1;
-        std::vector<json> messages;
-        const bool alive = conn.readMessages(messages) && conn.flush();
-        for (const auto &m : messages) {
-            const std::string type = m.is_object() ? m.value("type", "") : "";
-            if (type == "rejected" && m.value("ref", json()) == "cli") {
-                std::fprintf(stderr, "pvai: %s %s refused: %s\n", verb.c_str(), assistant.c_str(), m.value("reason", "").c_str());
-                return 1;
-            }
-            if (type != verb || m.value("assistant", "") != assistant)
-                continue;
-            auto field = [&](const char *key) { return m.contains(key) && m[key].is_string() ? m[key].get<std::string>() : std::string(); };
-            const std::string state = field("state");
-            std::string line = state;
-            for (const char *key : {"step", "url", "code", "text", "error"})
-                if (const std::string v = field(key); !v.empty())
-                    line += std::string("  ") + key + ": " + v;
-            if (line != shown) {
-                std::printf("%s\n", line.c_str());
-                std::fflush(stdout);
-                shown = line;
-            }
-            if (state == "code-needed") {
-                std::printf("code from the page: ");
-                std::fflush(stdout);
-                std::string code;
-                if (!std::getline(std::cin, code))
-                    return 1;
-                conn.send({{"type", "login-code"}, {"ref", "cli"}, {"assistant", assistant}, {"code", code}});
-            }
-            if (state == "done")
-                return 0;
-            if (state == "failed")
-                return 1;
+    int status = 1;
+    const Talk talk = talkToDaemon(true, true, {{"type", verb}, {"ref", "cli"}, {"assistant", assistant}}, -1,
+                                   [&](Conn &conn, const json &m) {
+        const std::string type = m.is_object() ? m.value("type", "") : "";
+        if (type == "rejected" && m.value("ref", json()) == "cli") {
+            std::fprintf(stderr, "pvai: %s %s refused: %s\n", verb.c_str(), assistant.c_str(), m.value("reason", "").c_str());
+            return true;
         }
-        if (!alive)
-            return 1;
-    }
+        if (type != verb || m.value("assistant", "") != assistant)
+            return false;
+        auto field = [&](const char *key) { return m.contains(key) && m[key].is_string() ? m[key].get<std::string>() : std::string(); };
+        const std::string state = field("state");
+        std::string line = state;
+        for (const char *key : {"step", "url", "code", "text", "error"})
+            if (const std::string v = field(key); !v.empty())
+                line += std::string("  ") + key + ": " + v;
+        if (line != shown) {
+            std::printf("%s\n", line.c_str());
+            std::fflush(stdout);
+            shown = line;
+        }
+        if (state == "code-needed") {
+            std::printf("code from the page: ");
+            std::fflush(stdout);
+            std::string code;
+            if (!std::getline(std::cin, code))
+                return true;
+            conn.send({{"type", "login-code"}, {"ref", "cli"}, {"assistant", assistant}, {"code", code}});
+        }
+        if (state == "done") {
+            status = 0;
+            return true;
+        }
+        return state == "failed";
+    });
+    if (talk == Talk::NoDaemon)
+        return noDaemon();
+    return talk == Talk::Done ? status : 1;
 }
 
 int runPeers()
 {
-    const int fd = openDaemon(false);
-    if (fd < 0) {
-        std::fprintf(stderr, "pvai: no daemon\n");
-        return 1;
-    }
     const char *me = std::getenv(kEnvId);
-    Conn conn(fd);
-    conn.send({{"type", "hello"}, {"client", "pvai"}, {"version", kVersion}});
-    conn.send({{"type", "listPeers"}});
     auto line = [&](const std::string &host, const json &s) {
         const std::string id = s.value("session", "");
         std::string text = "  " + host + "/" + id;
@@ -527,37 +511,31 @@ int runPeers()
             text += "  (this session)";
         std::printf("%s\n", text.c_str());
     };
-    for (;;) {
-        pollfd p{conn.fd(), static_cast<short>(POLLIN | (conn.wantsWrite() ? POLLOUT : 0)), 0};
-        if (::poll(&p, 1, 3000) <= 0)
-            return 1;
-        std::vector<json> messages;
-        const bool alive = conn.readMessages(messages) && conn.flush();
-        for (const auto &message : messages) {
-            if (!message.is_object() || message.value("type", "") != "peerList")
-                continue;
-            const std::string self = message.value("self", "");
-            std::printf("this host (%s):\n", self.c_str());
-            if (message["local"].empty())
-                std::printf("  no sessions\n");
-            for (const auto &s : message["local"])
-                line(self, s);
-            if (message["at"].is_null()) {
-                std::printf("other hosts: not known here (no app has sent them since the daemon started)\n");
-                return 0;
-            }
-            const long long age = static_cast<long long>(std::time(nullptr)) - message["at"].get<long long>();
-            std::printf("other hosts (from the app, %lld min ago):\n", age / 60);
-            if (message["peers"].empty())
-                std::printf("  none\n");
-            for (const auto &s : message["peers"])
-                line(s.value("host", ""), s);
-            std::printf("write to one with: pvai propose HOST/SESSION \"TEXT\" (a label works instead of the id when only one session has it)\n");
-            return 0;
+    const Talk talk = talkToDaemon(false, true, {{"type", "listPeers"}}, 3000, [&](Conn &, const json &message) {
+        if (!message.is_object() || message.value("type", "") != "peerList")
+            return false;
+        const std::string self = message.value("self", "");
+        std::printf("this host (%s):\n", self.c_str());
+        if (message["local"].empty())
+            std::printf("  no sessions\n");
+        for (const auto &s : message["local"])
+            line(self, s);
+        if (message["at"].is_null()) {
+            std::printf("other hosts: not known here (no app has sent them since the daemon started)\n");
+            return true;
         }
-        if (!alive)
-            return 1;
-    }
+        const long long age = static_cast<long long>(std::time(nullptr)) - message["at"].get<long long>();
+        std::printf("other hosts (from the app, %lld min ago):\n", age / 60);
+        if (message["peers"].empty())
+            std::printf("  none\n");
+        for (const auto &s : message["peers"])
+            line(s.value("host", ""), s);
+        std::printf("write to one with: pvai propose HOST/SESSION \"TEXT\" (a label works instead of the id when only one session has it)\n");
+        return true;
+    });
+    if (talk == Talk::NoDaemon)
+        return noDaemon();
+    return talk == Talk::Done ? 0 : 1;
 }
 
 int runListen(const std::vector<std::string> &args)
