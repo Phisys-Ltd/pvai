@@ -183,6 +183,15 @@ json Session::describe() const
             {"claudeSession", nullptr}};
 }
 
+std::vector<Prompt> Session::unsent() const
+{
+    std::vector<Prompt> out;
+    for (const auto &p : queue_)
+        if (!p.modelSwitch)
+            out.push_back(p);
+    return out;
+}
+
 bool Session::prompt(const Prompt &prompt)
 {
     queue_.push_back(prompt);

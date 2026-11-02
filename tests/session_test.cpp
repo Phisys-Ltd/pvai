@@ -1118,6 +1118,24 @@ int main(int argc, char **argv)
               "a stopped session's end says nothing");
     }
 
+    // 0.5.52: a session that ends with a prompt not taken tells every app,
+    // with the whole text.
+    {
+        const std::string longText = std::string(300, 'x') + " the end";
+        {
+            LineClient dying;
+            dying.send({{"type", "register"}, {"id", "wdrop"}, {"cwd", project}, {"label", "drop"}, {"restart", true}, {"verify", true}});
+            check(!waitSession(a, "wdrop", [](const json &) { return true; }).empty(), "dropped: a session registers");
+            a.send({{"type", "prompt"}, {"ref", 700}, {"session", "wdrop"}, {"text", longText}});
+            check(!waitSession(a, "wdrop", [](const json &s) { return s.value("queued", 0) == 1; }).empty(), "dropped: one prompt waits");
+        }
+        const json dropped = a.next("dropped", [](const json &m) { return !m.value("prompts", json::array()).empty(); });
+        const json first = dropped.value("prompts", json::array()).empty() ? json::object() : dropped["prompts"][0];
+        check(first.value("session", "") == "wdrop" && first.value("ref", 0) == 700 && first.value("text", "") == longText
+                  && !first.contains("kept"),
+              "a session without a conversation id ends: dropped, full text, no kept: " + dropped.dump());
+    }
+
     // Subagents: running while their meta file has no `finished`; a task
     // notification starts a turn without UserPromptSubmit.
     const std::string run2 = home + "/elsewhere/run-2.jsonl";

@@ -413,7 +413,7 @@ int runDaemonControl(bool restart, bool force)
         if (type == "shutting-down") {
             for (const auto &d : message.value("dropped", json::array()))
                 std::printf("dropped: %s ref %s: %s\n", d.value("session", "").c_str(), d.value("ref", json()).dump().c_str(),
-                            d.value("text", "").c_str());
+                            cut(oneLine(d.value("text", ""), 400), 80).c_str());
             return true;
         }
         return false;

@@ -33,6 +33,7 @@ public:
     bool clearable() const override { return canClear_ && (state_ == "idle" || (state_ == "waiting" && blocked_)); }
     std::string clear() override;
     json history(int limit) override;
+    std::vector<Prompt> unsent() const override;
     void tick(Clock::time_point now) override;
     std::optional<Clock::time_point> deadline() const override;
 

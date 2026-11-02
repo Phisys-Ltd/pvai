@@ -74,6 +74,9 @@ public:
     // true when it went in at once.
     bool prompt(const Prompt &prompt);
     const std::deque<Prompt> &queued() const { return queue_; }
+    // What the app sent and the assistant has not taken: a prompt typed
+    // and not confirmed yet, then the queue. Not the daemon's own commands.
+    virtual std::vector<Prompt> unsent() const;
     // A typed prompt counts only once the assistant confirms it (`delivered`).
     virtual bool confirmsDelivery() const { return false; }
     virtual std::string answer(const std::string &choice) = 0;

@@ -178,6 +178,16 @@ json ClaudeSession::describe() const
     return entry;
 }
 
+std::vector<Prompt> ClaudeSession::unsent() const
+{
+    std::vector<Prompt> out;
+    if (inFlight_ && !inFlight_->modelSwitch)
+        out.push_back(*inFlight_);
+    for (const auto &p : Session::unsent())
+        out.push_back(p);
+    return out;
+}
+
 // A slash or shell command went in: it ends with its output.
 void ClaudeSession::markSlash(const Prompt &prompt)
 {

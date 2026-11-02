@@ -409,8 +409,13 @@ private:
                 logLine("pairing window closed");
             }
             // The session holds the wrapper's connection: it goes first.
-            if (peer->kind == Kind::Wrapper && sessions_.erase(peer->sessionId))
-                sessionsDirty_ = true;
+            if (peer->kind == Kind::Wrapper) {
+                if (const auto found = sessions_.find(peer->sessionId); found != sessions_.end()) {
+                    sessionGone(*found->second);
+                    sessions_.erase(found);
+                    sessionsDirty_ = true;
+                }
+            }
             if (peer->kind == Kind::Process)
                 if (Backend *owner = backend(peer->assistant))
                     owner->processEnded(peer->serial);
@@ -421,8 +426,26 @@ private:
 
     void sweepSessions()
     {
-        if (std::erase_if(sessions_, [](const auto &entry) { return entry.second->ended(); }))
+        if (std::erase_if(sessions_, [this](const auto &entry) {
+                if (!entry.second->ended())
+                    return false;
+                sessionGone(*entry.second);
+                return true;
+            }))
             sessionsDirty_ = true;
+    }
+
+    // A session is over: the prompts it did not take are lost, and every
+    // app hears which (with their whole text).
+    void sessionGone(Session &session)
+    {
+        json dropped = json::array();
+        for (const auto &p : session.unsent())
+            dropped.push_back({{"session", session.id()}, {"ref", p.ref}, {"text", p.text}});
+        if (dropped.empty())
+            return;
+        logLine(session.id() + ": ended with " + std::to_string(dropped.size()) + " prompt(s) not taken");
+        broadcast({{"type", "dropped"}, {"prompts", dropped}});
     }
 
     void serviceJobs(const std::vector<pid_t> &readable)
@@ -1109,7 +1132,7 @@ private:
                 continue;
             waiting.push_back({{"session", session->id()}, {"label", session->label()}, {"queued", session->queued().size()}});
             for (const auto &p : session->queued())
-                dropped.push_back({{"session", session->id()}, {"ref", p.ref}, {"text", cut(oneLine(p.text, 400), 80)}});
+                dropped.push_back({{"session", session->id()}, {"ref", p.ref}, {"text", p.text}});
         }
         if (!dropped.empty() && !message.value("force", false)) {
             peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", "queued"}, {"waiting", waiting}});
