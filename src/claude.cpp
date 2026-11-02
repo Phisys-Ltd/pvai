@@ -178,7 +178,7 @@ json ClaudeSession::describe() const
 // A slash or shell command went in: it ends with its output.
 void ClaudeSession::markSlash(const Prompt &prompt)
 {
-    tail_.poll();
+    drain();
     slashPending_ = true;
     slashModel_ = prompt.modelSwitch;
     slashShell_ = prompt.text[0] == '!';
@@ -452,7 +452,7 @@ std::string DetachedClaudeSession::stop()
 
 json ClaudeSession::history(int limit)
 {
-    tail_.poll();
+    drain();
     const auto &recent = tail_.recent();
     const std::size_t n = std::min<std::size_t>(recent.size(), static_cast<std::size_t>(std::max(0, limit)));
     json entries = json::array();
@@ -567,7 +567,7 @@ void ClaudeSession::onHook(const json &event)
         // call in the transcript is the one that waits.
         dialogInfo_ = dialogInfo("", "", text);
         if (dialog_ == "permission") {
-            tail_.poll();
+            drain();
             const auto &recent = tail_.recent();
             for (auto it = recent.rbegin(); it != recent.rend(); ++it)
                 if (str(*it, "kind") == "tool") {
@@ -986,7 +986,7 @@ void ClaudeSession::catchUp()
 {
     if (transcript_.empty())
         return;
-    sendEntries(tail_.poll());
+    drain();
     tail_.settleWakes();
     wakeMark_ = tail_.wakeTurns();
 }
@@ -997,6 +997,15 @@ void ClaudeSession::remember() const
 {
     std::ofstream(runtimeDir() + "/" + id_ + ".claude")
         << json({{"claudeSession", claudeSession_}, {"transcript", transcript_}}).dump() << "\n";
+}
+
+// Entries the transcript got since the last read go to the subscribers, so
+// that a read for another purpose (history, a dialog's tool call) loses none.
+// The cache, wake and slash bookkeeping stays in pollTranscript: it reacts
+// to state changes and runs on the tick, and these reads only look.
+void ClaudeSession::drain()
+{
+    sendEntries(tail_.poll());
 }
 
 void ClaudeSession::pollTranscript()

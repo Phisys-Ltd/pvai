@@ -1,3 +1,18 @@
+pvai (0.5.43-1) trixie; urgency=medium
+
+  * Daemon hardening. A message with a field of the wrong JSON type no
+    longer kills the daemon: the peer gets bad-message and is closed (a
+    pairing peer counts it as a bad proof); transcript lines of the wrong
+    shape are skipped. TLS connections set ACCEPT_MOVING_WRITE_BUFFER and
+    ENABLE_PARTIAL_WRITE, so a full socket buffer no longer breaks them.
+    runtimeDir refuses a directory that is no private directory of the
+    user. A TCP app silent for 60 s, a peer without hello for 10 s and one
+    with 4 MB unsent are dropped; accepted TCP sockets keep alive.
+    Transcript entries read for history, a dialog or a slash command now
+    reach the subscribers too.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 02 Nov 2026 12:00:00 +0000
+
 pvai (0.5.42-1) trixie; urgency=medium
 
   * The screen model counts emoji columns as Claude Code does: two for

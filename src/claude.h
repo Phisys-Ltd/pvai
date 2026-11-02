@@ -61,6 +61,7 @@ private:
     void pollTranscript();
     void scanSubagents(Clock::time_point now);
     void catchUp();
+    void drain(); // reads the transcript and hands the new entries to the subscribers
     void remember() const;
     void openScreenDialog();
     bool ours(const std::string &claudeSession, const std::string &source) const;

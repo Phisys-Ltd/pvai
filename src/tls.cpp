@@ -264,6 +264,8 @@ TlsServer::TlsServer(std::function<bool(const std::string &)> admit)
         return;
     }
     // No resumption: every connection shows its certificate again.
+    // The send buffer moves between retries, and a short write is fine.
+    SSL_CTX_set_mode(context, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_ENABLE_PARTIAL_WRITE);
     SSL_CTX_set_num_tickets(context, 0);
     SSL_CTX_set_session_cache_mode(context, SSL_SESS_CACHE_OFF);
     SSL_CTX_set_alpn_select_cb(context, selectAlpn, nullptr);

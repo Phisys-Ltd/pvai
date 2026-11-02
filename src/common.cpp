@@ -39,6 +39,19 @@ void makeDir(const std::string &path, mode_t mode)
         throw std::runtime_error("cannot create " + path + ": " + std::strerror(errno));
 }
 
+// Creates the directory, or accepts one that exists: it must be a real
+// directory (no symlink) of ours that nobody else can enter. A foreign or
+// open one is refused, not repaired.
+void makePrivateDir(const std::string &path)
+{
+    makeDir(path, 0700);
+    struct stat st{};
+    if (::lstat(path.c_str(), &st) != 0)
+        throw std::runtime_error("cannot check " + path + ": " + std::strerror(errno));
+    if (!S_ISDIR(st.st_mode) || st.st_uid != ::getuid() || (st.st_mode & 077) != 0)
+        throw std::runtime_error(path + " is not a private directory of this user (owner, mode 0700 needed); remove it or set XDG_RUNTIME_DIR");
+}
+
 bool fillUnixAddress(sockaddr_un &address, const std::string &path)
 {
     std::memset(&address, 0, sizeof address);
@@ -63,7 +76,7 @@ std::string runtimeDir()
             base.pop_back();
         dir = base + "/pvai-" + std::to_string(::getuid());
     }
-    makeDir(dir, 0700);
+    makePrivateDir(dir);
     return dir;
 }
 
@@ -293,6 +306,12 @@ int listenTcp(const std::string &host, int port)
         return -1;
     }
     return fd;
+}
+
+void keepAlive(int fd)
+{
+    const int one = 1;
+    ::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one);
 }
 
 void setNonBlocking(int fd)

@@ -51,6 +51,7 @@ void spawnDetached(const std::string &cwd, const std::vector<std::string> &argv)
 int connectUnix(const std::string &path); // blocking; -1 on failure
 int listenUnix(const std::string &path);  // -1 on failure
 int listenTcp(const std::string &address, int port);
+void keepAlive(int fd); // SO_KEEPALIVE: a dead network path ends the connection
 void setNonBlocking(int fd);
 void setCloseOnExec(int fd);
 bool writeAll(int fd, const std::string &data);
@@ -95,6 +96,7 @@ public:
     // Lines longer than this end the connection (kMaxLine by default).
     void setMaxLine(std::size_t limit) { maxLine_ = limit; }
     bool wantsWrite() const { return !out_.empty(); }
+    std::size_t pending() const { return out_.size(); } // bytes not yet written
     void send(const json &message);
     // Reads what is there and appends whole lines; a line that is not JSON
     // becomes a null value. False on EOF, error or an overlong line.

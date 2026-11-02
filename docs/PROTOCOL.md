@@ -20,7 +20,10 @@ this file; a change lands here first, then in both implementations.
   keeps other local users of a host out; ssh does the rest.
 - Keepalive: the app sends `ping` every 15 s, the daemon answers `pong`. No
   traffic for 45 s means the link is dead; the app reconnects with backoff
-  (1, 2, 5, 10 s, then every 10 s).
+  (1, 2, 5, 10 s, then every 10 s). The daemon drops a TCP or direct app
+  connection that has sent nothing for 60 s, one that has not sent `hello`
+  within 10 s, and one with more than 4 MB of unsent output. Local unix-socket
+  peers (CLI, hooks, wrappers) are never dropped for silence.
 
 ## Direct access (draft)
 

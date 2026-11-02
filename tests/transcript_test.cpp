@@ -85,6 +85,18 @@ int main()
     std::ofstream(local, std::ios::app) << userLine(22, "<local-command-stdout></local-command-stdout>");
     tail.poll();
     check(tail.localOutputs() == 2 && tail.lastLocalOutput().empty(), "an empty output clears it");
+    // A line of the wrong shape is skipped; the lines after it still parse.
+    const std::string bad = std::string(dir) + "/bad.jsonl";
+    std::ofstream(bad) << R"({"type":1})" "\n"
+                       << R"({"type":"user","message":5})" "\n"
+                       << R"({"type":"system","subtype":"local_command"})" "\n"
+                       << userLine(30, "after the bad lines");
+    tail.follow(bad);
+    got.clear();
+    for (const auto &e : tail.poll())
+        got += e.value("kind", "") + ":" + e.value("text", "") + "|";
+    check(got == "prompt:after the bad lines|", "malformed lines are skipped: " + got);
+    std::remove(bad.c_str());
     std::remove(local.c_str());
     std::remove(idle.c_str());
     std::remove(path.c_str());

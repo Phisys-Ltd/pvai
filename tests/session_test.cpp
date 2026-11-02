@@ -596,6 +596,19 @@ int main(int argc, char **argv)
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
 
+    // A field of the wrong JSON type is one peer's error, not the daemon's end.
+    {
+        Client bad;
+        bad.send({{"type", 1}});
+        const json answer = bad.next("error");
+        check(answer.value("code", "") == "bad-message", "a non-string type is answered with bad-message: " + answer.dump());
+        Client typed;
+        typed.send({{"type", "hello"}, {"client", 5}});
+        check(typed.next("error").value("code", "") == "bad-message", "a wrong-typed field in a known message too");
+        Client ok;
+        ok.send(app());
+        check(ok.next("welcome").value("type", "") == "welcome", "the daemon still answers after wrong-typed messages");
+    }
     Client a;
     a.send(app());
     json welcome = a.next("welcome");

@@ -68,6 +68,7 @@ struct Peer {
     std::string pairing;
     SSL *ssl = nullptr; // owned by conn's stream
     std::optional<std::chrono::steady_clock::time_point> deadline; // before login
+    std::chrono::steady_clock::time_point lastReceived = std::chrono::steady_clock::now();
     std::string client;                 // apps: `hello.client`
     std::string sessionId;              // wrappers
     std::string assistant;              // processes: whose
@@ -77,6 +78,9 @@ struct Peer {
 constexpr int kDirectPort = 7471;
 constexpr int kPairWindowSeconds = 600;
 constexpr auto kPreAuth = std::chrono::seconds(10);
+// An app on TCP pings every 15 s; one silent for this long is gone.
+constexpr auto kAppSilence = std::chrono::seconds(60);
+constexpr std::size_t kMaxOut = 4 * 1024 * 1024; // unsent bytes of one peer
 constexpr std::size_t kMaxHandshakes = 32;
 
 struct Handshake {
@@ -347,6 +351,9 @@ private:
         peer->conn = std::make_unique<Conn>(fd);
         peer->serial = ++serial_;
         peer->tcp = tcp;
+        peer->deadline = Clock::now() + kPreAuth; // cleared by hello (or the wrapper's register)
+        if (tcp)
+            keepAlive(fd);
         peers_.push_back(std::move(peer));
     }
 
@@ -355,11 +362,30 @@ private:
         std::vector<json> messages;
         if (!peer->conn->readMessages(messages))
             dead_.push_back(peer);
+        if (!messages.empty())
+            peer->lastReceived = Clock::now();
         for (const auto &message : messages) {
             if (peer->conn->closing())
                 break;
-            handle(peer, message);
+            try {
+                handle(peer, message);
+            } catch (const json::exception &e) {
+                // A field of the wrong JSON type: this peer's problem only.
+                logLine("bad message from " + (peer->address.empty() ? std::string("a local peer") : peer->address) + ": " + e.what());
+                peer->conn->send({{"type", "error"}, {"code", "bad-message"}, {"text", "a field has the wrong type"}});
+                peer->conn->closeAfterFlush();
+                if (!peer->pairing.empty() && window_) {
+                    // Counts as a bad proof: the window closes.
+                    const unsigned long long waiter = window_->waiter;
+                    window_.reset();
+                    directFailure(peer->address, "bad proof");
+                    notifyWaiter(waiter, {{"type", "pair-closed"}, {"reason", "bad-proof"}});
+                }
+                break;
+            }
         }
+        if (peer->pairing.empty() && peer->kind != Kind::Unknown)
+            peer->deadline.reset();
         if (!peer->conn->flush())
             dead_.push_back(peer);
         else if (peer->conn->closing() && !peer->conn->wantsWrite())
@@ -1387,6 +1413,7 @@ private:
             ::close(fd);
             return;
         }
+        keepAlive(fd);
         handshakes_.push_back({std::make_unique<TlsAccept>(tls_->context(), fd), address, now + kPreAuth});
     }
 
@@ -1564,18 +1591,35 @@ private:
                 h.done = true;
             }
         std::erase_if(handshakes_, [](const Handshake &h) { return h.done; });
-        for (auto &peer : peers_)
+        for (auto &peer : peers_) {
             if (!peer->pairing.empty() && peer->deadline && now >= *peer->deadline) {
                 peer->deadline.reset();
                 directFailure(peer->address, "pairing timed out");
                 dead_.push_back(peer.get());
+            } else if (peer->pairing.empty() && peer->deadline && now >= *peer->deadline) {
+                // No hello, register or attach in time.
+                peer->deadline.reset();
+                if (peer->kind == Kind::Unknown)
+                    dead_.push_back(peer.get());
+            } else if (silent(*peer, now) || peer->conn->pending() > kMaxOut) {
+                logLine((peer->address.empty() ? std::string("a peer") : peer->address) + ": dropped, "
+                        + (peer->conn->pending() > kMaxOut ? "too much unsent" : "silent"));
+                dead_.push_back(peer.get());
             }
+        }
         if (window_ && now >= window_->until) {
             notifyWaiter(window_->waiter, {{"type", "pair-closed"}, {"reason", "expired"}});
             window_.reset();
             logLine("pairing window closed");
         }
         lockout_.prune(now);
+    }
+
+    // An app on TCP (loopback or direct) pings every 15 s. Unix-socket peers
+    // (CLI, hooks, wrappers, processes) may wait as long as they like.
+    static bool silent(const Peer &peer, Clock::time_point now)
+    {
+        return peer.tcp && peer.kind == Kind::App && now - peer.lastReceived >= kAppSilence;
     }
 
     std::optional<Clock::time_point> directDeadline() const
@@ -1590,6 +1634,8 @@ private:
         for (const auto &peer : peers_)
             if (peer->deadline)
                 take(*peer->deadline);
+            else if (peer->tcp && peer->kind == Kind::App)
+                take(peer->lastReceived + kAppSilence);
         if (window_)
             take(window_->until);
         return next;

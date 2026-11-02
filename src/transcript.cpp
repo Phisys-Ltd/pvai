@@ -225,8 +225,13 @@ std::vector<json> TranscriptTail::poll()
     }
     for (std::size_t end; (end = partial_.find('\n', start)) != std::string::npos; start = end + 1) {
         const json line = json::parse(partial_.begin() + static_cast<long>(start), partial_.begin() + static_cast<long>(end), nullptr, false);
-        if (line.is_object())
+        if (!line.is_object())
+            continue;
+        try {
             take(line, out);
+        } catch (const json::exception &) {
+            // A line of the wrong shape: skipped.
+        }
     }
     partial_.erase(0, start);
     for (const auto &entry : out) {
@@ -306,7 +311,7 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
         if (const long long at = unixTime(line.value("timestamp", "")); usage.is_object() && ttl > 0 && at > 0)
             cache_ = {{"ttl", ttl}, {"at", at}};
     }
-    const json &content = localCommand ? line["content"] : line["message"].value("content", json());
+    const json &content = localCommand ? line.value("content", json()) : line["message"].value("content", json());
     const json base = {{"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}};
     auto emit = [&](json entry) {
         entry.update(base);
