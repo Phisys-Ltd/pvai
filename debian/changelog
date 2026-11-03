@@ -1,3 +1,18 @@
+pvai (0.5.60-1) trixie; urgency=medium
+
+  * A subagent hand-back or task notification that comes through
+    UserPromptSubmit keeps the voice state; only the owner's own prompt
+    sets it.
+  * A paste the check did not see go in is emptied from the prompt box
+    before the retry, so a prompt no longer goes in two or three times.
+  * A showing prompt box means no dialog; a new dialog counts once it has
+    stood for a second.
+  * A prompt box taller than 16 rows (a long wrapped prompt) is found.
+  * Build: the daemon's code is one library; a release recompiles only the
+    version file.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 16:10:00 +0100
+
 pvai (0.5.59-1) trixie; urgency=medium
 
   * The usage-limit notice in the conversation is no dialog only by its
