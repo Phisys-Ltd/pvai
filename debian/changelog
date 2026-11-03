@@ -1,3 +1,12 @@
+pvai (0.5.66-1) trixie; urgency=medium
+
+  * A prompt whose typed check fails eight times in a row is no longer
+    retried by itself: the owner sees the screen (attention "stuck").
+    Before, a box that never showed the paste typed the same /compact 146
+    times in 3.5 minutes.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 04 Nov 2026 00:10:00 +0100
+
 pvai (0.5.65-1) trixie; urgency=medium
 
   * A Return that did not take is never followed by a retype: the owner
