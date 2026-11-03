@@ -13,8 +13,9 @@ include(GNUInstallDirs)
 find_package(nlohmann_json REQUIRED)
 find_package(OpenSSL 3 REQUIRED)
 
-add_executable(pvai
-    src/main.cpp
+# The daemon's code as one library: a change recompiles its file only, and
+# the programs and tests link it instead of compiling their own copies.
+add_library(pvai_core STATIC
     src/codex.cpp
     src/common.cpp
     src/claude.cpp
@@ -34,49 +35,41 @@ add_executable(pvai
     src/text.cpp
     third_party/qrcodegen/qrcodegen.cpp
 )
+target_include_directories(pvai_core PUBLIC src PRIVATE third_party/qrcodegen)
+target_compile_definitions(pvai_core PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
+target_compile_options(pvai_core PRIVATE -Wall -Wextra)
+target_link_libraries(pvai_core PUBLIC nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(pvai_core PUBLIC util)
+endif()
+
+add_executable(pvai src/main.cpp)
 target_include_directories(pvai PRIVATE third_party/qrcodegen)
 target_compile_definitions(pvai PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
 target_compile_options(pvai PRIVATE -Wall -Wextra)
-target_link_libraries(pvai PRIVATE nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(pvai PRIVATE util)
-endif()
+target_link_libraries(pvai PRIVATE pvai_core)
 
 install(TARGETS pvai RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Tests: direct access against a real daemon (ctest). Off in the package.
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(pvai-direct-test tests/direct_test.cpp src/common.cpp src/pairing.cpp src/tls.cpp src/text.cpp)
-    target_include_directories(pvai-direct-test PRIVATE src)
-    target_compile_definitions(pvai-direct-test PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
-    target_link_libraries(pvai-direct-test PRIVATE nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto)
+    function(pvai_test name source)
+        add_executable(${name} ${source})
+        target_include_directories(${name} PRIVATE src)
+        target_compile_definitions(${name} PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
+        target_link_libraries(${name} PRIVATE pvai_core)
+    endfunction()
+    pvai_test(pvai-direct-test tests/direct_test.cpp)
     add_test(NAME direct-access COMMAND pvai-direct-test $<TARGET_FILE:pvai>)
-    add_executable(pvai-agent-test tests/agent_test.cpp src/common.cpp)
-    target_include_directories(pvai-agent-test PRIVATE src)
-    target_compile_definitions(pvai-agent-test PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
-    target_link_libraries(pvai-agent-test PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
+    pvai_test(pvai-agent-test tests/agent_test.cpp)
     add_test(NAME agent-messages COMMAND pvai-agent-test $<TARGET_FILE:pvai>)
-    add_executable(pvai-session-test tests/session_test.cpp src/common.cpp)
-    target_include_directories(pvai-session-test PRIVATE src)
-    target_compile_definitions(pvai-session-test PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
-    target_link_libraries(pvai-session-test PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
+    pvai_test(pvai-session-test tests/session_test.cpp)
     add_test(NAME sessions COMMAND pvai-session-test $<TARGET_FILE:pvai>)
-    add_executable(pvai-screen-test tests/screen_test.cpp src/screen.cpp src/text.cpp src/common.cpp)
-    target_include_directories(pvai-screen-test PRIVATE src)
-    target_compile_definitions(pvai-screen-test PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
-    target_link_libraries(pvai-screen-test PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
+    pvai_test(pvai-screen-test tests/screen_test.cpp)
     add_test(NAME screen COMMAND pvai-screen-test)
-    add_executable(pvai-transcript-test tests/transcript_test.cpp src/transcript.cpp src/session.cpp src/common.cpp src/text.cpp)
-    target_include_directories(pvai-transcript-test PRIVATE src)
-    target_compile_definitions(pvai-transcript-test PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
-    target_link_libraries(pvai-transcript-test PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
+    pvai_test(pvai-transcript-test tests/transcript_test.cpp)
     add_test(NAME transcript COMMAND pvai-transcript-test)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        foreach(test pvai-direct-test pvai-agent-test pvai-session-test pvai-screen-test pvai-transcript-test)
-            target_link_libraries(${test} PRIVATE util)
-        endforeach()
-    endif()
 endif()
 
 # libFuzzer on what a client may send before login (clang only):
