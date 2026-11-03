@@ -1031,6 +1031,22 @@ int main(int argc, char **argv)
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "busy while /compact is pending");
         std::ofstream(stuckTr, std::ios::app) << R"({"type":"system","subtype":"compact_boundary","uuid":"cb1","compactMetadata":{"trigger":"auto"}})" "\n";
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }, 5000).empty(), "an auto compaction ends a pending /compact");
+        // (d) typed, the turn runs in the transcript, but UserPromptSubmit
+        // never comes: delivered, not typed a second time, no screen dialog
+        const std::string turnEnd = R"({"type":"system","subtype":"turn_duration","durationMs":5})" "\n";
+        std::ofstream(stuckTr, std::ios::app) << turnEnd;
+        a.send({{"type", "prompt"}, {"ref", 83}, {"session", "wstuck"}, {"text", "drei"}});
+        check(sw.next("type").value("text", "") == "drei", "a prompt is typed");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        std::ofstream(stuckTr, std::ios::app) << userLine("drei") + R"({"type":"assistant","message":{"content":[{"type":"text","text":"Drei."}]}})" "\n";
+        check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 83; }, 18000).value("ref", 0) == 83,
+              "no UserPromptSubmit, but the turn runs: delivered");
+        check(sw.next("snapshot", {}, 300).empty() && sw.next("type", {}, 300).empty(), "no snapshot, not typed again");
+        json running = waitSession(a, "wstuck", [](const json &s) { return true; });
+        check(running.value("state", "") == "busy" && running.value("dialog", json()).is_null() && running.value("queued", -1) == 0,
+              "busy, no dialog, nothing queued: " + running.dump());
+        std::ofstream(stuckTr, std::ios::app) << turnEnd;
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }, 8000).empty(), "the turn end in the transcript ends it");
     }
 
     // AskUserQuestion (0.5.33): the questions with their choices; option,

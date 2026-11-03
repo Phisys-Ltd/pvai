@@ -1181,7 +1181,17 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
         // that verifies, it goes back in the queue and the owner sees the
         // screen (a Claude Code without a login, a dialog not recognised).
         submitDeadline_.reset();
-        if (inFlight_ && state_ == "busy" && !slashPending_) {
+        // The transcript shows a turn that began after the prompt went in
+        // (the session was idle): it went in, only UserPromptSubmit never
+        // came (a slow or lost hook). Typed again it would arrive twice.
+        if (state_ == "busy" && !slashPending_ && !transcript_.empty() && turnRunning(transcript_)) {
+            host_.log(id_ + ": no UserPromptSubmit in 15 s, but the transcript shows the turn: taken as delivered");
+            if (inFlight_) {
+                promptVoice(inFlight_->text, &*inFlight_);
+                delivered();
+            }
+            changed();
+        } else if (inFlight_ && state_ == "busy" && !slashPending_) {
             snapshotPending_ = true;
             wrapper_.send({{"type", "snapshot"}});
         } else if (state_ == "busy" && !slashPending_) {
