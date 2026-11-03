@@ -1,3 +1,13 @@
+pvai (0.5.65-1) trixie; urgency=medium
+
+  * A Return that did not take is never followed by a retype: the owner
+    sees the screen and decides (before, the daemon typed the prompt once
+    more, a second turn when Claude Code had taken it after all).
+  * A working Claude Code (a compaction or a turn shown above the box)
+    counts as having taken the prompt; no Return is pressed again.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 23:55:00 +0100
+
 pvai (0.5.64-1) trixie; urgency=medium
 
   * A pasted slash command (/compact) runs: the highlighted row of Claude
