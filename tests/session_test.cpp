@@ -1466,14 +1466,23 @@ int main(int argc, char **argv)
     // attention, and nothing held busy until the reset.
     {
         const long long resetsAt = static_cast<long long>(std::time(nullptr)) + 3600;
-        const json fableLine = {{"type", "assistant"}, {"uuid", "u-fable"}, {"timestamp", "2026-11-03T13:00:00.000Z"},
+        char nowIso[32];
+        const std::time_t nowT = std::time(nullptr);
+        std::strftime(nowIso, sizeof nowIso, "%Y-%m-%dT%H:%M:%S.000Z", std::gmtime(&nowT));
+        auto fableAt = [&](const std::string &uuid, const std::string &stamp) {
+            return json{{"type", "assistant"}, {"uuid", uuid}, {"timestamp", stamp},
                                 {"message", {{"model", "<synthetic>"}, {"role", "assistant"},
                                              {"content", json::array({{{"type", "text"}, {"text", "You've reached your Fable limit. Run /usage-credits to continue or switch models with /model."}}})}}},
                                 {"apiError", "model_requires_usage_credits"}, {"error", "rate_limit"}, {"isApiErrorMessage", true}, {"apiErrorStatus", 429},
                                 {"quotaLimits", nullptr},
                                 {"apiErrorParams", {{"rate_limit_info", {{"status", "rejected"}, {"resetsAt", resetsAt}, {"rateLimitType", "seven_day_overage_included"}}}}}};
+            };
+        const json fableLine = fableAt("u-fable", nowIso);
         a.drain();
         hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "fable job"}});
+        // A copied history line from a fork is no news: no attention for it.
+        append(fableAt("u-fable-old", "2020-01-01T00:00:00.000Z").dump());
+        check(a.next("attention", [](const json &m) { return m.value("kind", "") == "limited"; }, 1500).empty(), "a copied old limit line is no attention");
         append(fableLine.dump());
         const json fable = a.next("attention", [](const json &m) { return m.value("kind", "") == "limited"; }, 3000);
         check(fable.value("session", "") == "wterm" && fable.value("text", "").find("Fable limit") != std::string::npos,

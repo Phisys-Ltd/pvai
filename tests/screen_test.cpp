@@ -160,6 +160,13 @@ int main()
     pvai::Screen limit(12, 100);
     feed(limit, "\x1b[2J\x1b[H\xE2\x80\xA6 27 more lines\r\n  \xE2\x8E\xBF  Allowed by auto mode\r\n  \xE2\x8E\xBF  You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.\r\n  /upgrade or /usage-credits to finish what you're working on.\r\n Esc to cancel");
     check(pvai::screenDialog(limit).empty(), "the usage-limit notice above a footer is no dialog: [" + pvai::screenDialog(limit) + "]");
+    // The usage-limit notice of a Fable limit, in the conversation right above
+    // a footer, with a folded tool result: no dialog.
+    {
+        pvai::Screen notice(12, 100);
+        feed(notice, "\x1b[2J\x1b[H\xE2\x80\xA6 27 more lines\r\n  \xE2\x8E\xBF  You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.\r\n     /upgrade or /usage-credits to finish what you're working on.\r\n Enter to confirm");
+        check(pvai::screenDialog(notice).empty(), "the limit notice above a footer is no dialog: [" + pvai::screenDialog(notice) + "]");
+    }
     // A real dialog with folded output of its own (no notice) still is one.
     feed(limit, "\x1b[2J\x1b[H\xE2\x80\xA6 3 more lines\r\n" + rule + "\r\n Allow Bash?\r\n \xE2\x9D\xAF 1. Yes\r\n   2. No\r\n\r\n Enter to confirm \xC2\xB7 Esc to cancel");
     check(pvai::screenDialog(limit).find("Allow Bash?") != std::string::npos, "a permission dialog is still a dialog");

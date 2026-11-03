@@ -1,3 +1,14 @@
+pvai (0.5.59-1) trixie; urgency=medium
+
+  * The usage-limit notice in the conversation is no dialog only by its
+    /upgrade or /usage-credits line now; a folded "… N more lines" alone
+    counts again, so a real dialog with a folded preview stays visible.
+  * A model's usage-limit line from copied history (a fork's first prompt)
+    is no news: no attention and no idle state for a line older than ten
+    minutes.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 17:00:00 +0100
+
 pvai (0.5.58-1) trixie; urgency=medium
 
   * A screen dialog is not Claude Code's own history: the usage-limit notice

@@ -566,16 +566,12 @@ std::string screenDialog(const Screen &screen)
         blanks = 0;
         lines.push_back(text);
     }
-    // Claude Code's own output above a footer is no dialog: a folded tool
-    // result ("… 27 more lines") and the usage-limit notice (its line about
-    // /upgrade or /usage-credits) stay in the conversation.
-    for (const auto &line : lines) {
-        const std::string t = trim(line, " ");
-        if (t.compare(0, 3, "\xE2\x80\xA6") == 0 && t.find(" more lines") != std::string::npos)
+    // The usage-limit notice in Claude Code's conversation is no dialog: its
+    // line about /upgrade or /usage-credits stays with the history. (A folded
+    // "… N more lines" alone can be a real dialog's preview, so it counts.)
+    for (const auto &line : lines)
+        if (line.find("/upgrade or /usage-credits") != std::string::npos)
             return {};
-        if (t.find("/upgrade or /usage-credits") != std::string::npos)
-            return {};
-    }
     return joinLines(lines);
 }
 

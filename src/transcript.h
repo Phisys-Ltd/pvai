@@ -83,6 +83,8 @@ public:
     // a caller that polls less often than lines come in that something
     // happened. A `resumed` entry follows a dequeue only while limited.
     const json &limited() const { return limited_; }
+    // The timestamp of the line that set limited() (its ISO text; empty when none).
+    const std::string &limitedAt() const { return limitedAt_; }
     std::size_t limitHits() const { return limitHits_; }
     std::size_t limitClears() const { return limitClears_; }
     // How many turn_duration lines (a turn ended in the file) were read.
@@ -106,6 +108,7 @@ private:
     bool wakePending_ = false; // a task notification, no answer yet
     json cache_;
     json limited_;
+    std::string limitedAt_;
     std::size_t limitHits_ = 0, limitClears_ = 0, turnEndCount_ = 0;
     bool turnRunning_ = false, turnEnds_ = false, windowed_ = false;
     long long noteAt_ = 0; // an unanswered task notification, written then

@@ -279,6 +279,7 @@ void TranscriptTail::resetState()
     wakePending_ = false;
     cache_ = nullptr;
     limited_ = nullptr;
+    limitedAt_.clear();
     limitHits_ = limitClears_ = turnEndCount_ = 0;
     turnRunning_ = turnEnds_ = windowed_ = false;
     noteAt_ = 0;
@@ -425,6 +426,7 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
                     kind = quota["rateLimitType"];
             }
             limited_ = {{"resetsAt", at}, {"type", kind}, {"text", text}, {"model", model}};
+            limitedAt_ = line.value("timestamp", "");
             ++limitHits_;
             json entry = {{"kind", "limited"}, {"text", text}, {"resetsAt", at}, {"type", kind}, {"model", model}};
             entry.update(json{{"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}});

@@ -10,6 +10,8 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <iomanip>
+#include <sstream>
 
 namespace pvai {
 
@@ -1163,6 +1165,19 @@ void ClaudeSession::syncMarks()
     endMark_ = tail_.turnEndCount();
 }
 
+// A line written just now. A fork copies the earlier conversation into its
+// new transcript: such a line is old, and no news.
+static bool freshLine(const std::string &iso)
+{
+    std::tm tm{};
+    std::istringstream in(iso);
+    in >> std::get_time(&tm, "%Y-%m-%dT%H:%M:%S");
+    if (in.fail())
+        return false;
+    const std::time_t at = timegm(&tm), now = std::time(nullptr);
+    return at - now < 600 && now - at < 600;
+}
+
 bool ClaudeSession::limitAhead(const json &limited)
 {
     const json &at = limited.value("resetsAt", json());
@@ -1205,14 +1220,16 @@ void ClaudeSession::pollTranscript()
         if (tail_.limited().is_object() && tail_.limited().value("model", false)) {
             // A model's quota (Fable's): Claude Code does not go on by itself
             // at a reset, so the session goes idle and the app is asked once
-            // to offer a model switch.
-            if (state_ == "busy" && !slashPending_) {
-                state_ = "idle";
-                voiceTurn_ = false;
+            // to offer a model switch. A line from copied history is no news.
+            if (freshLine(tail_.limitedAt())) {
+                if (state_ == "busy" && !slashPending_) {
+                    state_ = "idle";
+                    voiceTurn_ = false;
+                }
+                stopCheck_.reset();
+                attention("limited", tail_.limited().value("text", ""));
+                changed();
             }
-            stopCheck_.reset();
-            attention("limited", tail_.limited().value("text", ""));
-            changed();
         } else if (tail_.limited().is_object()) {
             limited_ = tail_.limited();
             state_ = "busy";
