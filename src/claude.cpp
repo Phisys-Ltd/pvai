@@ -22,6 +22,7 @@ namespace {
 const char *kInterruptMark = "[Request interrupted by user";
 constexpr auto kSubmitTimeout = std::chrono::seconds(15);
 constexpr auto kTypedTimeout = std::chrono::seconds(5); // the wrapper checks for up to 2 s
+constexpr int kTypedTries = 8; // typed checks that may fail before the prompt waits for the owner
 constexpr auto kModelTimeout = std::chrono::seconds(30); // a /model with no output by then has failed
 constexpr auto kRetryAfter = std::chrono::milliseconds(600);
 constexpr auto kTailEvery = std::chrono::milliseconds(300);
@@ -908,6 +909,18 @@ void ClaudeSession::onTyped(bool ok, const std::string &screen)
         return;
     typedDeadline_.reset();
     if (!ok) {
+        // Retried by itself a few times (a screen read between two frames);
+        // then it waits for the owner. Unbounded, a box that never shows the
+        // paste (Claude Code busy compacting) typed the same /compact 146
+        // times in 3 minutes.
+        if (++inFlight_->typedFailures >= kTypedTries) {
+            host_.log(id_ + ": typed check failed " + std::to_string(kTypedTries) + " times, waits for the owner");
+            const std::string text = inFlight_->text.substr(0, 40);
+            inFlight_->typedFailures = 0;
+            notDelivered(screen, false);
+            attention("stuck", text);
+            return;
+        }
         host_.log(id_ + ": typed check failed");
         notDelivered(screen, true);
         return;

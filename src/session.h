@@ -27,6 +27,7 @@ struct Prompt {
     json ref; // the app's `ref`, for `delivered`
     bool agent = false; // an agent message the owner released ([Message ...] first line)
     bool modelSwitch = false; // Claude Code's /model from setModel: its output tells the outcome
+    int typedFailures = 0; // typed checks that failed for it in a row
 };
 
 struct StartRequest {

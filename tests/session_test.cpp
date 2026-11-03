@@ -996,6 +996,24 @@ int main(int argc, char **argv)
         rw.send({{"type", "typed"}, {"ok", true}});
         hook("wretry", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "r-1"}, {"prompt", "eins"}});
         check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 60; }).value("session", "") == "wretry", "retry: delivered");
+        hook("wretry", {{"hook_event_name", "Stop"}, {"session_id", "r-1"}, {"last_assistant_message", "Eins."}});
+        check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "retry: idle again");
+        // A box that never shows the paste: eight tries, then the owner decides
+        // (unbounded, /compact went in 146 times in 3 minutes).
+        a.send({{"type", "prompt"}, {"ref", 61}, {"session", "wretry"}, {"text", "/compact"}});
+        for (int i = 0; i < 8; ++i) {
+            check(rw.next("type", {}, 3000).value("text", "") == "/compact", "bounded retry: try " + std::to_string(i + 1));
+            rw.send({{"type", "typed"}, {"ok", false}, {"screen", "busy box"}});
+        }
+        check(a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 2000).value("text", "") == "/compact",
+              "bounded retry: the owner is told after eight tries");
+        rw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
+        check(rw.next("type", {}, 2500).empty(), "bounded retry: not typed a ninth time by itself");
+        a.send({{"type", "answer"}, {"ref", 62}, {"session", "wretry"}, {"choice", "send"}});
+        check(rw.next("type").value("text", "") == "/compact", "bounded retry: the owner's send types it");
+        rw.send({{"type", "output"}, {"data", ""}});
+        hook("wretry", {{"hook_event_name", "Stop"}, {"session_id", "r-1"}, {"last_assistant_message", "ok"}});
+        check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "bounded retry: idle again");
 
         // Dialog keys: arrows and terminal replies do not answer a dialog;
         // Return does; an older wrapper (no key) counts every key.
