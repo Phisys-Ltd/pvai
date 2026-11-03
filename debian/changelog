@@ -1,3 +1,14 @@
+pvai (0.5.62-1) trixie; urgency=medium
+
+  * A slash or shell command the daemon typed that stays in Claude Code's
+    prompt box for 10 s without running (the box never free since) is
+    cleared; the session goes idle and the app gets attention kind
+    "stuck". Text the owner types later is never cleared.
+  * A pending /compact also ends with an automatic compaction.
+  * The daemon logs what it types and a failed typed check.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 20:30:00 +0100
+
 pvai (0.5.61-1) trixie; urgency=medium
 
   * A restart of a detached session under another pvai run ends that
