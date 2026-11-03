@@ -397,7 +397,11 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
         return;
     }
     if (type == "assistant" && !line.value("isSidechain", false)) {
-        if (line.value("isApiErrorMessage", false) && line.value("apiError", "") == "usage_limit_reached") {
+        // A model's own quota (Fable's, model_requires_usage_credits) has no
+        // quotaLimits: its reset is in apiErrorParams.rate_limit_info.
+        const std::string apiError = line.value("apiError", "");
+        const bool model = apiError == "model_requires_usage_credits";
+        if (line.value("isApiErrorMessage", false) && (apiError == "usage_limit_reached" || model)) {
             std::string text;
             const json content = line.contains("message") && line["message"].is_object() ? line["message"].value("content", json()) : json();
             if (content.is_array())
@@ -408,7 +412,11 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
                     }
             text = cut(text, kMaxText);
             std::replace(text.begin(), text.end(), '\n', ' ');
-            const json quota = line.value("quotaLimits", json());
+            json quota = line.value("quotaLimits", json());
+            if (model) {
+                const json params = line.value("apiErrorParams", json());
+                quota = params.is_object() ? params.value("rate_limit_info", json()) : json();
+            }
             json at = nullptr, kind = nullptr;
             if (quota.is_object()) {
                 if (quota.contains("resetsAt") && quota["resetsAt"].is_number())
@@ -416,9 +424,9 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
                 if (quota.contains("rateLimitType") && quota["rateLimitType"].is_string())
                     kind = quota["rateLimitType"];
             }
-            limited_ = {{"resetsAt", at}, {"type", kind}, {"text", text}};
+            limited_ = {{"resetsAt", at}, {"type", kind}, {"text", text}, {"model", model}};
             ++limitHits_;
-            json entry = {{"kind", "limited"}, {"text", text}, {"resetsAt", at}, {"type", kind}};
+            json entry = {{"kind", "limited"}, {"text", text}, {"resetsAt", at}, {"type", kind}, {"model", model}};
             entry.update(json{{"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}});
             out.push_back(std::move(entry));
             return;

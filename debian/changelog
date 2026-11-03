@@ -1,3 +1,16 @@
+pvai (0.5.57-1) trixie; urgency=medium
+
+  * A model's own usage quota (Fable's, model_requires_usage_credits) is a
+    limit: its reset is read from apiErrorParams.rate_limit_info. The session
+    goes idle at once and the app is asked once (attention limited) to offer
+    a model switch; it does not wait for the reset.
+  * A /model that shows no output and no dialog fails after 30 s with "no
+    answer", and the session is idle again, instead of staying busy.
+  * A model switch through a wrapper that reports no version (before 0.5.52)
+    is rejected as stale-wrapper; restart the session to take the new model.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 15:00:00 +0100
+
 pvai (0.5.56-1) trixie; urgency=medium
 
   * A daemon restarted in the middle of a turn reads the session as busy

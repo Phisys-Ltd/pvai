@@ -42,6 +42,8 @@ public:
     std::string conversationId() const override { return claudeSession_; }
     bool wrapperTooOld() const override;
     const std::string &wrapperVersion() const { return wrapperVersion_; }
+    // A wrapper that reports no version at all (before 0.5.52): no /model through it.
+    bool wrapperUnversioned() const override { return wrapperVersion_.empty(); }
     void tick(Clock::time_point now) override;
     std::optional<Clock::time_point> deadline() const override;
 
@@ -100,6 +102,7 @@ private:
     bool slashModel_ = false; // the pending slash command is the one setModel queued
     std::string modelTarget_;
     json modelRef_;
+    std::optional<Clock::time_point> modelAt_; // the /model in Claude Code is due its output by then
     void modelDone(const std::string &state, const std::string &error = {});
     void markSlash(const Prompt &prompt);
     std::size_t slashMark_ = 0;

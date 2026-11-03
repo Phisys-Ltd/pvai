@@ -20,6 +20,7 @@ namespace {
 const char *kInterruptMark = "[Request interrupted by user";
 constexpr auto kSubmitTimeout = std::chrono::seconds(15);
 constexpr auto kTypedTimeout = std::chrono::seconds(5); // the wrapper checks for up to 2 s
+constexpr auto kModelTimeout = std::chrono::seconds(30); // a /model with no output by then has failed
 constexpr auto kRetryAfter = std::chrono::milliseconds(600);
 constexpr auto kTailEvery = std::chrono::milliseconds(300);
 constexpr auto kSubagentsEvery = std::chrono::seconds(1);
@@ -151,7 +152,10 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
                 // goes on at the reset: waiting, while that is ahead.
                 syncMarks();
                 if (tail_.limited().is_object()) {
-                    if (limitAhead(tail_.limited())) {
+                    if (tail_.limited().value("model", false)) {
+                        // A model's quota: idle at once, the owner switches model.
+                        state_ = "idle";
+                    } else if (limitAhead(tail_.limited())) {
                         limited_ = tail_.limited();
                         state_ = "busy";
                     } else {
@@ -226,6 +230,10 @@ void ClaudeSession::markSlash(const Prompt &prompt)
     slashModel_ = prompt.modelSwitch;
     slashShell_ = prompt.text[0] == '!';
     slashMark_ = localDone();
+    // A /model that goes in has 30 s to show its output (see the tick).
+    modelAt_.reset();
+    if (prompt.modelSwitch)
+        modelAt_ = Clock::now() + kModelTimeout;
 }
 
 void ClaudeSession::submit(const Prompt &prompt)
@@ -451,6 +459,7 @@ void ClaudeSession::modelDone(const std::string &state, const std::string &error
         return;
     const std::string model = modelTarget_;
     const json ref = modelRef_;
+    modelAt_.reset();
     modelTarget_.clear();
     modelRef_ = nullptr;
     slashModel_ = false;
@@ -1026,6 +1035,21 @@ void ClaudeSession::tick(Clock::time_point now)
     }
     if (modeDeadline_ && now >= *modeDeadline_)
         modeDone("failed", "no change on the screen");
+    if (modelAt_ && now >= *modelAt_) {
+        // The /model shows no output and no dialog the daemon knows of (an
+        // old wrapper cannot say): it has failed, and the session is free.
+        modelAt_.reset();
+        if (slashPending_ && slashModel_) {
+            slashPending_ = false;
+            modelDone("failed", "no answer");
+            if (state_ == "busy") {
+                state_ = "idle";
+                voiceTurn_ = false;
+                deliver();
+            }
+            changed();
+        }
+    }
     if (screenAt_ && now >= *screenAt_) {
         screenAt_.reset();
         if (!screenText_.empty() && dialog_.empty() && state_ == "busy")
@@ -1068,6 +1092,8 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
         next = std::min(next, *screenAt_);
     if (modeDeadline_)
         next = std::min(next, *modeDeadline_);
+    if (modelAt_)
+        next = std::min(next, *modelAt_);
     if (typedDeadline_)
         next = std::min(next, *typedDeadline_);
     if (retryAt_)
@@ -1176,7 +1202,18 @@ void ClaudeSession::pollTranscript()
     if (tail_.limitHits() != hitMark_) {
         hitMark_ = tail_.limitHits();
         clearMark_ = tail_.limitClears();
-        if (tail_.limited().is_object()) {
+        if (tail_.limited().is_object() && tail_.limited().value("model", false)) {
+            // A model's quota (Fable's): Claude Code does not go on by itself
+            // at a reset, so the session goes idle and the app is asked once
+            // to offer a model switch.
+            if (state_ == "busy" && !slashPending_) {
+                state_ = "idle";
+                voiceTurn_ = false;
+            }
+            stopCheck_.reset();
+            attention("limited", tail_.limited().value("text", ""));
+            changed();
+        } else if (tail_.limited().is_object()) {
             limited_ = tail_.limited();
             state_ = "busy";
             stopCheck_.reset();

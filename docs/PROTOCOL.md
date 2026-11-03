@@ -777,6 +777,10 @@ digits, `.-_[]:/`, at most 80; else `rejected` with `bad-model`). The
 answer is `{"type": "model", "ref", "session", "model", "state": "done" |
 "failed", "error"?}` to every app; `usage.model` shows what runs.
 
+- Since 0.5.57 a `/model` that shows no output and no dialog within 30 s
+  after it went in fails with `error` `no answer`, and the session is idle
+  again. A wrapper that reports no version (before 0.5.52) rejects `model`
+  with `stale-wrapper`: restart the session, which takes the new model.
 - Claude Code: its own `/model <name>`, queued like a prompt (it goes in
   when the prompt is free); since 0.5.41 `done` once Claude Code's
   `/model` answered "Set model to ..." in the transcript, `failed` with
@@ -806,6 +810,13 @@ goes on by itself at the reset, without a hook, so the session stays
 (Europe/Zurich)"}`. When the limit is hit the apps get once `{"type":
 "attention", "session", "kind": "limited", "text": "<text>"}` (to show and
 to speak), and the conversation view a `limited` history entry.
+
+A model's own quota (Fable's, `apiError` `model_requires_usage_credits`,
+since 0.5.57) is read the same way from `apiErrorParams.rate_limit_info`,
+but Claude Code does not go on by itself at its reset: the session goes
+`idle` at once, `limited` stays `null`, the apps get the one `attention`
+`kind: "limited"` (its `text`, to offer a model switch), and the history
+entry carries `"model": true`.
 
 `limited` goes back to `null`, with a `sessions` update, when the turn
 goes on or ends: Claude Code's resumption (a `resumed` history entry), an
@@ -930,7 +941,7 @@ a second.
 | `tool` | `tool`, `text`, `file` | a tool call; `text` is one line saying what it does; `file`, when present, names the file whose content the result shows (a `Read`, or a shell command that names exactly one file), so an app can colour it by its extension |
 | `result` | `tool`, `text`, `error` | what the tool returned, cut at 4 KiB |
 | `interrupted` | | the owner stopped the turn |
-| `limited` | `text`, `resetsAt`, `type` | since 0.5.50: the usage limit was hit; `resetsAt` (Unix seconds) and `type` (`five_hour`, `seven_day`) are null when the line has none |
+| `limited` | `text`, `resetsAt`, `type`, `model` | since 0.5.50: the usage limit was hit; `resetsAt` (Unix seconds) and `type` (`five_hour`, `seven_day`) are null when the line has none; since 0.5.57 `model` is true for a model's own quota (Fable), which does not hold the session busy |
 | `resumed` | | since 0.5.50, internal and optional: Claude Code went on by itself after a `limited`; an app that does not know the kind skips it |
 | `command` | `text` | a slash command that ran in Claude Code itself (`/compact`, `/context`, `/model opus`), a shell command the owner typed with `!` (`! git status`), or `/compact` for a compaction Claude Code started itself (the context ran full, or idle before the prompt cache expired) |
 | `output` | `text` | what such a command printed (for `!`: stdout, then stderr), terminal colours removed, cut at 4 KiB (empty output is not passed on) |

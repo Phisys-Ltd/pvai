@@ -733,6 +733,26 @@ int main(int argc, char **argv)
         check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after the queued switch");
     }
 
+    // A /model that shows no output and no dialog fails after 30 s, and the session is free.
+    {
+        a.send({{"type", "model"}, {"ref", 75}, {"session", "wterm"}, {"model", "opus"}});
+        check(wrapper.next("type").value("text", "") == "/model opus", "a /model goes in for the timeout test");
+        const json timedOut = a.next("model", [](const json &m) { return m.value("ref", 0) == 75; }, 33000);
+        check(timedOut.value("state", "") == "failed" && timedOut.value("error", "") == "no answer",
+              "a /model with no output fails after 30 s: " + timedOut.dump());
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after the timeout");
+    }
+
+    // A wrapper that reports no version (before 0.5.52) takes no model switch: it is stale.
+    {
+        LineClient old;
+        old.send({{"type", "register"}, {"id", "wold"}, {"cwd", project}, {"label", "old"}});
+        check(!waitSession(a, "wold", [](const json &) { return true; }).empty(), "an unversioned wrapper is a session");
+        a.send({{"type", "model"}, {"ref", 76}, {"session", "wold"}, {"model", "opus"}});
+        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 76; }).value("reason", "") == "stale-wrapper",
+              "a model switch through an unversioned wrapper is stale-wrapper");
+    }
+
     // A Claude Code started from a shell command of this one inherits pvai's
     // environment: its hooks and status line are not this session's.
     hook("wterm", {{"hook_event_name", "SessionStart"}, {"session_id", "nested-9"}, {"source", "startup"}});
@@ -1440,6 +1460,29 @@ int main(int argc, char **argv)
         check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }, 1200).empty(), "a turn end: not idle at once");
         check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }, 5000).empty(),
               "but idle after 3 s without a Stop");
+    }
+
+    // A model's own quota (Fable's) in the running turn: idle at once, one
+    // attention, and nothing held busy until the reset.
+    {
+        const long long resetsAt = static_cast<long long>(std::time(nullptr)) + 3600;
+        const json fableLine = {{"type", "assistant"}, {"uuid", "u-fable"}, {"timestamp", "2026-11-03T13:00:00.000Z"},
+                                {"message", {{"model", "<synthetic>"}, {"role", "assistant"},
+                                             {"content", json::array({{{"type", "text"}, {"text", "You've reached your Fable limit. Run /usage-credits to continue or switch models with /model."}}})}}},
+                                {"apiError", "model_requires_usage_credits"}, {"error", "rate_limit"}, {"isApiErrorMessage", true}, {"apiErrorStatus", 429},
+                                {"quotaLimits", nullptr},
+                                {"apiErrorParams", {{"rate_limit_info", {{"status", "rejected"}, {"resetsAt", resetsAt}, {"rateLimitType", "seven_day_overage_included"}}}}}};
+        a.drain();
+        hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "fable job"}});
+        append(fableLine.dump());
+        const json fable = a.next("attention", [](const json &m) { return m.value("kind", "") == "limited"; }, 3000);
+        check(fable.value("session", "") == "wterm" && fable.value("text", "").find("Fable limit") != std::string::npos,
+              "a Fable limit line in the running turn: attention limited: " + fable.dump());
+        term = waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }, 3000);
+        check(!term.empty() && term["limited"].is_null(), "the session is idle at once, limited null: " + term.dump());
+        check(a.next("attention", [](const json &m) { return m.value("kind", "") == "limited"; }, 2500).empty(), "attention limited comes once");
+        check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 1500).empty(),
+              "nothing holds the session busy until the reset");
     }
 
     // Ended Claude conversations: titles, no command-only ones, not the

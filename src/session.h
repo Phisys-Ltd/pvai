@@ -88,6 +88,7 @@ public:
     // The `pvai run` that holds the session is too old for the requests that
     // need it to do more than type (see kMinWrapperVersion).
     virtual bool wrapperTooOld() const { return false; }
+    virtual bool wrapperUnversioned() const { return false; }
     // A typed prompt counts only once the assistant confirms it (`delivered`).
     virtual bool confirmsDelivery() const { return false; }
     virtual std::string answer(const std::string &choice) = 0;

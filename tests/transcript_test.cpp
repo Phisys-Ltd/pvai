@@ -202,5 +202,18 @@ int main()
                                         << R"({"type":"assistant","uuid":"u51","message":{"content":[{"type":"text","text":"Back."}]}})" "\n";
     check(kinds() == "limited|text|" && tail.limited().is_null() && tail.limitHits() == 2,
           "a limit line without quotaLimits, ended by the next ordinary answer");
+    // A model's own quota (Fable's): no quotaLimits, the reset is in apiErrorParams.
+    const std::string fable = home.path + "/fable.jsonl";
+    std::ofstream(fable) << userLine(60, "fable job")
+                         << R"({"type":"assistant","uuid":"f61","timestamp":"t3","message":{"content":[{"type":"text","text":"You've reached your Fable limit. Run /usage-credits to continue or switch models with /model."}]},)"
+                            R"("isApiErrorMessage":true,"apiError":"model_requires_usage_credits","error":"rate_limit","quotaLimits":null,)"
+                            R"("apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":1791836400,"rateLimitType":"seven_day_overage_included"}}})" "\n"
+                         << R"({"type":"system","subtype":"turn_duration","durationMs":5})" "\n";
+    tail.follow(fable);
+    check(kinds() == "prompt|limited|", "a Fable limit line is a limited entry");
+    check(tail.limited().is_object() && tail.limited().value("resetsAt", 0LL) == 1791836400 && tail.limited().value("type", "") == "seven_day_overage_included"
+              && tail.limited().value("model", false) && tail.limitHits() == 1,
+          "a model's limit is read from apiErrorParams and flagged: " + tail.limited().dump());
+    check(tail.recent().back().value("model", false) && tail.recent().back().value("resetsAt", 0LL) == 1791836400, "the entry carries the model flag");
     return pvai::test::finish();
 }

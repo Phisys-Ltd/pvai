@@ -1092,6 +1092,10 @@ private:
         static const std::set<std::string> needsWrapper = {"answer", "clearInput", "mode", "model", "restart"};
         if (needsWrapper.count(command.type) && session->wrapperTooOld())
             return reject(peer, ref, id, "stale-wrapper");
+        // Without a version the wrapper cannot show a /model's dialog: a model
+        // change goes through a restart of the session instead.
+        if (std::string(command.type) == "model" && session->wrapperUnversioned())
+            return reject(peer, ref, id, "stale-wrapper");
         if (const std::string reason = command.run(*session, message, ref); !reason.empty())
             return reject(peer, ref, id, reason);
         if (command.okType)
