@@ -1,3 +1,17 @@
+pvai (0.5.63-1) trixie; urgency=medium
+
+  * The wrapper checks that the Return after a verified paste took: while
+    the box still holds the paste it presses Return again (twice at most,
+    1.5 s apart), else it empties the box and tells the daemon. A slash
+    command then ends (attention "stuck"); a prompt is typed once more into
+    the emptied box, and a second failure shows the screen.
+  * No UserPromptSubmit within 15 s, but the transcript shows the turn: the
+    prompt counts as delivered (no screen dialog, not typed twice).
+  * The draft-based stuck timer of 0.5.62 is gone (draft only counts the
+    owner's keys).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 22:30:00 +0100
+
 pvai (0.5.62-1) trixie; urgency=medium
 
   * A slash or shell command the daemon typed that stays in Claude Code's
