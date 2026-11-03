@@ -181,5 +181,25 @@ int main()
         check(pvai::promptBox(menu, box) && box == "\xE2\x9D\xAF /mo", "the box shows: [" + box + "]");
         check(pvai::screenDialog(menu).empty(), "a footer under a showing box is no dialog: [" + pvai::screenDialog(menu) + "]");
     }
+    // A long prompt wrapped into a box taller than 16 rows (1200 characters
+    // at 120 columns, pasted twice) is still the box.
+    {
+        pvai::Screen tall(40, 120);
+        std::string draw = "\x1b[2J\x1b[H\xE2\x9D\xAF old prompt\r\n" + rule + "\r\n\xE2\x9D\xAF [Message p1 from M4/w1]";
+        for (int i = 0; i < 22; ++i)
+            draw += "\r\n  wrapped words of a long message, line " + std::to_string(i);
+        feed(tall, draw + "\r\n" + rule + "\r\n  ? for shortcuts");
+        std::string box;
+        check(pvai::promptBox(tall, box) && box.rfind("\xE2\x9D\xAF [Message p1", 0) == 0
+                  && box.find("line 21") != std::string::npos,
+              "a 23-row box is found: [" + box.substr(0, 40) + "]");
+        // Rows with a blank or unindented line between: no box that tall.
+        pvai::Screen far(40, 120);
+        draw = "\x1b[2J\x1b[H" + rule + "\r\n\xE2\x9D\xAF old prompt\r\n";
+        for (int i = 0; i < 20; ++i)
+            draw += (i == 5 ? std::string("Answer text\r\n") : "  more\r\n");
+        feed(far, draw + rule + "\r\n  ? for shortcuts");
+        check(!pvai::promptBox(far, box), "rules far apart with conversation between are no box");
+    }
     return pvai::test::finish();
 }

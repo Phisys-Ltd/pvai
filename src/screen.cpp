@@ -583,11 +583,22 @@ std::string screenDialog(const Screen &screen)
 bool promptBox(const Screen &screen, std::string &text, bool *shell, int *topRule)
 {
     static const std::string mark = "\xE2\x9D\xAF"; // ❯
+    // A box taller than 16 rows is a long prompt wrapped: every row after
+    // the first is indented text (a rule far up with a ❯ line under it is
+    // an old prompt in the conversation).
+    auto wrapped = [&](int top, int bottom) {
+        for (int k = top + 2; k < bottom; ++k) {
+            const std::string row = screen.row(k);
+            if (row.compare(0, 2, "  ") != 0 || trim(row, " ").empty())
+                return false;
+        }
+        return true;
+    };
     int below = -1;
     for (int r = screen.rows() - 1; r >= 0; --r) {
         if (!isRule(screen.row(r)))
             continue;
-        if (below < 0 || below - r < 2 || below - r > 16) {
+        if (below < 0 || below - r < 2 || (below - r > 16 && !wrapped(r, below))) {
             below = r;
             continue;
         }
