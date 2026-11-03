@@ -280,7 +280,7 @@ int uninstallHooks()
 
 int noDaemon()
 {
-    std::fprintf(stderr, "pvai: no daemon\n");
+    std::fprintf(stderr, "pvai: no daemon at %s\n", daemonSocket().c_str());
     return 1;
 }
 

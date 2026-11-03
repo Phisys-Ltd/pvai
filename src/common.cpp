@@ -74,8 +74,14 @@ bool fillUnixAddress(sockaddr_un &address, const std::string &path)
 std::string runtimeDir()
 {
     std::string dir;
+    // Without XDG_RUNTIME_DIR (a systemd-run job, cron) the user's runtime
+    // directory is still where logind made it: the same socket as a login.
+    const std::string userRun = "/run/user/" + std::to_string(::getuid());
+    struct stat st;
     if (const char *xdg = std::getenv("XDG_RUNTIME_DIR"); xdg && *xdg) {
         dir = std::string(xdg) + "/pvai";
+    } else if (::stat(userRun.c_str(), &st) == 0 && S_ISDIR(st.st_mode) && st.st_uid == ::getuid()) {
+        dir = userRun + "/pvai";
     } else {
         const char *tmp = std::getenv("TMPDIR");
         std::string base = tmp && *tmp ? tmp : "/tmp";

@@ -381,7 +381,7 @@ int runWrapper(const WrapperOptions &options)
     if (const int fd = connectDaemon(true); fd >= 0)
         daemon = std::make_unique<Conn>(fd);
     else if (!detached)
-        std::fprintf(stderr, "pvai: no daemon, running without voice\r\n");
+        std::fprintf(stderr, "pvai: no daemon at %s, running without voice\r\n", daemonSocket().c_str());
 
     // A detached session is seen through `pvai attach` on this socket.
     const std::string viewerPath = runtimeDir() + "/" + id + ".sock";

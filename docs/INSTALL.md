@@ -319,8 +319,9 @@ Then the program:
 - **Restart the daemon**: `pvai daemon restart` (refused while prompts are
   queued; `--force` drops them). A daemon that no longer answers:
   `pkill -f '^pvai daemon'; pvai token >/dev/null`.
-  Its log is `daemon.log` in `$XDG_RUNTIME_DIR/pvai/` (on macOS and
-  without `XDG_RUNTIME_DIR`: `$TMPDIR/pvai-<uid>/`).
+  Its log is `daemon.log` in `$XDG_RUNTIME_DIR/pvai/` (without
+  `XDG_RUNTIME_DIR`: `/run/user/<uid>/pvai/` where that directory exists,
+  else, as on macOS, `$TMPDIR/pvai-<uid>/`).
 - **The daemon dies when the ssh connection ends.** On systems where
   logind kills a user's processes at logout (`KillUserProcesses=yes`),
   allow them to linger: `sudo loginctl enable-linger USER`.
