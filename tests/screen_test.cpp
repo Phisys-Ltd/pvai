@@ -154,5 +154,14 @@ int main()
     const std::string select = pvai::screenDialog(select_);
     check(select.find("Continue with usage credits") != std::string::npos && select.find("Enter to select") != std::string::npos,
           "a select list is a dialog: [" + select + "]");
+
+    // The usage-limit notice in the conversation, folded tool output above
+    // it, and a footer: Claude Code's own history, not a dialog.
+    pvai::Screen limit(12, 100);
+    feed(limit, "\x1b[2J\x1b[H\xE2\x80\xA6 27 more lines\r\n  \xE2\x8E\xBF  Allowed by auto mode\r\n  \xE2\x8E\xBF  You've reached your Fable limit. Run /usage-credits to continue or switch models with /model.\r\n  /upgrade or /usage-credits to finish what you're working on.\r\n Esc to cancel");
+    check(pvai::screenDialog(limit).empty(), "the usage-limit notice above a footer is no dialog: [" + pvai::screenDialog(limit) + "]");
+    // A real dialog with folded output of its own (no notice) still is one.
+    feed(limit, "\x1b[2J\x1b[H\xE2\x80\xA6 3 more lines\r\n" + rule + "\r\n Allow Bash?\r\n \xE2\x9D\xAF 1. Yes\r\n   2. No\r\n\r\n Enter to confirm \xC2\xB7 Esc to cancel");
+    check(pvai::screenDialog(limit).find("Allow Bash?") != std::string::npos, "a permission dialog is still a dialog");
     return pvai::test::finish();
 }

@@ -1,3 +1,13 @@
+pvai (0.5.58-1) trixie; urgency=medium
+
+  * A screen dialog is not Claude Code's own history: the usage-limit notice
+    (its /upgrade or /usage-credits line) and folded output ("… N more
+    lines") above a footer no longer count as a dialog, so a /model sent
+    right after a Fable limit goes in at once instead of waiting behind an
+    empty dialog.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 16:00:00 +0100
+
 pvai (0.5.57-1) trixie; urgency=medium
 
   * A model's own usage quota (Fable's, model_requires_usage_credits) is a
