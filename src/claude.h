@@ -58,6 +58,7 @@ public:
     std::string setModel(const std::string &model, const json &ref) override;
     void onExited(int status, const std::string &screen);
     void onTyped(bool ok, const std::string &screen);
+    void onSubmitted(bool ok);
     void onSnapshot(const std::string &screen);
     bool confirmsDelivery() const override { return verify_; }
 
@@ -105,17 +106,13 @@ private:
     std::optional<Clock::time_point> modelAt_; // the /model in Claude Code is due its output by then
     void modelDone(const std::string &state, const std::string &error = {});
     void markSlash(const Prompt &prompt);
+    bool submitCheck_ = false; // the wrapper checks that Return took (`submitCheck`, 0.5.63)
+    std::string retriedText_;  // the prompt that was put back once after a Return that did not take
     std::size_t slashMark_ = 0;
     // A pending /compact also ends with any compaction in the transcript.
     bool slashCompact_ = false;
     std::size_t compactMark_ = 0;
     std::string slashText_;
-    // The prompt box held text this long after a slash command went in: it
-    // did not run (a command that runs empties the box at once).
-    std::optional<Clock::time_point> stuckAt_;
-    bool slashLeftBox_ = false; // the box was free since the command went in
-    Clock::time_point slashAt_{};
-    void slashStuck();
     bool slashShell_ = false; // the pending command is a shell command (!): its output ends it
     std::size_t localDone() const { return slashShell_ ? tail_.shellOutputs() : tail_.localOutputs(); }
     std::string lastEvent_; // the last hook event's key, to drop one that comes twice

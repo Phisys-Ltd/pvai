@@ -23,8 +23,6 @@ const char *kInterruptMark = "[Request interrupted by user";
 constexpr auto kSubmitTimeout = std::chrono::seconds(15);
 constexpr auto kTypedTimeout = std::chrono::seconds(5); // the wrapper checks for up to 2 s
 constexpr auto kModelTimeout = std::chrono::seconds(30); // a /model with no output by then has failed
-constexpr auto kStuckTimeout = std::chrono::seconds(10); // a slash command still in the prompt box by then did not run
-constexpr auto kStuckArm = std::chrono::seconds(2); // a dirty box reported later is the owner's typing
 constexpr auto kRetryAfter = std::chrono::milliseconds(600);
 constexpr auto kTailEvery = std::chrono::milliseconds(300);
 constexpr auto kSubagentsEvery = std::chrono::seconds(1);
@@ -135,6 +133,7 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
     if (const json v = registration.value("version", json()); v.is_string())
         wrapperVersion_ = cut(oneLine(v.get<std::string>(), 64), 32);
     canPace_ = registration.value("paced", false);
+    submitCheck_ = registration.value("submitCheck", false);
     // A wrapper that registers again after a daemon restart has a running
     // Claude Code: idle, unless its transcript shows a turn going on.
     if (registration.value("running", false)) {
@@ -237,11 +236,6 @@ void ClaudeSession::markSlash(const Prompt &prompt)
     slashText_ = prompt.text;
     slashCompact_ = prompt.text == "/compact" || prompt.text.rfind("/compact ", 0) == 0;
     compactMark_ = tail_.compactions();
-    stuckAt_.reset();
-    slashLeftBox_ = false;
-    slashAt_ = Clock::now();
-    if (draft_)
-        stuckAt_ = Clock::now() + kStuckTimeout;
     // A /model that goes in has 30 s to show its output (see the tick).
     modelAt_.reset();
     if (prompt.modelSwitch)
@@ -759,15 +753,6 @@ void ClaudeSession::onDraft(bool dirty)
     if (draft_ == dirty)
         return;
     draft_ = dirty;
-    // Once the box was free the command went in; text after that, or later
-    // than kStuckArm after it was typed, is the owner's own draft, never
-    // cleared.
-    if (!dirty) {
-        stuckAt_.reset();
-        slashLeftBox_ = true;
-    } else if (slashPending_ && !slashLeftBox_ && !stuckAt_ && Clock::now() - slashAt_ < kStuckArm) {
-        stuckAt_ = Clock::now() + kStuckTimeout;
-    }
     deliver();
     changed();
 }
@@ -970,6 +955,7 @@ void ClaudeSession::delivered()
         return;
     host_.broadcast({{"type", "delivered"}, {"session", id_}, {"ref", inFlight_->ref}});
     inFlight_.reset();
+    retriedText_.clear();
 }
 
 // The prompt did not go in: in front of the queue again, and the session
@@ -1044,23 +1030,50 @@ void ClaudeSession::armEscapeCheck(bool forceIdle)
     escapeChecks_ = {now + std::chrono::milliseconds(500), now + std::chrono::milliseconds(1500), now + std::chrono::seconds(4)};
 }
 
-// The command stayed in the prompt box: Claude Code never ran it. Empty the
-// box and free the session.
-void ClaudeSession::slashStuck()
+// The wrapper pressed Return three times and the box still held the text:
+// Claude Code never took it, and the wrapper has emptied the box (its
+// `draft` message, which came first, keeps the next prompt waiting for it).
+void ClaudeSession::onSubmitted(bool ok)
 {
-    host_.log(id_ + ": " + slashText_.substr(0, 40) + " stayed in the prompt box, cleared");
-    if (canClear_)
-        wrapper_.send({{"type", "clear"}});
-    slashPending_ = false;
-    if (slashModel_)
-        modelDone("failed", "did not run");
-    if (state_ == "busy") {
-        state_ = "idle";
-        voiceTurn_ = false;
-        deliver();
+    if (ok || !submitCheck_)
+        return;
+    if (slashPending_) {
+        host_.log(id_ + ": " + slashText_.substr(0, 40) + " stayed in the prompt box, cleared");
+        slashPending_ = false;
+        if (slashModel_)
+            modelDone("failed", "did not run");
+        if (state_ == "busy") {
+            state_ = "idle";
+            voiceTurn_ = false;
+            deliver();
+        }
+        attention("stuck", slashText_.substr(0, 40));
+        changed();
+        return;
     }
-    attention("stuck", slashText_.substr(0, 40));
-    changed();
+    if (!inFlight_ || state_ != "busy")
+        return;
+    const std::string text = inFlight_->text;
+    std::string shown = text.substr(0, 40);
+    std::replace(shown.begin(), shown.end(), '\n', ' ');
+    if (retriedText_ != text) {
+        // The first time silently: the box is empty (or being emptied), the
+        // prompt goes in again at the front once the wrapper reports it free.
+        host_.log(id_ + ": the Return did not take for " + shown + ", typed again");
+        retriedText_ = text;
+        queue_.push_front(*inFlight_);
+        inFlight_.reset();
+        submitDeadline_.reset();
+        voiceTurn_ = false;
+        state_ = "idle";
+        deliver();
+        changed();
+        return;
+    }
+    host_.log(id_ + ": the Return did not take twice for " + shown);
+    retriedText_.clear();
+    notDelivered("Claude Code did not take the Return for:\n" + shown, false);
+    attention("stuck", text.substr(0, 40));
 }
 
 void ClaudeSession::tick(Clock::time_point now)
@@ -1116,11 +1129,6 @@ void ClaudeSession::tick(Clock::time_point now)
             changed();
         }
     }
-    if (stuckAt_ && now >= *stuckAt_) {
-        stuckAt_.reset();
-        if (slashPending_ && draft_ && !slashLeftBox_ && dialog_.empty())
-            slashStuck();
-    }
     if (screenAt_ && now >= *screenAt_) {
         screenAt_.reset();
         if (!screenText_.empty() && dialog_.empty() && state_ == "busy")
@@ -1161,8 +1169,6 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
         next = std::min(next, *submitDeadline_);
     if (screenAt_)
         next = std::min(next, *screenAt_);
-    if (stuckAt_)
-        next = std::min(next, *stuckAt_);
     if (modeDeadline_)
         next = std::min(next, *modeDeadline_);
     if (modelAt_)

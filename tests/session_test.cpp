@@ -886,6 +886,97 @@ int main(int argc, char **argv)
         (void)std::system(("kill $(cat '" + pidFile + "') 2>/dev/null").c_str());
     }
 
+    // 0.5.63: a Return Claude Code ignores is pressed again by the wrapper;
+    // one it ignores for good empties the box and the daemon types the
+    // prompt once more, then tells the owner. The fake Claude Code logs every
+    // paste and every Return with the box it saw, and drops the first N Returns.
+    {
+        const std::string tui = bin + "/fake-tui-ignore.py";
+        writeFile(tui,
+                  "import os, sys, time, tty\n"
+                  "tty.setraw(0)\n"
+                  "log = sys.argv[1]\n"
+                  "ignore = int(sys.argv[2])\n"
+                  "box = ''\n"
+                  "def draw():\n"
+                  "    rule = '\u2500' * 40\n"
+                  "    os.write(1, ('\\x1b[2J\\x1b[30;1H' + rule + '\\r\\n\u276f ' + box + '\\r\\n' + rule + '\\r\\n  ? for shortcuts').encode())\n"
+                  "def note(s):\n"
+                  "    with open(log, 'a') as f: f.write(s + '\\n')\n"
+                  "os.write(1, b'\\x1b[?2004h')\n"
+                  "draw()\n"
+                  "buf = b''\n"
+                  "while True:\n"
+                  "    data = os.read(0, 4096)\n"
+                  "    if not data: break\n"
+                  "    buf += data\n"
+                  "    while buf:\n"
+                  "        if buf.startswith(b'\\x1b[200~'):\n"
+                  "            end = buf.find(b'\\x1b[201~')\n"
+                  "            if end < 0: break\n"
+                  "            box += buf[6:end].decode()\n"
+                  "            buf = buf[end + 6:]\n"
+                  "            note('P:' + box)\n"
+                  "        elif buf[:1] == b'\\x1b':\n"
+                  "            if len(buf) < 6: break\n"
+                  "            buf = buf[6:]\n"
+                  "        else:\n"
+                  "            c = buf[:1]; buf = buf[1:]\n"
+                  "            if c == b'\\r':\n"
+                  "                if ignore > 0:\n"
+                  "                    ignore -= 1; note('I:' + box)\n"
+                  "                else:\n"
+                  "                    note('S:' + box); box = ''\n"
+                  "            elif c == b'\\x15': box = ''\n"
+                  "            elif c == b'\\x7f': box = box[:-1]\n"
+                  "            elif c != b'\\x0b': box += c.decode()\n"
+                  "        draw()\n",
+                  false);
+        auto launch = [&](const std::string &id, const std::string &logFile, int ignore) {
+            const std::string pidFile = home + "/" + id + ".pid";
+            (void)std::system(("cd '" + project + "' && " + g_pvai + " run --detached --id " + id + " -- python3 '" + tui + "' '" + logFile + "' "
+                               + std::to_string(ignore) + " >/dev/null 2>&1 & echo $! > '" + pidFile + "'").c_str());
+            check(!waitSession(a, id, [](const json &) { return true; }, 3000).empty(), id + ": the wrapper registers");
+            hook(id, {{"hook_event_name", "SessionStart"}, {"session_id", id + "-1"}, {"source", "startup"}});
+            check(!waitSession(a, id, [](const json &s) { return s.value("state", "") == "idle"; }).empty(), id + ": idle");
+            return pidFile;
+        };
+        const auto lines = [](const std::string &file) {
+            std::vector<std::string> out;
+            std::istringstream in(readFile(file));
+            for (std::string l; std::getline(in, l);)
+                out.push_back(l);
+            return out;
+        };
+        // (a) the first Return is ignored, the second submits: one submission
+        {
+            const std::string log = home + "/ign1.log";
+            const std::string pidFile = launch("wign1", log, 1);
+            a.send({{"type", "prompt"}, {"ref", 90}, {"session", "wign1"}, {"text", "zwei"}});
+            for (int i = 0; i < 100 && lines(log).size() < 3; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(4000)); // no third Return, no retype
+            check(lines(log) == std::vector<std::string>({"P:zwei", "I:zwei", "S:zwei"}), "ignored Return: pressed again, submitted once: [" + readFile(log) + "]");
+            check(a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 100).empty(), "ignored Return: no stuck attention");
+            hook("wign1", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "wign1-1"}, {"prompt", "zwei"}});
+            check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 90; }).value("session", "") == "wign1", "ignored Return: delivered");
+            (void)std::system(("kill $(cat '" + pidFile + "') 2>/dev/null").c_str());
+        }
+        // (b) every Return is ignored: three presses, the box is emptied, the
+        // prompt is typed once more into the empty box, then the owner is told
+        {
+            const std::string log = home + "/ign2.log";
+            const std::string pidFile = launch("wign2", log, 1000);
+            a.send({{"type", "prompt"}, {"ref", 91}, {"session", "wign2"}, {"text", "drei"}});
+            const json stuck = a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 40000);
+            check(stuck.value("text", "") == "drei", "ignored Returns: the owner is told: " + stuck.dump());
+            const auto got = lines(log);
+            const std::vector<std::string> want = {"P:drei", "I:drei", "I:drei", "I:drei", "P:drei", "I:drei", "I:drei", "I:drei"};
+            check(got == want, "ignored Returns: 3 presses, the box emptied, typed once more into it: [" + readFile(log) + "]");
+            (void)std::system(("kill $(cat '" + pidFile + "') 2>/dev/null").c_str());
+        }
+    }
+
     // 0.5.44: a typed ok:false without a screen is retried; trust answered in
     // the terminal; dialog keys; big hook events.
     {
@@ -990,38 +1081,51 @@ int main(int argc, char **argv)
         hook("wclr", {{"hook_event_name", "Stop"}, {"session_id", "c-1"}, {"last_assistant_message", "Drei."}});
     }
 
-    // A slash command that stays in the prompt box did not run: after 10 s the
-    // box is cleared and the session is idle. A free box without output is
-    // no sign of that, and any compaction ends a pending /compact.
+    // A Return Claude Code did not act on (the wrapper says `submitted`
+    // ok:false): a slash command ends as stuck, a prompt is typed once more
+    // and then shown to the owner. Any compaction ends a pending /compact.
     {
         LineClient sw;
-        sw.send({{"type", "register"}, {"version", kVersion}, {"id", "wstuck"}, {"cwd", project}, {"label", "stuck"}, {"restart", true}, {"verify", true}, {"clear", true}});
+        sw.send({{"type", "register"}, {"version", kVersion}, {"id", "wstuck"}, {"cwd", project}, {"label", "stuck"}, {"restart", true}, {"verify", true}, {"clear", true}, {"submitCheck", true}});
         const std::string stuckTr = home + "/stuck-tr/stuck-1.jsonl"; // outside the conversations list
         writeFile(stuckTr, userLine("start"));
         hook("wstuck", {{"hook_event_name", "SessionStart"}, {"session_id", "stuck-1"}, {"source", "startup"}, {"transcript_path", stuckTr}});
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a slash test session");
-        // (a) the box stays dirty
+        // (a) a slash command whose Return did not take
         a.send({{"type", "prompt"}, {"ref", 80}, {"session", "wstuck"}, {"text", "/context"}});
         check(sw.next("type").value("text", "") == "/context", "the slash command is typed");
-        sw.send({{"type", "draft"}, {"dirty", true}});
         sw.send({{"type", "typed"}, {"ok", true}});
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "busy while the command is pending");
-        check(sw.next("clear", {}, 7000).empty(), "no clear before 10 s");
-        check(!sw.next("clear", {}, 6000).empty(), "after 10 s of a dirty box the wrapper is asked to clear it");
-        const json stuck = a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 1000);
+        sw.send({{"type", "submitted"}, {"ok", false}});
+        const json stuck = a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 2000);
         check(stuck.value("text", "") == "/context", "the app is told: " + stuck.dump());
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after the stuck command");
-        sw.send({{"type", "draft"}, {"dirty", false}});
-        // (b) the box is free, no output: no false fire
-        a.send({{"type", "prompt"}, {"ref", 81}, {"session", "wstuck"}, {"text", "/context"}});
-        check(sw.next("type").value("text", "") == "/context", "the second command is typed");
+        // (b) a prompt whose Return did not take: typed once more, silently;
+        // the second failure is shown to the owner
+        a.send({{"type", "prompt"}, {"ref", 81}, {"session", "wstuck"}, {"text", "eins"}});
+        check(sw.next("type").value("text", "") == "eins", "the prompt is typed");
         sw.send({{"type", "typed"}, {"ok", true}});
-        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "busy while the second command is pending");
-        check(sw.next("clear", {}, 2500).empty(), "a free box is not cleared");
-        sw.send({{"type", "draft"}, {"dirty", true}}); // the owner types in the terminal
-        check(sw.next("clear", {}, 12000).empty(), "the owner's draft, typed later, is never cleared");
-        sw.send({{"type", "draft"}, {"dirty", false}});
-        check(waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") != "busy"; }, 500).empty(), "and the session stays busy");
+        sw.send({{"type", "submitted"}, {"ok", true}}); // ignored
+        sw.send({{"type", "submitted"}, {"ok", false}});
+        check(sw.next("type", {}, 3000).value("text", "") == "eins", "the Return did not take: the prompt is typed again");
+        check(a.next("attention", {}, 300).empty(), "silently the first time");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        sw.send({{"type", "submitted"}, {"ok", false}});
+        const json stuck2 = a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 2000);
+        check(stuck2.value("text", "") == "eins", "the second failure tells the app: " + stuck2.dump());
+        json shown = waitSession(a, "wstuck", [](const json &s) { return s.value("dialog", json()) == "screen"; });
+        check(!shown.empty() && shown.value("queued", 0) == 1, "and the owner sees a screen dialog, the prompt waits: " + shown.dump());
+        check(sw.next("type", {}, 800).empty(), "it is not typed a third time by itself");
+        a.send({{"type", "answer"}, {"ref", 84}, {"session", "wstuck"}, {"choice", "send"}});
+        check(sw.next("type").value("text", "") == "eins", "answer send types it");
+        hook("wstuck", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "stuck-1"}, {"prompt", "eins"}});
+        hook("wstuck", {{"hook_event_name", "Stop"}, {"session_id", "stuck-1"}, {"last_assistant_message", "Eins."}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle again");
+        a.send({{"type", "prompt"}, {"ref", 85}, {"session", "wstuck"}, {"text", "/context"}});
+        check(sw.next("type").value("text", "") == "/context", "a command is typed");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "busy while it is pending");
+        check(waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") != "busy"; }, 500).empty(), "a free box without output does not end it");
         // (c) an auto compact_boundary ends a pending /compact
         std::ofstream(stuckTr, std::ios::app) << userLine("<command-name>/context</command-name>") + userLine("<local-command-stdout>ctx</local-command-stdout>");
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "the output ends the /context");

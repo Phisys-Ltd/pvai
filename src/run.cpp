@@ -468,6 +468,17 @@ int runWrapper(const WrapperOptions &options)
         int seen = 0; // lines already showing it as a prompt before the paste
     };
     std::optional<Typing> typing;
+    // After the Return of a verified paste: the box must change (emptied by
+    // the submit, or anything else); else Claude Code ignored the Return and
+    // it is pressed again, twice at most, 1.5 s apart.
+    struct SubmitCheck {
+        std::string box; // the box as it was after the paste
+        std::string text;
+        int seen = 0;
+        int presses = 0;
+        Clock::time_point at;
+    };
+    std::optional<SubmitCheck> submitCheck;
     // A paste the check did not see go in may still stand in the box: it is
     // emptied before anything is typed again, else the retry adds to it.
     bool leftover = false;
@@ -494,7 +505,7 @@ int runWrapper(const WrapperOptions &options)
     auto registerSelf = [&] {
         daemon->send({{"type", "register"}, {"version", kVersion}, {"id", id}, {"label", options.label}, {"cwd", cwd},
                       {"pid", static_cast<int>(::getpid())}, {"running", registered}, {"detached", detached},
-                      {"restart", true}, {"verify", true}, {"modes", true}, {"clear", true}, {"paced", true}});
+                      {"restart", true}, {"verify", true}, {"modes", true}, {"clear", true}, {"paced", true}, {"submitCheck", true}});
         if (draft.dirty() || shellShown)
             reportDraft(true);
         if (trustAsked)
@@ -586,6 +597,7 @@ int runWrapper(const WrapperOptions &options)
         }
         toMaster.clear();
         returnAt.reset();
+        submitCheck.reset();
         paced.clear();
         pacedAt.reset();
         reportDraft(false);
@@ -615,6 +627,8 @@ int runWrapper(const WrapperOptions &options)
             soonest(msUntil(*screenCheckAt));
         if (typing)
             soonest(std::min(msUntil(typing->until), 50LL));
+        if (submitCheck)
+            soonest(std::min(msUntil(submitCheck->at), 100LL));
         if (!daemon)
             soonest(msUntil(nextReconnect));
         if (!restartWith.empty())
@@ -677,7 +691,7 @@ int runWrapper(const WrapperOptions &options)
                 if (type == "type") {
                     std::string text = message.value("text", "");
                     std::string box;
-                    if (message.value("verify", false) && (typing || leftover || !paced.empty() || !promptFree(box))) {
+                    if (message.value("verify", false) && (typing || submitCheck || leftover || !paced.empty() || !promptFree(box))) {
                         typed(false);
                         continue;
                     }
@@ -801,12 +815,36 @@ int runWrapper(const WrapperOptions &options)
                 typing.reset();
                 typed(true);
             } else if (shown || Clock::now() >= typing->until) {
+                if (shown) {
+                    returnAt = Clock::now() + std::chrono::milliseconds(250);
+                    submitCheck = SubmitCheck{box, typing->text, typing->seen, 0, *returnAt + std::chrono::milliseconds(1500)};
+                }
                 typing.reset();
-                if (shown)
-                    returnAt = Clock::now() + std::chrono::milliseconds(100);
-                else
+                if (!shown)
                     leftover = true;
                 typed(shown);
+            }
+        }
+        if (submitCheck && Clock::now() >= submitCheck->at && !returnAt) {
+            std::string box;
+            const bool inBox = promptBox(screen, box);
+            if (!inBox || box != submitCheck->box || promptLinesShown(screen, submitCheck->text) > submitCheck->seen) {
+                submitCheck.reset();
+                if (daemon)
+                    daemon->send({{"type", "submitted"}, {"ok", true}});
+            } else if (submitCheck->presses < 2) {
+                ++submitCheck->presses;
+                submitCheck->at = Clock::now() + std::chrono::milliseconds(1500);
+                toMaster += "\r";
+            } else {
+                // Claude Code never took the Return: empty the box, the
+                // daemon decides about the prompt. The box is emptied now
+                // (the daemon hears `draft` first) so a retry waits for it.
+                submitCheck.reset();
+                leftover = false;
+                clearBox();
+                if (daemon)
+                    daemon->send({{"type", "submitted"}, {"ok", false}});
             }
         }
         // The paste that did not go in leaves the box once no dialog is over

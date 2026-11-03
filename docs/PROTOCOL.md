@@ -292,7 +292,18 @@ daemon knows every live one on its host.
   compared by their dotted numbers, part by part. The wrapper's first line
   to the daemon is `{"type": "register", "version", "id", "label", "cwd",
   "pid", "running", "detached", "restart", "verify", "modes", "clear",
-  "paced"}`; `version` is new in 0.5.52. `pvai daemon stop|restart`
+  "paced", "submitCheck"}`; `version` is new in 0.5.52. `submitCheck` (0.5.63)
+  says the wrapper checks that the Return of a verified paste took: when
+  the prompt box still shows the pasted text 1.5 s after the Return, it
+  presses Return again (twice at most, 1.5 s apart); if the box still holds
+  the text after that, it empties the box (`draft` dirty until done) and
+  sends `{"type": "submitted", "ok": false}`; a Return that took sends
+  `{"type": "submitted", "ok": true}` (the daemon ignores it). On `ok: false`
+  the daemon ends a pending slash or shell command (`attention` `stuck`) and
+  puts a normal prompt back at the front of the queue: typed again once,
+  silently, once the box is empty; the second time for the same prompt it
+  is `screen`-blocked with `attention` `stuck`, as for any prompt that did
+  not go in. `pvai daemon stop|restart`
   prints how many sessions run a `pvai run` that is not its own version
   (the daemon lists the wrappers' versions in `shutting-down.wrappers`).
 - `limited` (since 0.5.50): `null`, or `{"resetsAt": <Unix seconds, null
@@ -414,7 +425,7 @@ Daemon to app:
 | `projects` | `dirs: [path]` | most recently used first |
 | `browse` | `path`, `dirs: [name]`, `ok` | sorted, hidden ones left out; `ok: false` when `path` cannot be read |
 | `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn counts as spoken (see "What gets spoken") |
-| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the dialog's first line). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models"); since 0.5.50 `kind: "limited"`: a Claude Code session hit its usage limit, `text` is Claude Code's message (see "Usage limit"); since 0.5.62 `kind: "stuck"`: a slash or shell command the daemon typed stayed in Claude Code's prompt box for 10 s without running; the daemon emptied the box (`clear`) and the session is idle again; `text` is the first 40 characters of the command |
+| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the dialog's first line). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models"); since 0.5.50 `kind: "limited"`: a Claude Code session hit its usage limit, `text` is Claude Code's message (see "Usage limit"); since 0.5.63 `kind: "stuck"`: sent when the wrapper reports that Claude Code did not act on the Return (`submitted` with `ok: false`, see `register`): for a slash or shell command the box was emptied and the session is idle again; for a prompt it was typed a second time and failed again, and it waits at the front of the queue behind the `screen` dialog; `text` is the first 40 characters |
 | `history` | `session`, `entries: [Entry]` | answer to `subscribe`, oldest first; sent again, to every subscriber, when the session moves to another transcript (`/clear`): the view starts over |
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
 | `conversations` | `assistant`, `cwd`, `conversations: [Conversation]` | answer to `conversations` |
