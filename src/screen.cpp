@@ -642,10 +642,11 @@ int promptLinesShown(const Screen &screen, const std::string &text)
         std::string row = screen.row(r);
         for (std::size_t at; (at = row.find("\xC2\xA0")) != std::string::npos;)
             row.replace(at, 2, " "); // Claude Code draws a no-break space after the mark
-        const auto from = row.find_first_not_of(' ');
-        if (from == std::string::npos || row.compare(from, mark.size(), mark) != 0)
+        // A sent prompt starts at the left edge; an indented mark is the
+        // highlighted row of the slash command menu over the box.
+        if (row.compare(0, mark.size(), mark) != 0)
             continue;
-        const auto start = row.find_first_not_of(' ', from + mark.size());
+        const auto start = row.find_first_not_of(' ', mark.size());
         if (start != std::string::npos && row.compare(start, first.size(), first) == 0)
             ++count;
     }

@@ -147,6 +147,12 @@ int main()
     pvai::Screen pasted(12, 60);
     feed(pasted, "\x1b[2J\x1b[H\r\n\r\n" + rules2 + "\r\n\xE2\x9D\xAF\xC2\xA0" + mic2 + "\r\n" + rules2);
     check(pvai::promptLinesShown(pasted, mic2) == 0, "the text only in the prompt box is not a submitted prompt");
+    // A pasted /compact: Claude Code 2.1.317 opens its command menu over the
+    // box, the highlighted row indented with the same mark. Not a sent prompt.
+    pvai::Screen menu(12, 70);
+    feed(menu, "\x1b[2J\x1b[H\xE2\x9D\xAF hallo\r\n\r\n  \xE2\x9D\xAF /compact      Free up context by summarizing\r\n    /autocompact  Set how full\r\n" + rules2
+                   + "\r\n\xE2\x9D\xAF\xC2\xA0/compact\r\n" + rules2);
+    check(pvai::promptLinesShown(menu, "/compact") == 0, "the command menu's highlighted row is not a sent prompt");
 
     pvai::Screen select_(14, 70);
     // Claude Code's select list (/model with usage credits): its footer is "Enter to select".
