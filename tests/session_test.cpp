@@ -824,6 +824,68 @@ int main(int argc, char **argv)
         check(noClear.value("reason", "") == "not-supported", "an older wrapper cannot clear: " + noClear.dump());
     }
 
+    // 0.5.60: a paste the check did not see in time stays in the box; the
+    // wrapper empties it before the retry, else the prompt goes in twice.
+    // A fake Claude Code draws the box, shows the first paste only after
+    // 3 s and writes what Return submits.
+    {
+        const std::string tui = bin + "/fake-tui.py";
+        const std::string submitted = home + "/tui.submitted";
+        writeFile(tui,
+                  "import os, sys, time, tty\n"
+                  "tty.setraw(0)\n"
+                  "box = ''\n"
+                  "pastes = 0\n"
+                  "def draw():\n"
+                  "    rule = '\\u2500' * 40\n"
+                  "    os.write(1, ('\\x1b[2J\\x1b[30;1H' + rule + '\\r\\n\\u276f ' + box + '\\r\\n' + rule + '\\r\\n  ? for shortcuts').encode())\n"
+                  "os.write(1, b'\\x1b[?2004h')\n"
+                  "draw()\n"
+                  "buf = b''\n"
+                  "while True:\n"
+                  "    data = os.read(0, 4096)\n"
+                  "    if not data: break\n"
+                  "    buf += data\n"
+                  "    while buf:\n"
+                  "        if buf.startswith(b'\\x1b[200~'):\n"
+                  "            end = buf.find(b'\\x1b[201~')\n"
+                  "            if end < 0: break\n"
+                  "            box += buf[6:end].decode()\n"
+                  "            buf = buf[end + 6:]\n"
+                  "            pastes += 1\n"
+                  "            if pastes == 1: time.sleep(3)\n"
+                  "        elif buf[:1] == b'\\x1b':\n"
+                  "            if len(buf) < 6: break\n"
+                  "            buf = buf[6:]\n"
+                  "        else:\n"
+                  "            c = buf[:1]; buf = buf[1:]\n"
+                  "            if c == b'\\r':\n"
+                  "                with open('" + submitted + "', 'a') as f: f.write(box + '\\n')\n"
+                  "                box = ''\n"
+                  "            elif c == b'\\x15': box = ''\n"
+                  "            elif c == b'\\x7f': box = box[:-1]\n"
+                  "            elif c != b'\\x0b': box += c.decode()\n"
+                  "        draw()\n",
+                  false);
+        const std::string pidFile = home + "/tui.pid";
+        (void)std::system(("cd '" + project + "' && " + g_pvai + " run --detached --id wpaste -- python3 '" + tui
+                           + "' >/dev/null 2>&1 & echo $! > '" + pidFile + "'").c_str());
+        check(!waitSession(a, "wpaste", [](const json &) { return true; }, 3000).empty(), "paste: the wrapper registers");
+        hook("wpaste", {{"hook_event_name", "SessionStart"}, {"session_id", "p-1"}, {"source", "startup"}});
+        check(!waitSession(a, "wpaste", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "paste: idle");
+        a.send({{"type", "prompt"}, {"ref", 70}, {"session", "wpaste"}, {"text", "eins"}});
+        std::string got;
+        for (int i = 0; i < 150 && got.empty(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            got = readFile(submitted);
+        }
+        check(got == "eins\n", "paste: a slow first paste goes in once, not twice: [" + got + "]");
+        hook("wpaste", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "p-1"}, {"prompt", "eins"}});
+        check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 70; }).value("session", "") == "wpaste",
+              "paste: delivered");
+        (void)std::system(("kill $(cat '" + pidFile + "') 2>/dev/null").c_str());
+    }
+
     // 0.5.44: a typed ok:false without a screen is retried; trust answered in
     // the terminal; dialog keys; big hook events.
     {

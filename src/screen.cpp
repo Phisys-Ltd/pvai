@@ -522,6 +522,11 @@ void Screen::feed(const char *data, std::size_t n)
 
 std::string screenDialog(const Screen &screen)
 {
+    // A dialog always takes the prompt box's place: while the box shows,
+    // whatever stands above it is conversation (and a slash or @ menu
+    // stands below it), never a dialog.
+    if (std::string box; promptBox(screen, box))
+        return {};
     static const std::array<const char *, 8> footers = {
         "Enter to confirm", "Enter to continue", "Enter to select", "Enter to submit",
         "Esc to cancel",    "Esc to exit",       "Esc to go back",  "Esc to close",

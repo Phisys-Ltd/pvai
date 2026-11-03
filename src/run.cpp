@@ -435,13 +435,16 @@ int runWrapper(const WrapperOptions &options)
     bool draftSent = false;   // what the daemon last heard as `draft`
     std::string modeShown;    // the permission mode the footer shows
     std::optional<Clock::time_point> screenCheckAt;
+    // A dialog counts once the prompt box has stayed away a moment: it is
+    // gone for a redraw, Ctrl+O or a picker page too.
+    std::optional<Clock::time_point> dialogSince;
     auto sendScreen = [&] {
         daemon->send({{"type", "screen"}, {"dialog", screenShown.empty() ? json() : json(screenShown)}, {"prompt", promptShown},
                       {"mode", modeShown.empty() ? json() : json(modeShown)}});
     };
     auto promptFree = [&](std::string &box) {
         bool shell = false;
-        return promptBox(screen, box, &shell) && !shell && screenDialog(screen).empty();
+        return promptBox(screen, box, &shell) && !shell; // the box shows: no dialog over it
     };
     // Keys that go in one small group at a time: Claude Code drops control
     // keys that arrive in one large chunk.
@@ -465,6 +468,20 @@ int runWrapper(const WrapperOptions &options)
         int seen = 0; // lines already showing it as a prompt before the paste
     };
     std::optional<Typing> typing;
+    // A paste the check did not see go in may still stand in the box: it is
+    // emptied before anything is typed again, else the retry adds to it.
+    bool leftover = false;
+    // Empties the prompt box wherever the cursor is, also a long or
+    // multi-line one, and leaves shell mode: Ctrl+K and Ctrl+U each take
+    // one line, Backspace into an empty box ends shell mode. Esc does neither.
+    auto clearBox = [&] {
+        pacedGap = std::chrono::milliseconds(20);
+        paced.assign(40, "\x0b\x15");
+        paced.insert(paced.end(), 3, "\x7f");
+        pacedAt = Clock::now();
+        draft = Draft();
+        reportDraft(false);
+    };
     auto typed = [&](bool ok) {
         if (daemon)
             daemon->send({{"type", "typed"}, {"ok", ok}, {"screen", ok ? json() : json(screenSnapshot(screen))}});
@@ -660,7 +677,7 @@ int runWrapper(const WrapperOptions &options)
                 if (type == "type") {
                     std::string text = message.value("text", "");
                     std::string box;
-                    if (message.value("verify", false) && (typing || !paced.empty() || !promptFree(box))) {
+                    if (message.value("verify", false) && (typing || leftover || !paced.empty() || !promptFree(box))) {
                         typed(false);
                         continue;
                     }
@@ -693,16 +710,8 @@ int runWrapper(const WrapperOptions &options)
                             pacedAt = Clock::now();
                     }
                 } else if (type == "clear") {
-                    // Empties the prompt box wherever the cursor is, also a
-                    // long or multi-line one, and leaves shell mode: Ctrl+K
-                    // and Ctrl+U each take one line, Backspace into an empty
-                    // box ends shell mode. Esc does neither.
-                    pacedGap = std::chrono::milliseconds(20);
-                    paced.assign(40, "\x0b\x15");
-                    paced.insert(paced.end(), 3, "\x7f");
-                    pacedAt = Clock::now();
-                    draft = Draft();
-                    reportDraft(false);
+                    leftover = false;
+                    clearBox();
                 } else if (type == "snapshot") {
                     daemon->send({{"type", "snapshot"}, {"screen", screenSnapshot(screen)}});
                 } else if (type == "terminate") {
@@ -783,7 +792,7 @@ int runWrapper(const WrapperOptions &options)
         }
         if (typing) {
             std::string box;
-            const bool shown = promptBox(screen, box) && box != typing->before && screenDialog(screen).empty();
+            const bool shown = promptBox(screen, box) && box != typing->before;
             // Claude Code may have taken the prompt already (a quick Return of
             // its own, a screen seen between two frames): it shows as a
             // conversation line above the box. That is delivered; a Return
@@ -795,7 +804,19 @@ int runWrapper(const WrapperOptions &options)
                 typing.reset();
                 if (shown)
                     returnAt = Clock::now() + std::chrono::milliseconds(100);
+                else
+                    leftover = true;
                 typed(shown);
+            }
+        }
+        // The paste that did not go in leaves the box once no dialog is over
+        // it; the owner's own typing since then keeps it.
+        if (leftover && !typing && paced.empty()) {
+            if (draft.dirty())
+                leftover = false;
+            else if (screenDialog(screen).empty()) {
+                leftover = false;
+                clearBox();
             }
         }
         if (screenCheckAt && Clock::now() >= *screenCheckAt) {
@@ -803,6 +824,17 @@ int runWrapper(const WrapperOptions &options)
             std::string box;
             bool shell = false;
             std::string shown = screenDialog(screen);
+            if (shown.empty()) {
+                dialogSince.reset();
+            } else if (screenShown.empty()) {
+                const auto now = Clock::now();
+                if (!dialogSince)
+                    dialogSince = now;
+                if (now - *dialogSince < std::chrono::seconds(1)) {
+                    shown.clear(); // not yet: look again when the second is up
+                    screenCheckAt = *dialogSince + std::chrono::seconds(1);
+                }
+            }
             const bool prompt = shown.empty() && promptBox(screen, box, &shell);
             const std::string mode = shown.empty() ? screenMode(screen) : modeShown;
             if (prompt && shell != shellShown) {

@@ -170,5 +170,16 @@ int main()
     // A real dialog with folded output of its own (no notice) still is one.
     feed(limit, "\x1b[2J\x1b[H\xE2\x80\xA6 3 more lines\r\n" + rule + "\r\n Allow Bash?\r\n \xE2\x9D\xAF 1. Yes\r\n   2. No\r\n\r\n Enter to confirm \xC2\xB7 Esc to cancel");
     check(pvai::screenDialog(limit).find("Allow Bash?") != std::string::npos, "a permission dialog is still a dialog");
+    // While the prompt box shows there is no dialog, whatever stands near
+    // it: an indented answer line and a rule above, a menu with a footer
+    // under it.
+    {
+        pvai::Screen menu(12, 40);
+        feed(menu, "\x1b[2J\x1b[H    entscheidet Taifun.\r\n" + rule + "\r\n" + rule + "\r\n\xE2\x9D\xAF /mo\r\n" + rule
+                       + "\r\n  /model  Set the model\r\n  Enter to select \xC2\xB7 Esc to cancel");
+        std::string box;
+        check(pvai::promptBox(menu, box) && box == "\xE2\x9D\xAF /mo", "the box shows: [" + box + "]");
+        check(pvai::screenDialog(menu).empty(), "a footer under a showing box is no dialog: [" + pvai::screenDialog(menu) + "]");
+    }
     return pvai::test::finish();
 }
