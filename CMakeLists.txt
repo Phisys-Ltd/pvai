@@ -15,7 +15,11 @@ find_package(OpenSSL 3 REQUIRED)
 
 # The daemon's code as one library: a change recompiles its file only, and
 # the programs and tests link it instead of compiling their own copies.
+# The version is generated into its own file: a release recompiles that one.
+configure_file(src/version.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/version.cpp @ONLY)
+
 add_library(pvai_core STATIC
+    ${CMAKE_CURRENT_BINARY_DIR}/version.cpp
     src/codex.cpp
     src/common.cpp
     src/claude.cpp
@@ -36,7 +40,6 @@ add_library(pvai_core STATIC
     third_party/qrcodegen/qrcodegen.cpp
 )
 target_include_directories(pvai_core PUBLIC src PRIVATE third_party/qrcodegen)
-target_compile_definitions(pvai_core PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
 target_compile_options(pvai_core PRIVATE -Wall -Wextra)
 target_link_libraries(pvai_core PUBLIC nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -45,7 +48,6 @@ endif()
 
 add_executable(pvai src/main.cpp)
 target_include_directories(pvai PRIVATE third_party/qrcodegen)
-target_compile_definitions(pvai PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
 target_compile_options(pvai PRIVATE -Wall -Wextra)
 target_link_libraries(pvai PRIVATE pvai_core)
 
@@ -57,7 +59,6 @@ if(BUILD_TESTING)
     function(pvai_test name source)
         add_executable(${name} ${source})
         target_include_directories(${name} PRIVATE src)
-        target_compile_definitions(${name} PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
         target_link_libraries(${name} PRIVATE pvai_core)
     endfunction()
     pvai_test(pvai-direct-test tests/direct_test.cpp)
@@ -76,9 +77,8 @@ endif()
 #   cmake -B build-fuzz -DCMAKE_CXX_COMPILER=clang++ -DPVAI_FUZZ=ON && cmake --build build-fuzz --target fuzz-pair
 option(PVAI_FUZZ "build the libFuzzer targets" OFF)
 if(PVAI_FUZZ)
-    add_executable(fuzz-pair tests/fuzz_pair.cpp src/common.cpp src/pairing.cpp src/text.cpp)
+    add_executable(fuzz-pair tests/fuzz_pair.cpp src/common.cpp src/pairing.cpp src/text.cpp ${CMAKE_CURRENT_BINARY_DIR}/version.cpp)
     target_include_directories(fuzz-pair PRIVATE src)
-    target_compile_definitions(fuzz-pair PRIVATE PVAI_VERSION="${PROJECT_VERSION}")
     target_compile_options(fuzz-pair PRIVATE -fsanitize=fuzzer,address,undefined -g)
     target_link_options(fuzz-pair PRIVATE -fsanitize=fuzzer,address,undefined)
     target_link_libraries(fuzz-pair PRIVATE nlohmann_json::nlohmann_json)

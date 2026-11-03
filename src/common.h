@@ -16,7 +16,7 @@ namespace pvai {
 using json = nlohmann::json;
 
 constexpr int kDefaultPort = 7470;
-constexpr const char *kVersion = PVAI_VERSION;
+extern const char *const kVersion; // version.cpp, generated from version.cpp.in
 constexpr std::size_t kMaxLine = 256 * 1024;
 // Peers on the unix socket are the hooks and wrappers of this host: a hook
 // event with a big tool input may be long.
