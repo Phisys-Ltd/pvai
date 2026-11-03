@@ -23,6 +23,8 @@ const char *kInterruptMark = "[Request interrupted by user";
 constexpr auto kSubmitTimeout = std::chrono::seconds(15);
 constexpr auto kTypedTimeout = std::chrono::seconds(5); // the wrapper checks for up to 2 s
 constexpr auto kModelTimeout = std::chrono::seconds(30); // a /model with no output by then has failed
+constexpr auto kStuckTimeout = std::chrono::seconds(10); // a slash command still in the prompt box by then did not run
+constexpr auto kStuckArm = std::chrono::seconds(2); // a dirty box reported later is the owner's typing
 constexpr auto kRetryAfter = std::chrono::milliseconds(600);
 constexpr auto kTailEvery = std::chrono::milliseconds(300);
 constexpr auto kSubagentsEvery = std::chrono::seconds(1);
@@ -232,6 +234,14 @@ void ClaudeSession::markSlash(const Prompt &prompt)
     slashModel_ = prompt.modelSwitch;
     slashShell_ = prompt.text[0] == '!';
     slashMark_ = localDone();
+    slashText_ = prompt.text;
+    slashCompact_ = prompt.text == "/compact" || prompt.text.rfind("/compact ", 0) == 0;
+    compactMark_ = tail_.compactions();
+    stuckAt_.reset();
+    slashLeftBox_ = false;
+    slashAt_ = Clock::now();
+    if (draft_)
+        stuckAt_ = Clock::now() + kStuckTimeout;
     // A /model that goes in has 30 s to show its output (see the tick).
     modelAt_.reset();
     if (prompt.modelSwitch)
@@ -245,6 +255,11 @@ void ClaudeSession::submit(const Prompt &prompt)
     const bool slash = prompt.text[0] == '/' || prompt.text[0] == '!';
     const bool verify = verify_ && !sendUnchecked_;
     sendUnchecked_ = false;
+    {
+        std::string shown = prompt.text.substr(0, 40);
+        std::replace(shown.begin(), shown.end(), '\n', ' ');
+        host_.log(id_ + ": types " + shown + (verify ? " (verify)" : " (unchecked)"));
+    }
     wrapper_.send({{"type", "type"}, {"text", (prompt.voice && !slash ? kMicMark : "") + prompt.text}, {"verify", verify}});
     if (verify_)
         inFlight_ = prompt;
@@ -744,6 +759,15 @@ void ClaudeSession::onDraft(bool dirty)
     if (draft_ == dirty)
         return;
     draft_ = dirty;
+    // Once the box was free the command went in; text after that, or later
+    // than kStuckArm after it was typed, is the owner's own draft, never
+    // cleared.
+    if (!dirty) {
+        stuckAt_.reset();
+        slashLeftBox_ = true;
+    } else if (slashPending_ && !slashLeftBox_ && !stuckAt_ && Clock::now() - slashAt_ < kStuckArm) {
+        stuckAt_ = Clock::now() + kStuckTimeout;
+    }
     deliver();
     changed();
 }
@@ -899,6 +923,7 @@ void ClaudeSession::onTyped(bool ok, const std::string &screen)
         return;
     typedDeadline_.reset();
     if (!ok) {
+        host_.log(id_ + ": typed check failed");
         notDelivered(screen, true);
         return;
     }
@@ -1019,6 +1044,25 @@ void ClaudeSession::armEscapeCheck(bool forceIdle)
     escapeChecks_ = {now + std::chrono::milliseconds(500), now + std::chrono::milliseconds(1500), now + std::chrono::seconds(4)};
 }
 
+// The command stayed in the prompt box: Claude Code never ran it. Empty the
+// box and free the session.
+void ClaudeSession::slashStuck()
+{
+    host_.log(id_ + ": " + slashText_.substr(0, 40) + " stayed in the prompt box, cleared");
+    if (canClear_)
+        wrapper_.send({{"type", "clear"}});
+    slashPending_ = false;
+    if (slashModel_)
+        modelDone("failed", "did not run");
+    if (state_ == "busy") {
+        state_ = "idle";
+        voiceTurn_ = false;
+        deliver();
+    }
+    attention("stuck", slashText_.substr(0, 40));
+    changed();
+}
+
 void ClaudeSession::tick(Clock::time_point now)
 {
     runEscapeChecks(now);
@@ -1072,6 +1116,11 @@ void ClaudeSession::tick(Clock::time_point now)
             changed();
         }
     }
+    if (stuckAt_ && now >= *stuckAt_) {
+        stuckAt_.reset();
+        if (slashPending_ && draft_ && !slashLeftBox_ && dialog_.empty())
+            slashStuck();
+    }
     if (screenAt_ && now >= *screenAt_) {
         screenAt_.reset();
         if (!screenText_.empty() && dialog_.empty() && state_ == "busy")
@@ -1112,6 +1161,8 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
         next = std::min(next, *submitDeadline_);
     if (screenAt_)
         next = std::min(next, *screenAt_);
+    if (stuckAt_)
+        next = std::min(next, *stuckAt_);
     if (modeDeadline_)
         next = std::min(next, *modeDeadline_);
     if (modelAt_)
@@ -1279,7 +1330,7 @@ void ClaudeSession::pollTranscript()
             changed();
         }
     }
-    if (slashPending_ && localDone() > slashMark_) {
+    if (slashPending_ && (localDone() > slashMark_ || (slashCompact_ && tail_.compactions() > compactMark_))) {
         slashPending_ = false;
         if (slashModel_) {
             const std::string &out = tail_.lastLocalOutput();

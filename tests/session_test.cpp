@@ -990,6 +990,49 @@ int main(int argc, char **argv)
         hook("wclr", {{"hook_event_name", "Stop"}, {"session_id", "c-1"}, {"last_assistant_message", "Drei."}});
     }
 
+    // A slash command that stays in the prompt box did not run: after 10 s the
+    // box is cleared and the session is idle. A free box without output is
+    // no sign of that, and any compaction ends a pending /compact.
+    {
+        LineClient sw;
+        sw.send({{"type", "register"}, {"version", kVersion}, {"id", "wstuck"}, {"cwd", project}, {"label", "stuck"}, {"restart", true}, {"verify", true}, {"clear", true}});
+        const std::string stuckTr = home + "/stuck-tr/stuck-1.jsonl"; // outside the conversations list
+        writeFile(stuckTr, userLine("start"));
+        hook("wstuck", {{"hook_event_name", "SessionStart"}, {"session_id", "stuck-1"}, {"source", "startup"}, {"transcript_path", stuckTr}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a slash test session");
+        // (a) the box stays dirty
+        a.send({{"type", "prompt"}, {"ref", 80}, {"session", "wstuck"}, {"text", "/context"}});
+        check(sw.next("type").value("text", "") == "/context", "the slash command is typed");
+        sw.send({{"type", "draft"}, {"dirty", true}});
+        sw.send({{"type", "typed"}, {"ok", true}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "busy while the command is pending");
+        check(sw.next("clear", {}, 7000).empty(), "no clear before 10 s");
+        check(!sw.next("clear", {}, 6000).empty(), "after 10 s of a dirty box the wrapper is asked to clear it");
+        const json stuck = a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 1000);
+        check(stuck.value("text", "") == "/context", "the app is told: " + stuck.dump());
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after the stuck command");
+        sw.send({{"type", "draft"}, {"dirty", false}});
+        // (b) the box is free, no output: no false fire
+        a.send({{"type", "prompt"}, {"ref", 81}, {"session", "wstuck"}, {"text", "/context"}});
+        check(sw.next("type").value("text", "") == "/context", "the second command is typed");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "busy while the second command is pending");
+        check(sw.next("clear", {}, 2500).empty(), "a free box is not cleared");
+        sw.send({{"type", "draft"}, {"dirty", true}}); // the owner types in the terminal
+        check(sw.next("clear", {}, 12000).empty(), "the owner's draft, typed later, is never cleared");
+        sw.send({{"type", "draft"}, {"dirty", false}});
+        check(waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") != "busy"; }, 500).empty(), "and the session stays busy");
+        // (c) an auto compact_boundary ends a pending /compact
+        std::ofstream(stuckTr, std::ios::app) << userLine("<command-name>/context</command-name>") + userLine("<local-command-stdout>ctx</local-command-stdout>");
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "the output ends the /context");
+        a.send({{"type", "prompt"}, {"ref", 82}, {"session", "wstuck"}, {"text", "/compact"}});
+        check(sw.next("type").value("text", "") == "/compact", "/compact is typed");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "busy while /compact is pending");
+        std::ofstream(stuckTr, std::ios::app) << R"({"type":"system","subtype":"compact_boundary","uuid":"cb1","compactMetadata":{"trigger":"auto"}})" "\n";
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }, 5000).empty(), "an auto compaction ends a pending /compact");
+    }
+
     // AskUserQuestion (0.5.33): the questions with their choices; option,
     // next and text answer them, the review comes last.
     {

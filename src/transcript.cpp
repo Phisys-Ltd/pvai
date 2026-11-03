@@ -274,7 +274,7 @@ void TranscriptTail::follow(const std::string &path)
 void TranscriptTail::resetState()
 {
     toolNames_.clear();
-    localOutputs_ = shellOutputs_ = wakeTurns_ = 0;
+    localOutputs_ = shellOutputs_ = wakeTurns_ = compactions_ = 0;
     lastLocalOutput_.clear();
     wakePending_ = false;
     cache_ = nullptr;
@@ -440,6 +440,7 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
     // before the prompt cache expired); /compact typed by the owner shows as
     // its command line already.
     if (type == "system" && line.value("subtype", "") == "compact_boundary" && !line.value("isSidechain", false)) {
+        ++compactions_;
         const json meta = line.value("compactMetadata", json());
         if (!meta.is_object() || meta.value("trigger", "") != "manual") {
             json entry = {{"kind", "command"}, {"text", "/compact"}};

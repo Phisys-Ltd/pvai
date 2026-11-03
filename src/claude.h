@@ -106,6 +106,16 @@ private:
     void modelDone(const std::string &state, const std::string &error = {});
     void markSlash(const Prompt &prompt);
     std::size_t slashMark_ = 0;
+    // A pending /compact also ends with any compaction in the transcript.
+    bool slashCompact_ = false;
+    std::size_t compactMark_ = 0;
+    std::string slashText_;
+    // The prompt box held text this long after a slash command went in: it
+    // did not run (a command that runs empties the box at once).
+    std::optional<Clock::time_point> stuckAt_;
+    bool slashLeftBox_ = false; // the box was free since the command went in
+    Clock::time_point slashAt_{};
+    void slashStuck();
     bool slashShell_ = false; // the pending command is a shell command (!): its output ends it
     std::size_t localDone() const { return slashShell_ ? tail_.shellOutputs() : tail_.localOutputs(); }
     std::string lastEvent_; // the last hook event's key, to drop one that comes twice
