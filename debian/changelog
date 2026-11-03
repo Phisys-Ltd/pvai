@@ -1,3 +1,15 @@
+pvai (0.5.61-1) trixie; urgency=medium
+
+  * A restart of a detached session under another pvai run ends that
+    wrapper; a wrapper of the installed pvai takes over the same session id
+    and conversation (before, only Claude Code started again, under the old
+    wrapper).
+  * Without XDG_RUNTIME_DIR (a systemd-run job, cron) the runtime directory
+    is /run/user/<uid>/pvai where that directory exists; "no daemon" names
+    the socket it looked for.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 17:30:00 +0100
+
 pvai (0.5.60-1) trixie; urgency=medium
 
   * A subagent hand-back or task notification that comes through
