@@ -487,6 +487,26 @@ void ClaudeSession::terminate()
     wrapper_.send({{"type", "terminate"}});
 }
 
+// A wrapper of another pvai only starts Claude Code again inside itself,
+// and stays what it is: it ends instead, and the daemon starts a wrapper of
+// the installed pvai with the same session id and conversation.
+std::string DetachedClaudeSession::restart()
+{
+    if (wrapperVersion() == kVersion)
+        return ClaudeSession::restart();
+    if (!restartable())
+        return "not-restartable";
+    if (state_ != "idle" || draft_)
+        return "busy";
+    replacement_ = StartRequest{cwd(), label(), {}, claudeSession(), id()};
+    host_.log(id() + ": restart replaces its pvai run " + (wrapperVersion().empty() ? std::string("(unversioned)") : wrapperVersion()));
+    stopping_ = true;
+    terminate();
+    state_ = "starting";
+    changed();
+    return {};
+}
+
 std::string DetachedClaudeSession::stop()
 {
     stopping_ = true;
@@ -1465,7 +1485,7 @@ void ClaudeBackend::start(const StartRequest &request, Started done)
     const std::string bin = binary();
     if (bin.empty())
         return done({}, "not-installed");
-    const std::string id = "w" + randomHex(4);
+    const std::string id = request.id.empty() ? "w" + randomHex(4) : request.id;
     std::vector<std::string> argv = {selfExe(), "run", "--detached", "--id", id};
     if (!request.label.empty()) {
         argv.push_back("--name");

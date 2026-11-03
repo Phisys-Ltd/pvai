@@ -29,6 +29,14 @@ struct Prompt {
     bool modelSwitch = false; // Claude Code's /model from setModel: its output tells the outcome
 };
 
+struct StartRequest {
+    std::string cwd; // an existing directory
+    std::string label;
+    std::vector<std::string> args;
+    std::string resume; // a Conversation's id, or empty for a new one
+    std::string id;     // the session id to take (a wrapper replaced), or empty for a new one
+};
+
 class Session;
 
 // What backends and sessions need from the daemon.
@@ -105,6 +113,9 @@ public:
     // keeps its id.
     virtual bool restartable() const { return false; }
     virtual std::string restart() { return "not-restartable"; }
+    // What the daemon starts once this session is gone: a restart that
+    // replaces the wrapper itself.
+    virtual std::optional<StartRequest> replacement() const { return std::nullopt; }
     // Empties the session's prompt box (the owner's draft, a command left
     // in shell mode), so that queued prompts can go in.
     virtual bool clearable() const { return false; }
@@ -204,13 +215,6 @@ struct Conversation {
     std::string id;
     std::string title;
     long long at = 0; // last activity, Unix time
-};
-
-struct StartRequest {
-    std::string cwd; // an existing directory
-    std::string label;
-    std::vector<std::string> args;
-    std::string resume; // a Conversation's id, or empty for a new one
 };
 
 class Backend {

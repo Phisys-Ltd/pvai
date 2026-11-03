@@ -422,9 +422,14 @@ private:
             // The session holds the wrapper's connection: it goes first.
             if (peer->kind == Kind::Wrapper) {
                 if (const auto found = sessions_.find(peer->sessionId); found != sessions_.end()) {
+                    const std::optional<StartRequest> again = found->second->replacement();
                     sessionGone(*found->second);
                     sessions_.erase(found);
                     sessionsDirty_ = true;
+                    if (again) // a restart that replaces the wrapper
+                        claude_->start(*again, [this, id = again->id](const std::string &, const std::string &reason) {
+                            logLine(id + (reason.empty() ? ": a new pvai run takes over" : ": no new pvai run: " + reason));
+                        });
                 }
             }
             if (peer->kind == Kind::Process)

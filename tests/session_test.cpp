@@ -1636,6 +1636,35 @@ int main(int argc, char **argv)
     a.send({{"type", "stop"}, {"ref", 22}, {"session", fresh2}});
     check(!a.next("sessions", [&](const json &m) { return sessionIn(m, fresh2).empty(); }, 5000).empty(), "and it still stops");
 
+    // 0.5.61: a detached session under an older pvai run: the restart ends
+    // that wrapper, and one of the installed pvai takes over the same id
+    // and conversation.
+    fs::remove(bin + "/claude.args");
+    {
+        LineClient old;
+        old.send({{"type", "register"}, {"version", "0.5.56"}, {"id", "wold"}, {"cwd", project}, {"label", "old"},
+                  {"detached", true}, {"restart", true}, {"verify", true}});
+        hook("wold", {{"hook_event_name", "SessionStart"}, {"session_id", "c0ffee00-1111-2222-3333-444455556666"}, {"source", "startup"}});
+        check(!waitSession(a, "wold", [](const json &s) {
+                  return s.value("state", "") == "idle" && s.value("stale", false) && s.value("restartable", false);
+              }).empty(), "stale: a detached session under pvai run 0.5.56");
+        a.send({{"type", "restart"}, {"ref", 23}, {"session", "wold"}});
+        check(a.next("restarting").value("session", "") == "wold", "stale: restarting");
+        check(!old.next("terminate").empty(), "stale: the old wrapper is ended, not asked to restart claude");
+    } // it goes
+    json taken = waitSession(a, "wold", [](const json &s) { return s.value("wrapperVersion", "") == kVersion; }, 5000);
+    check(taken.value("detached", false) && taken.value("label", "") == "old",
+          "stale: a pvai run of this version takes the same id: " + taken.dump());
+    std::string oldArgs;
+    for (int i = 0; i < 50 && oldArgs.empty(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        oldArgs = readFile(bin + "/claude.args");
+    }
+    check(oldArgs.find("--resume c0ffee00-1111-2222-3333-444455556666") != std::string::npos,
+          "stale: with the same conversation: " + oldArgs);
+    a.send({{"type", "stop"}, {"ref", 24}, {"session", "wold"}});
+    check(!a.next("sessions", [&](const json &m) { return sessionIn(m, "wold").empty(); }, 5000).empty(), "stale: the new one stops");
+
     // ---- Versions and updates.
     a.send({{"type", "update"}, {"ref", 20}});
     json updated = a.next("updated", {}, 10000);

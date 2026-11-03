@@ -195,6 +195,11 @@ public:
     using ClaudeSession::ClaudeSession;
     bool detached() const override { return true; }
     std::string stop() override;
+    std::string restart() override;
+    std::optional<StartRequest> replacement() const override { return replacement_; }
+
+private:
+    std::optional<StartRequest> replacement_;
 };
 
 class ClaudeBackend : public Backend {
