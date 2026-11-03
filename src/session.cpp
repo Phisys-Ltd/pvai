@@ -219,6 +219,21 @@ bool Session::deliver()
     return true;
 }
 
+namespace {
+
+// A prompt nobody typed: a message from another session, a subagent's
+// hand-back or a task notification that comes through UserPromptSubmit.
+// It leaves the voice state as it is; only the owner's own prompt sets it.
+bool machinePrompt(const std::string &text)
+{
+    for (const char *mark : {"[Message ", "Another Claude session sent a message", "<task-notification>"})
+        if (text.rfind(mark, 0) == 0)
+            return true;
+    return false;
+}
+
+} // namespace
+
 void Session::promptVoice(const std::string &raw, const Prompt *typed)
 {
     const std::string text = stripPasteFrame(raw);
@@ -229,7 +244,7 @@ void Session::promptVoice(const std::string &raw, const Prompt *typed)
             spokenLast_ = false;
     } else if (text.rfind(kMicMark, 0) == 0) {
         spokenLast_ = true;
-    } else if (text.rfind("[Message ", 0) != 0) {
+    } else if (!machinePrompt(text)) {
         spokenLast_ = false;
     }
     voiceTurn_ = spokenLast_;

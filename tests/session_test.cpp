@@ -1353,6 +1353,10 @@ int main(int argc, char **argv)
     check(said("\xF0\x9F\x8E\x99 hör zu") == json(true), "a spoken turn is spoken");
     check(said("[Message p1 from M4/w1, released by the owner. Answer with: ...]\nhi") == json(true),
           "an agent message after it is spoken too");
+    check(said("Another Claude session sent a message:\n<agent-message from=\"a1\">\ndone\n</agent-message>") == json(true),
+          "a subagent's hand-back after it is spoken too");
+    check(said("<task-notification>\n<status>completed</status>\n</task-notification>") == json(true),
+          "a task notification through UserPromptSubmit is spoken too");
     append(notification);
     check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 1200).empty(),
           "a task notification alone starts no turn");
@@ -1369,6 +1373,8 @@ int main(int argc, char **argv)
     check(said("typed") == json(false), "a typed prompt ends that");
     check(said("[Message p2 from M4/w1, released by the owner. Answer with: ...]\nhi") == json(false),
           "and an agent message after a typed prompt is not spoken");
+    check(said("Another Claude session sent a message:\n<agent-message from=\"a2\">\ndone\n</agent-message>") == json(false),
+          "nor a subagent's hand-back after a typed prompt");
     // Claude Code stores a long delivered message as a paste.
     const std::string frame = "\n\n<pasted_content id=\"8916\">\n[Message p690cecbc from M4/w3c, released by the owner. Answer with: ...]\nhi\n</pasted_content id=\"8916\">";
     check(said("\xF0\x9F\x8E\x99 voice again") == json(true), "a spoken prompt");
