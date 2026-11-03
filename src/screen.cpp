@@ -653,6 +653,18 @@ int promptLinesShown(const Screen &screen, const std::string &text)
     return count;
 }
 
+bool workingShown(const Screen &screen)
+{
+    std::string box;
+    int top = -1;
+    if (!promptBox(screen, box, nullptr, &top))
+        return false;
+    for (int r = 0; r < top; ++r)
+        if (screen.row(r).find("\xE2\x80\xA6 (") != std::string::npos)
+            return true;
+    return false;
+}
+
 std::string screenMode(const Screen &screen)
 {
     static const std::pair<const char *, const char *> marks[] = {

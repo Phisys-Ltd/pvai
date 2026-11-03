@@ -963,7 +963,7 @@ int main(int argc, char **argv)
             (void)std::system(("kill $(cat '" + pidFile + "') 2>/dev/null").c_str());
         }
         // (b) every Return is ignored: three presses, the box is emptied, the
-        // prompt is typed once more into the empty box, then the owner is told
+        // owner is told; the prompt is not typed again by itself
         {
             const std::string log = home + "/ign2.log";
             const std::string pidFile = launch("wign2", log, 1000);
@@ -971,8 +971,8 @@ int main(int argc, char **argv)
             const json stuck = a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 40000);
             check(stuck.value("text", "") == "drei", "ignored Returns: the owner is told: " + stuck.dump());
             const auto got = lines(log);
-            const std::vector<std::string> want = {"P:drei", "I:drei", "I:drei", "I:drei", "P:drei", "I:drei", "I:drei", "I:drei"};
-            check(got == want, "ignored Returns: 3 presses, the box emptied, typed once more into it: [" + readFile(log) + "]");
+            const std::vector<std::string> want = {"P:drei", "I:drei", "I:drei", "I:drei"};
+            check(got == want, "ignored Returns: 3 presses, not typed again: [" + readFile(log) + "]");
             (void)std::system(("kill $(cat '" + pidFile + "') 2>/dev/null").c_str());
         }
     }
@@ -1100,22 +1100,18 @@ int main(int argc, char **argv)
         const json stuck = a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 2000);
         check(stuck.value("text", "") == "/context", "the app is told: " + stuck.dump());
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after the stuck command");
-        // (b) a prompt whose Return did not take: typed once more, silently;
-        // the second failure is shown to the owner
+        // (b) a prompt whose Return did not take: never typed again by
+        // itself (Claude Code may have taken it after all); the owner sees it
         a.send({{"type", "prompt"}, {"ref", 81}, {"session", "wstuck"}, {"text", "eins"}});
         check(sw.next("type").value("text", "") == "eins", "the prompt is typed");
         sw.send({{"type", "typed"}, {"ok", true}});
         sw.send({{"type", "submitted"}, {"ok", true}}); // ignored
         sw.send({{"type", "submitted"}, {"ok", false}});
-        check(sw.next("type", {}, 3000).value("text", "") == "eins", "the Return did not take: the prompt is typed again");
-        check(a.next("attention", {}, 300).empty(), "silently the first time");
-        sw.send({{"type", "typed"}, {"ok", true}});
-        sw.send({{"type", "submitted"}, {"ok", false}});
         const json stuck2 = a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 2000);
-        check(stuck2.value("text", "") == "eins", "the second failure tells the app: " + stuck2.dump());
+        check(stuck2.value("text", "") == "eins", "the failure tells the app: " + stuck2.dump());
         json shown = waitSession(a, "wstuck", [](const json &s) { return s.value("dialog", json()) == "screen"; });
         check(!shown.empty() && shown.value("queued", 0) == 1, "and the owner sees a screen dialog, the prompt waits: " + shown.dump());
-        check(sw.next("type", {}, 800).empty(), "it is not typed a third time by itself");
+        check(sw.next("type", {}, 3000).empty(), "it is not typed again by itself");
         a.send({{"type", "answer"}, {"ref", 84}, {"session", "wstuck"}, {"choice", "send"}});
         check(sw.next("type").value("text", "") == "eins", "answer send types it");
         hook("wstuck", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "stuck-1"}, {"prompt", "eins"}});

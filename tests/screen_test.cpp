@@ -153,6 +153,11 @@ int main()
     feed(menu, "\x1b[2J\x1b[H\xE2\x9D\xAF hallo\r\n\r\n  \xE2\x9D\xAF /compact      Free up context by summarizing\r\n    /autocompact  Set how full\r\n" + rules2
                    + "\r\n\xE2\x9D\xAF\xC2\xA0/compact\r\n" + rules2);
     check(pvai::promptLinesShown(menu, "/compact") == 0, "the command menu's highlighted row is not a sent prompt");
+    check(!pvai::workingShown(menu), "the menu is no work going on");
+    pvai::Screen compacting(12, 70);
+    feed(compacting, "\x1b[2J\x1b[H\xE2\x9D\xAF hallo\r\n\r\n\xE2\x9C\xBB Compacting conversation\xE2\x80\xA6 (0s)\r\n" + rules2
+                         + "\r\n\xE2\x9D\xAF\xC2\xA0noch eine Frage\r\n" + rules2);
+    check(pvai::workingShown(compacting), "a compaction with the prompt still in the box: Claude Code works");
 
     pvai::Screen select_(14, 70);
     // Claude Code's select list (/model with usage credits): its footer is "Enter to select".

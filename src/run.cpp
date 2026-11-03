@@ -828,7 +828,8 @@ int runWrapper(const WrapperOptions &options)
         if (submitCheck && Clock::now() >= submitCheck->at && !returnAt) {
             std::string box;
             const bool inBox = promptBox(screen, box);
-            if (!inBox || box != submitCheck->box || promptLinesShown(screen, submitCheck->text) > submitCheck->seen) {
+            if (!inBox || box != submitCheck->box || promptLinesShown(screen, submitCheck->text) > submitCheck->seen
+                || workingShown(screen)) {
                 submitCheck.reset();
                 if (daemon)
                     daemon->send({{"type", "submitted"}, {"ok", true}});

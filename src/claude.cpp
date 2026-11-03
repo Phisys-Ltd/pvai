@@ -955,7 +955,6 @@ void ClaudeSession::delivered()
         return;
     host_.broadcast({{"type", "delivered"}, {"session", id_}, {"ref", inFlight_->ref}});
     inFlight_.reset();
-    retriedText_.clear();
 }
 
 // The prompt did not go in: in front of the queue again, and the session
@@ -1056,22 +1055,10 @@ void ClaudeSession::onSubmitted(bool ok)
     const std::string text = inFlight_->text;
     std::string shown = text.substr(0, 40);
     std::replace(shown.begin(), shown.end(), '\n', ' ');
-    if (retriedText_ != text) {
-        // The first time silently: the box is empty (or being emptied), the
-        // prompt goes in again at the front once the wrapper reports it free.
-        host_.log(id_ + ": the Return did not take for " + shown + ", typed again");
-        retriedText_ = text;
-        queue_.push_front(*inFlight_);
-        inFlight_.reset();
-        submitDeadline_.reset();
-        voiceTurn_ = false;
-        state_ = "idle";
-        deliver();
-        changed();
-        return;
-    }
-    host_.log(id_ + ": the Return did not take twice for " + shown);
-    retriedText_.clear();
+    // Never typed again by itself: Claude Code may have taken it after all
+    // (a compaction it started first), and a second copy would be a second
+    // turn. The owner sees the screen and decides.
+    host_.log(id_ + ": the Return did not take for " + shown);
     notDelivered("Claude Code did not take the Return for:\n" + shown, false);
     attention("stuck", text.substr(0, 40));
 }

@@ -73,6 +73,11 @@ bool promptBox(const Screen &screen, std::string &text, bool *shell = nullptr, i
 // the screen shows no prompt box.
 int promptLinesShown(const Screen &screen, const std::string &text);
 
+// Claude Code works (a turn or a compaction runs): a status line above the
+// prompt box such as "✻ Compacting conversation… (0s)" or "· Thinking… (4s
+// · ↓ 257 tokens)", an ellipsis followed by " (".
+bool workingShown(const Screen &screen);
+
 // The lower part of the screen as text (the last 20 lines with text, up to
 // 2000 bytes): what an unknown dialog shows.
 std::string screenSnapshot(const Screen &screen);
