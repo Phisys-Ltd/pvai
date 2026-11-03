@@ -1,3 +1,11 @@
+pvai (0.5.64-1) trixie; urgency=medium
+
+  * A pasted slash command (/compact) runs: the highlighted row of Claude
+    Code's command menu over the box no longer counts as a sent prompt, so
+    the wrapper sends the Return (before, the command stood in the box).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 03 Nov 2026 23:30:00 +0100
+
 pvai (0.5.63-1) trixie; urgency=medium
 
   * The wrapper checks that the Return after a verified paste took: while
