@@ -1149,14 +1149,38 @@ int main(int argc, char **argv)
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "busy while /compact is pending");
         std::ofstream(stuckTr, std::ios::app) << R"({"type":"system","subtype":"compact_boundary","uuid":"cb1","compactMetadata":{"trigger":"auto"}})" "\n";
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }, 5000).empty(), "an auto compaction ends a pending /compact");
+        const std::string turnEnd = R"({"type":"system","subtype":"turn_duration","durationMs":5})" "\n";
+        auto stamped = [](json line, std::time_t at) {
+            char buf[32];
+            std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%S.000Z", std::gmtime(&at));
+            line["timestamp"] = buf;
+            return line.dump() + "\n";
+        };
+        // (d0) an old line left the transcript at running (a slash command
+        // as a plain user line writes no turn end): a prompt typed after it
+        // that never came is not taken as delivered, the screen is asked for
+        std::ofstream(stuckTr, std::ios::app) << turnEnd
+            << stamped(json::parse(userLine("/compact")), std::time(nullptr) - 7200);
+        a.send({{"type", "prompt"}, {"ref", 86}, {"session", "wstuck"}, {"text", "vier"}});
+        check(sw.next("type").value("text", "") == "vier", "a prompt is typed after an old running line");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        check(!sw.next("snapshot", {}, 17000).empty(), "an old running line is not this prompt: the daemon asks for the screen");
+        check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 86; }, 300).empty(), "and it is not taken as delivered");
+        sw.send({{"type", "snapshot"}, {"screen", "vier"}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("dialog", json()) == "screen"; }).empty(), "the owner sees the screen");
+        a.send({{"type", "answer"}, {"ref", 87}, {"session", "wstuck"}, {"choice", "send"}});
+        check(sw.next("type").value("text", "") == "vier", "answer send types it");
+        hook("wstuck", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "stuck-1"}, {"prompt", "vier"}});
+        hook("wstuck", {{"hook_event_name", "Stop"}, {"session_id", "stuck-1"}, {"last_assistant_message", "Vier."}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after it");
         // (d) typed, the turn runs in the transcript, but UserPromptSubmit
         // never comes: delivered, not typed a second time, no screen dialog
-        const std::string turnEnd = R"({"type":"system","subtype":"turn_duration","durationMs":5})" "\n";
         std::ofstream(stuckTr, std::ios::app) << turnEnd;
         a.send({{"type", "prompt"}, {"ref", 83}, {"session", "wstuck"}, {"text", "drei"}});
         check(sw.next("type").value("text", "") == "drei", "a prompt is typed");
         sw.send({{"type", "typed"}, {"ok", true}});
-        std::ofstream(stuckTr, std::ios::app) << userLine("drei") + R"({"type":"assistant","message":{"content":[{"type":"text","text":"Drei."}]}})" "\n";
+        std::ofstream(stuckTr, std::ios::app) << stamped(json::parse(userLine("drei")), std::time(nullptr))
+            << stamped(json::parse(R"({"type":"assistant","message":{"content":[{"type":"text","text":"Drei."}]}})"), std::time(nullptr));
         check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 83; }, 18000).value("ref", 0) == 83,
               "no UserPromptSubmit, but the turn runs: delivered");
         check(sw.next("snapshot", {}, 300).empty() && sw.next("type", {}, 300).empty(), "no snapshot, not typed again");

@@ -36,8 +36,9 @@ bool isBookkeeping(const json &line);
 // Whether a turn runs now, from the end of a transcript: a prompt or an
 // answer of Claude's after the last turn end (Claude Code writes a
 // turn_duration line when a turn ends; an interrupt ends one too). False
-// when the file says nothing either way.
-bool turnRunning(const std::string &path);
+// when the file says nothing either way. runAt: the unix time of the last
+// line that said running (0 without a timestamp).
+bool turnRunning(const std::string &path, long long *runAt = nullptr);
 
 class TranscriptTail {
 public:

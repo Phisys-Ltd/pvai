@@ -126,6 +126,7 @@ private:
     // A prompt went in; UserPromptSubmit should confirm it by then. Claude
     // Code without a login answers "Not logged in" and fires no hook.
     std::optional<Clock::time_point> submitDeadline_;
+    long long typedAt_ = 0; // unix seconds when the last prompt was typed
     // Turns Claude Code started on its own, seen so far (see wakeTurns()).
     std::size_t wakeMark_ = 0;
     // The usage limit the session waits on (see Session.limited in the

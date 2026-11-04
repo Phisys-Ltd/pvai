@@ -255,6 +255,7 @@ void ClaudeSession::submit(const Prompt &prompt)
         std::replace(shown.begin(), shown.end(), '\n', ' ');
         host_.log(id_ + ": types " + shown + (verify ? " (verify)" : " (unchecked)"));
     }
+    typedAt_ = static_cast<long long>(std::time(nullptr));
     wrapper_.send({{"type", "type"}, {"text", (prompt.voice && !slash ? kMicMark : "") + prompt.text}, {"verify", verify}});
     if (verify_)
         inFlight_ = prompt;
@@ -1195,7 +1196,11 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
         // The transcript shows a turn that began after the prompt went in
         // (the session was idle): it went in, only UserPromptSubmit never
         // came (a slow or lost hook). Typed again it would arrive twice.
-        if (state_ == "busy" && !slashPending_ && !transcript_.empty() && turnRunning(transcript_)) {
+        // Only a line written since the typing counts: an old one that left
+        // the state at running (a slash command writes no turn end) is not
+        // this prompt.
+        long long runAt = 0;
+        if (state_ == "busy" && !slashPending_ && !transcript_.empty() && turnRunning(transcript_, &runAt) && runAt >= typedAt_) {
             host_.log(id_ + ": no UserPromptSubmit in 15 s, but the transcript shows the turn: taken as delivered");
             if (inFlight_) {
                 promptVoice(inFlight_->text, &*inFlight_);

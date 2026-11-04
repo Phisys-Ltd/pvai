@@ -177,7 +177,8 @@ bool freshNote(long long noteAt)
 
 // The turn state machine of turnRunning, one transcript line at a time.
 // noteAt: when the task notification nobody answered yet was written.
-void turnStep(const json &entry, bool &running, bool &ends, long long &noteAt)
+// runAt: when the last line that said running was written.
+void turnStep(const json &entry, bool &running, bool &ends, long long &noteAt, long long *runAt = nullptr)
 {
     if (!entry.is_object() || entry.value("isSidechain", false))
         return;
@@ -201,10 +202,14 @@ void turnStep(const json &entry, bool &running, bool &ends, long long &noteAt)
                    && text.rfind("<bash-", 0) != 0 && text.rfind("<task-notification", 0) != 0) {
             running = true;
             noteAt = 0;
+            if (runAt)
+                *runAt = unixTime(entry.value("timestamp", ""));
         }
     } else if (type == "assistant") {
         running = true;
         noteAt = 0;
+        if (runAt)
+            *runAt = unixTime(entry.value("timestamp", ""));
     }
 }
 
@@ -224,7 +229,7 @@ bool skippable(const char *line, std::size_t n)
 
 } // namespace
 
-bool turnRunning(const std::string &path)
+bool turnRunning(const std::string &path, long long *runAt)
 {
     std::ifstream in(path, std::ios::binary);
     if (!in)
@@ -240,7 +245,7 @@ bool turnRunning(const std::string &path)
     while (std::getline(in, line)) {
         if (skippable(line.data(), line.size()))
             continue;
-        turnStep(json::parse(line, nullptr, false), running, ends, noteAt);
+        turnStep(json::parse(line, nullptr, false), running, ends, noteAt, runAt);
     }
     // A turn end is not needed: an answer after the last one (or none at
     // all, in a window that holds no end) is a turn that goes on.
