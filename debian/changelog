@@ -1,3 +1,20 @@
+pvai (0.5.68-1) trixie; urgency=medium
+
+  * A prompt without UserPromptSubmit is taken as delivered only when the
+    transcript shows a turn begun after it was typed; an old line that left
+    the state at running (a slash command) no longer swallows it.
+  * A plain slash-command line, as Claude Code 2.1.318 writes for a command
+    typed in the terminal, starts no turn: a daemon restart after /compact
+    no longer keeps the session busy.
+  * The submit check counts the box as emptied only when its first row
+    changed; a Return taken as a new line is pressed again. The daemon logs
+    how the typed and submitted checks decided.
+  * A prompt whose Return did not take is cleared from the box before it
+    goes in again, and a long queued prompt inside a longer submitted one
+    counts as delivered: no doubled prompt, no third copy.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 04 Nov 2026 17:18:00 +0100
+
 pvai (0.5.67-1) trixie; urgency=medium
 
   * A turn no prompt started (a background task or agent came back) that
