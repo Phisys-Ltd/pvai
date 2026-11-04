@@ -1178,18 +1178,24 @@ int main(int argc, char **argv)
         // that never came is not taken as delivered, the screen is asked for
         std::ofstream(stuckTr, std::ios::app) << turnEnd
             << stamped(json::parse(userLine("/compact")), std::time(nullptr) - 7200);
-        a.send({{"type", "prompt"}, {"ref", 86}, {"session", "wstuck"}, {"text", "vier"}});
-        check(sw.next("type").value("text", "") == "vier", "a prompt is typed after an old running line");
+        const std::string vierText = "[Message p0000vier from M4/wx (x), released by the owner.]\nVier, lang genug.";
+        a.send({{"type", "prompt"}, {"ref", 86}, {"session", "wstuck"}, {"text", vierText}});
+        check(sw.next("type").value("text", "") == vierText, "a prompt is typed after an old running line");
         sw.send({{"type", "typed"}, {"ok", true}});
         check(!sw.next("snapshot", {}, 17000).empty(), "an old running line is not this prompt: the daemon asks for the screen");
         check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 86; }, 300).empty(), "and it is not taken as delivered");
         sw.send({{"type", "snapshot"}, {"screen", "vier"}});
+        check(!sw.next("clear", {}, 2000).empty(), "the box is emptied: typed again, the prompt is not added to its copy");
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("dialog", json()) == "screen"; }).empty(), "the owner sees the screen");
-        a.send({{"type", "answer"}, {"ref", 87}, {"session", "wstuck"}, {"choice", "send"}});
-        check(sw.next("type").value("text", "") == "vier", "answer send types it");
-        hook("wstuck", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "stuck-1"}, {"prompt", "vier"}});
+        // The owner presses Return in the terminal on a box that held the
+        // copy twice (before the clear above): it went out, not typed again
+        hook("wstuck", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "stuck-1"}, {"prompt", vierText + vierText}});
+        check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 86; }).value("ref", 0) == 86,
+              "a prompt that holds the queued one twice delivers it");
         hook("wstuck", {{"hook_event_name", "Stop"}, {"session_id", "stuck-1"}, {"last_assistant_message", "Vier."}});
-        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after it");
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle" && s.value("queued", -1) == 0; }).empty(),
+              "idle after it, nothing queued");
+        check(sw.next("type", {}, 1500).empty(), "and it is not typed a third time");
         // (d) typed, the turn runs in the transcript, but UserPromptSubmit
         // never comes: delivered, not typed a second time, no screen dialog
         std::ofstream(stuckTr, std::ios::app) << turnEnd;

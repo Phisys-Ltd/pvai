@@ -948,8 +948,14 @@ void ClaudeSession::onSnapshot(const std::string &screen)
     if (!snapshotPending_)
         return;
     snapshotPending_ = false;
-    if (inFlight_)
-        notDelivered(screen, false);
+    if (!inFlight_)
+        return;
+    // The paste may still stand in the box (its Return did not take): typed
+    // again it would be added to it, and the owner's Return would send both.
+    // The owner sees the screen as it was.
+    if (canClear_)
+        wrapper_.send({{"type", "clear"}});
+    notDelivered(screen, false);
 }
 
 // A prompt Claude Code took after the check had said no (a screen read
@@ -961,7 +967,12 @@ void ClaudeSession::dropQueued(const std::string &text)
     if (sent.compare(0, std::strlen(kMicMark), kMicMark) == 0)
         sent = trim(sent.substr(std::strlen(kMicMark)), " \t\r\n");
     for (auto it = queue_.begin(); it != queue_.end(); ++it) {
-        if (it->text[0] == '/' || it->text[0] == '!' || trim(it->text, " \t\r\n") != sent)
+        if (it->text[0] == '/' || it->text[0] == '!')
+            continue;
+        // A long one also inside a longer prompt: a copy left in the box
+        // went out with it (a short one could be the owner's own words).
+        const std::string queued = trim(it->text, " \t\r\n");
+        if (queued != sent && (queued.size() < 40 || sent.find(queued) == std::string::npos))
             continue;
         inFlight_ = *it;
         queue_.erase(it);
