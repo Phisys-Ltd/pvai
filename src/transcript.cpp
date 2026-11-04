@@ -199,7 +199,11 @@ void turnStep(const json &entry, bool &running, bool &ends, long long &noteAt, l
             running = false;
             noteAt = 0;
         } else if (content.is_string() && text.rfind("<command-name>", 0) != 0 && text.rfind("<local-command", 0) != 0
-                   && text.rfind("<bash-", 0) != 0 && text.rfind("<task-notification", 0) != 0) {
+                   && text.rfind("<bash-", 0) != 0 && text.rfind("<task-notification", 0) != 0
+                   // Claude Code 2.1.318 writes a typed slash command once more
+                   // as a plain line, and that writes no turn end. A prompt
+                   // that only looks like one runs once Claude answers.
+                   && text.rfind("/", 0) != 0) {
             running = true;
             noteAt = 0;
             if (runAt)

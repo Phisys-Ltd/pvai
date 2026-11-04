@@ -69,6 +69,18 @@ int main()
                         << R"({"type":"system","subtype":"informational","uuid":"s3","content":"Compacted while idle"})" "\n";
     check(!pvai::turnRunning(idle), "an idle compaction starts no turn");
 
+    // A /compact typed in the terminal (Claude Code 2.1.318): a plain
+    // "/compact" line before the command lines; no turn end follows.
+    const std::string slash = home.path + "/slash.jsonl";
+    std::ofstream(slash) << userLine(30, "hello")
+                         << R"({"type":"system","subtype":"turn_duration","uuid":"s4"})" "\n"
+                         << userLine(31, "/compact") << userLine(32, "<command-name>/compact</command-name>")
+                         << userLine(33, "<local-command-stdout>Compacted</local-command-stdout>");
+    check(!pvai::turnRunning(slash), "a slash command typed in the terminal starts no turn");
+    std::ofstream(slash, std::ios::app) << userLine(34, "/root/x is missing")
+                                        << R"({"type":"assistant","uuid":"u35","message":{"content":[{"type":"text","text":"ok"}]}})" "\n";
+    check(pvai::turnRunning(slash), "a prompt that starts with a slash runs once Claude answers");
+
     // A background task's notification (string content) after a finished
     // turn is no turn: without a Stop it would hold the session busy.
     const std::string notified = home.path + "/notified.jsonl";
