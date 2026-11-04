@@ -1580,6 +1580,15 @@ int main(int argc, char **argv)
     // A spoken prompt: what follows without the owner typing is spoken too.
     // (Each Stop with its own text: the same event twice counts once.)
     int turn = 0;
+    // A Stop alone while idle: a turn the transcript read has not shown yet.
+    // (Apart from the last Stop: the same hook twice within 500 ms is one.)
+    auto saidUnseen = [&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(600));
+        hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok " + std::to_string(++turn)}});
+        const json voice = a.next("say", [](const json &m) { return m.value("session", "") == "wterm"; }).value("voice", json());
+        a.drain();
+        return voice;
+    };
     auto said = [&](const std::string &prompt) {
         if (!prompt.empty())
             hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", prompt}});
@@ -1596,6 +1605,7 @@ int main(int argc, char **argv)
           "a subagent's hand-back after it is spoken too");
     check(said("<task-notification>\n<status>completed</status>\n</task-notification>") == json(true),
           "a task notification through UserPromptSubmit is spoken too");
+    check(saidUnseen() == json(true), "a turn whose Stop comes before the transcript shows it is spoken too");
     append(notification);
     check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 1200).empty(),
           "a task notification alone starts no turn");
@@ -1610,6 +1620,7 @@ int main(int argc, char **argv)
           "a finished subagent leaves the list");
     { const json v = said(""); check(v == json(true), "and so is the turn a task notification started: " + v.dump()); }
     check(said("typed") == json(false), "a typed prompt ends that");
+    check(saidUnseen() == json(false), "also for a turn whose Stop comes before the transcript shows it");
     check(said("[Message p2 from M4/w1, released by the owner. Answer with: ...]\nhi") == json(false),
           "and an agent message after a typed prompt is not spoken");
     check(said("Another Claude session sent a message:\n<agent-message from=\"a2\">\ndone\n</agent-message>") == json(false),

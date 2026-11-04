@@ -618,6 +618,11 @@ void ClaudeSession::onHook(const json &event)
         // The limit ended the turn in the file, but Claude Code goes on by
         // itself at the reset: stay busy until it does.
     } else if (name == "Stop") {
+        // A Stop while idle ends a turn no prompt started (a background task
+        // or agent came back) that the transcript read had not shown yet:
+        // catchUp() above took its wake along, so it is spoken here.
+        if (state_ == "idle")
+            wakeVoice();
         limited_ = nullptr;
         state_ = "idle";
         forceIdle_ = false;
