@@ -1,3 +1,12 @@
+pvai (0.5.67-1) trixie; urgency=medium
+
+  * A turn no prompt started (a background task or agent came back) that
+    ends before the daemon read it in the transcript is spoken when the
+    owner's last own prompt was. Before, its Stop found the session idle
+    and the answer was not read out.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 04 Nov 2026 13:20:00 +0100
+
 pvai (0.5.66-1) trixie; urgency=medium
 
   * A prompt whose typed check fails eight times in a row is no longer
