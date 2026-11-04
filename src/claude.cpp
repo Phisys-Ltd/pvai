@@ -909,11 +909,13 @@ void ClaudeSession::onExited(int status, const std::string &screen)
 }
 
 // The wrapper's answer to a prompt typed with `verify`.
-void ClaudeSession::onTyped(bool ok, const std::string &screen)
+void ClaudeSession::onTyped(bool ok, const std::string &screen, const std::string &how)
 {
     if (!inFlight_ || !typedDeadline_)
         return;
     typedDeadline_.reset();
+    if (ok && !how.empty())
+        host_.log(id_ + ": typed (" + how + ")");
     if (!ok) {
         // Retried by itself a few times (a screen read between two frames);
         // then it waits for the owner. Unbounded, a box that never shows the
@@ -1051,8 +1053,10 @@ void ClaudeSession::armEscapeCheck(bool forceIdle)
 // The wrapper pressed Return three times and the box still held the text:
 // Claude Code never took it, and the wrapper has emptied the box (its
 // `draft` message, which came first, keeps the next prompt waiting for it).
-void ClaudeSession::onSubmitted(bool ok)
+void ClaudeSession::onSubmitted(bool ok, const std::string &why)
 {
+    if (ok && !why.empty())
+        host_.log(id_ + ": submitted (" + why + ")");
     if (ok || !submitCheck_)
         return;
     if (slashPending_) {

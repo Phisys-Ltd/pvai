@@ -897,12 +897,14 @@ int main(int argc, char **argv)
                   "tty.setraw(0)\n"
                   "log = sys.argv[1]\n"
                   "ignore = int(sys.argv[2])\n"
+                  "newline = len(sys.argv) > 3\n"
                   "box = ''\n"
                   "def draw():\n"
                   "    rule = '\u2500' * 40\n"
-                  "    os.write(1, ('\\x1b[2J\\x1b[30;1H' + rule + '\\r\\n\u276f ' + box + '\\r\\n' + rule + '\\r\\n  ? for shortcuts').encode())\n"
+                  "    rows = '\\r\\n  '.join(box.split('\\n'))\n"
+                  "    os.write(1, ('\\x1b[2J\\x1b[28;1H' + rule + '\\r\\n\u276f ' + rows + '\\r\\n' + rule + '\\r\\n  ? for shortcuts').encode())\n"
                   "def note(s):\n"
-                  "    with open(log, 'a') as f: f.write(s + '\\n')\n"
+                  "    with open(log, 'a') as f: f.write(s.replace('\\n', '|') + '\\n')\n"
                   "os.write(1, b'\\x1b[?2004h')\n"
                   "draw()\n"
                   "buf = b''\n"
@@ -925,6 +927,7 @@ int main(int argc, char **argv)
                   "            if c == b'\\r':\n"
                   "                if ignore > 0:\n"
                   "                    ignore -= 1; note('I:' + box)\n"
+                  "                    if newline: box += '\\n'\n"
                   "                else:\n"
                   "                    note('S:' + box); box = ''\n"
                   "            elif c == b'\\x15': box = ''\n"
@@ -932,10 +935,10 @@ int main(int argc, char **argv)
                   "            elif c != b'\\x0b': box += c.decode()\n"
                   "        draw()\n",
                   false);
-        auto launch = [&](const std::string &id, const std::string &logFile, int ignore) {
+        auto launch = [&](const std::string &id, const std::string &logFile, int ignore, bool newline = false) {
             const std::string pidFile = home + "/" + id + ".pid";
             (void)std::system(("cd '" + project + "' && " + g_pvai + " run --detached --id " + id + " -- python3 '" + tui + "' '" + logFile + "' "
-                               + std::to_string(ignore) + " >/dev/null 2>&1 & echo $! > '" + pidFile + "'").c_str());
+                               + std::to_string(ignore) + (newline ? " newline" : "") + " >/dev/null 2>&1 & echo $! > '" + pidFile + "'").c_str());
             check(!waitSession(a, id, [](const json &) { return true; }, 3000).empty(), id + ": the wrapper registers");
             hook(id, {{"hook_event_name", "SessionStart"}, {"session_id", id + "-1"}, {"source", "startup"}});
             check(!waitSession(a, id, [](const json &s) { return s.value("state", "") == "idle"; }).empty(), id + ": idle");
@@ -960,6 +963,20 @@ int main(int argc, char **argv)
             check(a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 100).empty(), "ignored Return: no stuck attention");
             hook("wign1", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "wign1-1"}, {"prompt", "zwei"}});
             check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 90; }).value("session", "") == "wign1", "ignored Return: delivered");
+            (void)std::system(("kill $(cat '" + pidFile + "') 2>/dev/null").c_str());
+        }
+        // (a2) the first Return becomes a new line in the box (0.5.68): the
+        // box changed but still holds the prompt, so it is pressed again
+        {
+            const std::string log = home + "/ign3.log";
+            const std::string pidFile = launch("wign3", log, 1, true);
+            a.send({{"type", "prompt"}, {"ref", 92}, {"session", "wign3"}, {"text", "vier"}});
+            for (int i = 0; i < 100 && lines(log).size() < 3; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(4000));
+            check(lines(log) == std::vector<std::string>({"P:vier", "I:vier", "S:vier|"}), "Return as a new line: pressed again: [" + readFile(log) + "]");
+            hook("wign3", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "wign3-1"}, {"prompt", "vier"}});
+            check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 92; }).value("session", "") == "wign3", "Return as a new line: delivered");
             (void)std::system(("kill $(cat '" + pidFile + "') 2>/dev/null").c_str());
         }
         // (b) every Return is ignored: three presses, the box is emptied, the

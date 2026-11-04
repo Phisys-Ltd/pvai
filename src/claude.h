@@ -57,8 +57,8 @@ public:
     std::string setMode(const std::string &mode, const json &ref) override;
     std::string setModel(const std::string &model, const json &ref) override;
     void onExited(int status, const std::string &screen);
-    void onTyped(bool ok, const std::string &screen);
-    void onSubmitted(bool ok);
+    void onTyped(bool ok, const std::string &screen, const std::string &how = "");
+    void onSubmitted(bool ok, const std::string &why = "");
     void onSnapshot(const std::string &screen);
     bool confirmsDelivery() const override { return verify_; }
 

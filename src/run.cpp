@@ -493,9 +493,11 @@ int runWrapper(const WrapperOptions &options)
         draft = Draft();
         reportDraft(false);
     };
-    auto typed = [&](bool ok) {
+    // how: "shown" (the box shows it, Return follows) or "taken" (a
+    // conversation line shows it already, no Return), for the daemon's log.
+    auto typed = [&](bool ok, const char *how = "") {
         if (daemon)
-            daemon->send({{"type", "typed"}, {"ok", ok}, {"screen", ok ? json() : json(screenSnapshot(screen))}});
+            daemon->send({{"type", "typed"}, {"ok", ok}, {"how", how}, {"screen", ok ? json() : json(screenSnapshot(screen))}});
         // The daemon retries once it hears the prompt is free: it needs the
         // screen as it is now, also when it did not change.
         if (daemon && !ok)
@@ -813,7 +815,7 @@ int runWrapper(const WrapperOptions &options)
             // now would send it twice.
             if (promptLinesShown(screen, typing->text) > typing->seen) {
                 typing.reset();
-                typed(true);
+                typed(true, "taken");
             } else if (shown || Clock::now() >= typing->until) {
                 if (shown) {
                     returnAt = Clock::now() + std::chrono::milliseconds(250);
@@ -822,17 +824,24 @@ int runWrapper(const WrapperOptions &options)
                 typing.reset();
                 if (!shown)
                     leftover = true;
-                typed(shown);
+                typed(shown, shown ? "shown" : "");
             }
         }
         if (submitCheck && Clock::now() >= submitCheck->at && !returnAt) {
             std::string box;
             const bool inBox = promptBox(screen, box);
-            if (!inBox || box != submitCheck->box || promptLinesShown(screen, submitCheck->text) > submitCheck->seen
-                || workingShown(screen)) {
+            // Only a box whose first row changed counts as emptied: one that
+            // still starts with the paste (a Return taken as a new line, the
+            // box drawn anew) did not take it.
+            const auto firstRow = [](const std::string &b) { return b.substr(0, b.find('\n')); };
+            const char *why = !inBox ? "no box"
+                : firstRow(box) != firstRow(submitCheck->box) ? "box"
+                : promptLinesShown(screen, submitCheck->text) > submitCheck->seen ? "line"
+                : workingShown(screen) ? "working" : nullptr;
+            if (why) {
                 submitCheck.reset();
                 if (daemon)
-                    daemon->send({{"type", "submitted"}, {"ok", true}});
+                    daemon->send({{"type", "submitted"}, {"ok", true}, {"why", why}});
             } else if (submitCheck->presses < 2) {
                 ++submitCheck->presses;
                 submitCheck->at = Clock::now() + std::chrono::milliseconds(1500);
