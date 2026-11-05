@@ -1,3 +1,19 @@
+pvai (0.5.71-1) trixie; urgency=medium
+
+  * Claude Code's asks under the prompt box (the auto-mode setup offer,
+    Remote Control, plugin installs: a Select with numbered rows and an
+    Enter/Esc footer) are screen dialogs with dialogInfo.options; nothing is
+    typed into them.
+  * Sending anyway (answer `send`) pastes nothing while a dialog stands and
+    presses Return only once the box shows the paste; a wrapper of 0.5.71
+    says how it went.
+  * A prompt Claude Code did not take (a command ran instead, a hung session
+    cleared) is reported in `dropped` with its full text.
+  * A daemon taking a session over reads from the transcript whether the
+    owner's last prompt was spoken.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 05 Nov 2026 12:48:26 +0100
+
 pvai (0.5.70-1) trixie; urgency=medium
 
   * Claude Code's session surveys (the rating and the transcript-share
