@@ -68,7 +68,8 @@ int main(int argc, char **argv)
                          {{"host", "mac"}, {"session", "wb"}, {"offline", true}},
                          {{"host", "bad"}, {"session", "x"}, {"offline", "yes"}, {"seenAt", "yesterday"}},
                          {{"host", "pi5"}, {"session", "t1"}, {"offline", false}},
-                         {{"host", "gone"}, {"session", ""}, {"offline", true}}}}});
+                         {{"host", "gone"}, {"session", ""}, {"offline", true}},
+                         {{"host", "whole"}, {"session", ""}}}}});
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     const json list = peerList();
@@ -111,9 +112,12 @@ int main(int argc, char **argv)
     check(r.status == 0 && warningOf(r.out).empty(), "no warning for a known label: " + r.out);
     r = run("propose M4 text");
     check(r.status == 0 && warningOf(r.out).empty(), "no warning for a bare online host: " + r.out);
-    r = run("propose nowhere/w1 text");
+    // Ten proposals a minute per sender: the rest from a second one.
+    r = run("propose whole/w9 text", "PVAI_ID=wsecond");
+    check(r.status == 0 && warningOf(r.out).empty(), "no warning for a session of a host listed as a whole: " + r.out);
+    r = run("propose nowhere/w1 text", "PVAI_ID=wsecond");
     check(r.status == 0 && warningOf(r.out).empty(), "no warning for an unknown host: " + r.out);
-    r = run("propose tf/wnothing text");
+    r = run("propose tf/wnothing text", "PVAI_ID=wsecond");
     check(r.status == 0 && warningOf(r.out).empty(), "no warning for this host (peers self): " + r.out);
 
     daemon.stop();

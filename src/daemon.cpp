@@ -1210,7 +1210,8 @@ private:
                 allOffline = false;
             else if (other.contains("seenAt"))
                 seenAt = std::max(seenAt, other["seenAt"].get<long long>());
-            if (!name.empty() && (str(other, "session") == name || str(other, "label") == name))
+            // A host listed as a whole: the app knows its sessions better.
+            if (!name.empty() && (str(other, "session").empty() || str(other, "session") == name || str(other, "label") == name))
                 found = true;
         }
         if (!listed)
