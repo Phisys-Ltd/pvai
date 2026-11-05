@@ -354,6 +354,18 @@ int adminRequest(const json &request, bool startDaemon, const std::function<bool
     return talk == Talk::NoDaemon ? -1 : talk == Talk::Done ? 0 : 1;
 }
 
+// "12 min ago", "3 h ago", "2 days ago".
+static std::string agoText(long long seconds)
+{
+    if (seconds < 0)
+        seconds = 0;
+    if (seconds < 3600)
+        return std::to_string(seconds / 60) + " min ago";
+    if (seconds < 2 * 86400)
+        return std::to_string(seconds / 3600) + " h ago";
+    return std::to_string(seconds / 86400) + " days ago";
+}
+
 // An agent message for the owner to release in the app; never waits for it.
 int runPropose(const std::string &to, std::string text, bool fromStdin, const std::string &replyTo)
 {
@@ -373,6 +385,18 @@ int runPropose(const std::string &to, std::string text, bool fromStdin, const st
                 std::printf("waiting for the owner in the app (%d app%s connected)\n", apps, apps == 1 ? "" : "s");
             else
                 std::printf("waiting for the owner in the app (no app connected now; it waits up to 24 hours)\n");
+            const std::string warning = message.value("warning", "");
+            const std::string target = message.value("to", to);
+            const std::string host = target.substr(0, target.find('/'));
+            const std::string name = target.find('/') == std::string::npos ? "" : target.substr(target.find('/') + 1);
+            if (warning == "host-offline") {
+                std::printf("warning: %s is offline", host.c_str());
+                if (message.contains("seenAt") && message["seenAt"].is_number())
+                    std::printf(" (last seen %s)", agoText(static_cast<long long>(std::time(nullptr)) - message["seenAt"].get<long long>()).c_str());
+                std::printf("; the message waits until the owner releases it and %s is back\n", host.c_str());
+            } else if (warning == "unknown-session") {
+                std::printf("warning: %s lists no session %s (it may have been restarted; see pvai peers)\n", host.c_str(), name.c_str());
+            }
             status = 0;
             return true;
         }
@@ -523,6 +547,12 @@ int runPeers()
                 text += std::string("  ") + (std::string(key) == "label" ? "\"" + value + "\"" : value);
         if (me && id == me)
             text += "  (this session)";
+        if (s.value("offline", false)) {
+            text += "  (offline";
+            if (s.contains("seenAt") && s["seenAt"].is_number())
+                text += ", last seen " + agoText(static_cast<long long>(std::time(nullptr)) - s["seenAt"].get<long long>());
+            text += ")";
+        }
         std::printf("%s\n", text.c_str());
     };
     const Talk talk = talkToDaemon(false, true, {{"type", "listPeers"}}, 3000, [&](Conn &, const json &message) {

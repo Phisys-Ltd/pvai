@@ -403,7 +403,7 @@ App to daemon:
 | `subscribe` | `session`, `limit` | follow that session's conversation: `history` with up to `limit` (default 200) of the last entries, then `entry` for each new one |
 | `unsubscribe` | `session` | stop following it |
 | `dismiss` | `ref`, `proposal` | the owner sent or dropped that agent message; the daemon forgets it |
-| `propose` | `ref`, `to`, `text`, `from` | from `pvai propose` only, on loopback (ignored over TLS): an agent message for the owner to release (see "Agent messages"); answered with `proposed` (`ref`, `id`, `apps`) or `rejected` |
+| `propose` | `ref`, `to`, `text`, `from` | from `pvai propose` only, on loopback (ignored over TLS): an agent message for the owner to release (see "Agent messages"); answered with `proposed` (`ref`, `id`, `apps`, optional `warning`, `seenAt`) or `rejected` |
 | `peers` | `self`, `peers: [Peer]` | the sessions on other hosts that agents here may write to, as the app knows them; the whole list each time, sent after `welcome` and after every change (see "Peers") |
 | `ping` | | keepalive |
 
@@ -473,6 +473,7 @@ The flow:
    stays as it is (the app may know it). The daemon answers `proposed`
    with the proposal's `id`, the `to` it resolved and `apps` (how many apps are connected now;
    connections whose `hello.client` is `pvai`, the CLI's own, do not count)
+   and, since 0.5.69, optionally a `warning` (see "Peers"; the proposal is made and queued all the same)
    or `rejected` (`empty`, `too-long` over 32 KiB, `bad-target`,
    `ambiguous-target`, `bad-reply` (`replyTo` is not a proposal id: `p`
    and hex digits), `too-many`). `TO` is a bad target unless `host` is 1 to 64 letters,
@@ -533,7 +534,8 @@ hosts:
 ```json
 {"type": "peers", "self": "taifun", "peers": [
   {"host": "M4", "session": "w97dde1bd", "label": "Projekte", "assistant": "claude",
-   "state": "idle", "cwd": "/Users/m/Projekte"}]}
+   "state": "idle", "cwd": "/Users/m/Projekte"},
+  {"host": "M4", "session": "w290e2a02", "label": "Docs", "offline": true, "seenAt": 1762330000}]}
 ```
 
 `self` is the app's name for the receiving host (optional; else the
@@ -547,18 +549,37 @@ At most 256 entries; an entry whose `host` is no good target host (see
 "Agent messages") is dropped, strings are cut (`label` 64, `assistant`
 and `state` 16, `cwd` 512 bytes).
 
+Since 0.5.69 a Peer may also carry `offline` (boolean: the app knows the
+host but cannot reach it now) and `seenAt` (number, Unix time the app last
+reached it). Both are optional, kept as given and passed on in `peerList`;
+a value of the wrong type is dropped. A host is offline when all its
+entries are.
+
+`proposed.warning` (since 0.5.69, absent when there is none) tells the
+agent what the last `peers` says about a target on another host; never for
+this host's own sessions, for a host not in the list, or before any list
+came. The proposal is created and queued as without it; the app decides at
+release. Values: `host-offline` (the host is in the list and all its
+entries are offline; `proposed.seenAt` is the latest `seenAt` of them, if
+any) and `unknown-session` (the host is online in the list, the target names
+a session and it is neither an id nor a label there). `pvai propose` prints
+it as a sentence and still exits 0; the daemon log line carries it too.
+
 What to share is the app's choice: a host the owner does not trust with
 the list of the others gets none, or only host names without `cwd`.
 
 `pvai peers` (loopback only, `{"type": "listPeers"}`, answered with
 `peerList`: `self`, `local`, `peers`, `at`) prints this host's sessions and
-then the list, each line starting with the target for `pvai propose`:
+then the list, each line starting with the target for `pvai propose`
+(an offline entry ends with `(offline, last seen 12 min ago)`, or `(offline)`
+without `seenAt`; ages go in min, then h from 1 hour, days from 2 days):
 
 ```
 this host (taifun):
   taifun/wb4c7dc28  claude  busy  "phi-claude-voice"  /root/projects  (this session)
 other hosts (from the app, 2 min ago):
   M4/w97dde1bd  claude  idle  "Projekte"  /Users/m/Projekte
+  M4/w290e2a02  "Docs"  (offline, last seen 12 min ago)
 write to one with: pvai propose HOST/SESSION "TEXT" (a label works instead of the id when only one session has it)
 ```
 

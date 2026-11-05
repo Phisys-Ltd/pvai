@@ -1191,6 +1191,35 @@ private:
         return byLabel.empty() ? to : std::string();
     }
 
+    // What the app's list says against a target (already resolved) on another
+    // host: "host-offline", "unknown-session" or "". Nothing for this host's
+    // own sessions, for a host not in the list or before any list came.
+    std::string targetWarning(const std::string &to, long long &seenAt) const
+    {
+        seenAt = 0;
+        const auto slash = to.find('/');
+        const std::string host = to.substr(0, slash), name = slash == std::string::npos ? "" : to.substr(slash + 1);
+        if (peersAt_ == 0 || host == hostName() || (!peersSelf_.empty() && host == peersSelf_))
+            return "";
+        bool listed = false, allOffline = true, found = false;
+        for (const auto &other : otherHosts_) {
+            if (str(other, "host") != host)
+                continue;
+            listed = true;
+            if (!other.value("offline", false))
+                allOffline = false;
+            else if (other.contains("seenAt"))
+                seenAt = std::max(seenAt, other["seenAt"].get<long long>());
+            if (!name.empty() && (str(other, "session") == name || str(other, "label") == name))
+                found = true;
+        }
+        if (!listed)
+            return "";
+        if (allOffline)
+            return "host-offline";
+        return !name.empty() && !found ? "unknown-session" : "";
+    }
+
     // ---- Agent messages: proposals wait for the owner in the app ----
 
     void onPropose(Peer *peer, const json &message)
@@ -1229,9 +1258,16 @@ private:
         for (const auto &other : peers_)
             if (other->kind == Kind::App && other->client != "pvai")
                 ++apps;
+        long long seenAt = 0;
+        const std::string warning = targetWarning(to, seenAt);
         logLine("proposal " + proposal.id + " from " + (from.empty() ? "?" : from) + " to " + to
-                + (replyTo.empty() ? "" : ", answering " + replyTo));
-        peer->conn->send({{"type", "proposed"}, {"ref", ref}, {"id", proposal.id}, {"to", to}, {"apps", apps}});
+                + (replyTo.empty() ? "" : ", answering " + replyTo) + (warning.empty() ? "" : " (warning: " + warning + ")"));
+        json proposed = {{"type", "proposed"}, {"ref", ref}, {"id", proposal.id}, {"to", to}, {"apps", apps}};
+        if (!warning.empty())
+            proposed["warning"] = warning;
+        if (warning == "host-offline" && seenAt > 0)
+            proposed["seenAt"] = seenAt;
+        peer->conn->send(proposed);
         broadcast(proposalsMessage());
     }
 
@@ -1290,6 +1326,11 @@ private:
                 for (const auto &[key, max] : {std::pair{"label", 64}, {"assistant", 16}, {"state", 16}, {"cwd", 512}})
                     if (entry.contains(key) && entry[key].is_string())
                         other[key] = oneLine(entry[key].get<std::string>(), max);
+                // What the app knows of reachability; a field of the wrong type is dropped.
+                if (entry.contains("offline") && entry["offline"].is_boolean())
+                    other["offline"] = entry["offline"].get<bool>();
+                if (entry.contains("seenAt") && entry["seenAt"].is_number() && entry["seenAt"].get<double>() > 0)
+                    other["seenAt"] = static_cast<long long>(entry["seenAt"].get<double>());
                 otherHosts_.push_back(other);
             }
         peersAt_ = static_cast<long long>(std::time(nullptr));
