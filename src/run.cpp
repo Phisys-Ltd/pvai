@@ -444,7 +444,9 @@ int runWrapper(const WrapperOptions &options)
     };
     auto promptFree = [&](std::string &box) {
         bool shell = false;
-        return promptBox(screen, box, &shell) && !shell; // the box shows: no dialog over it
+        // The box shows and no dialog stands over it; a session survey stands
+        // above a box that stays and takes single keys, so it counts too.
+        return promptBox(screen, box, &shell) && !shell && screenDialog(screen).empty();
     };
     // Keys that go in one small group at a time: Claude Code drops control
     // keys that arrive in one large chunk.
