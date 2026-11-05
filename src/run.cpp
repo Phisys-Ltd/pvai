@@ -813,7 +813,11 @@ int runWrapper(const WrapperOptions &options)
             // its own, a screen seen between two frames): it shows as a
             // conversation line above the box. That is delivered; a Return
             // now would send it twice.
-            if (promptLinesShown(screen, typing->text) > typing->seen) {
+            // Only once the box no longer holds the paste: a long paste
+            // still standing in it, with an equal line in the conversation
+            // above, is not taken (no Return yet).
+            const bool holds = promptHolds(screen, typing->text) && box != typing->before;
+            if (!holds && promptLinesShown(screen, typing->text) > typing->seen) {
                 typing.reset();
                 typed(true, "taken");
             } else if (shown || Clock::now() >= typing->until) {
