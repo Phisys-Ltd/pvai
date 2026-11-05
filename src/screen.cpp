@@ -520,13 +520,109 @@ void Screen::feed(const char *data, std::size_t n)
     }
 }
 
+namespace {
+
+const std::array<const char *, 4> kSurveyQuestions = {
+    "How is Claude doing this session?", "How was Claude's recollection?", "How well did Claude use its memory?",
+    "Can Anthropic look at your session transcript",
+};
+
+// One option as Claude Code draws it: "1: Bad", "y: Yes", at the start of a
+// row or after a space.
+bool optionAt(const std::string &s, std::size_t i)
+{
+    return i + 2 < s.size() && std::isalnum(static_cast<unsigned char>(s[i])) && s[i + 1] == ':' && s[i + 2] == ' '
+        && (i == 0 || s[i - 1] == ' ');
+}
+
+bool optionsRow(const std::string &row)
+{
+    const std::string t = trim(row, " ");
+    return !t.empty() && optionAt(t, 0);
+}
+
+// The survey standing directly above the prompt box whose top rule is row
+// `top`: the question, then (maybe) its link, then the options; nothing else
+// between it and the rule. Question and options as one text.
+std::string surveyAbove(const Screen &screen, int top)
+{
+    int question = -1;
+    for (int r = top - 1; r >= 0 && top - r <= 7; --r) {
+        const std::string row = screen.row(r);
+        for (const char *q : kSurveyQuestions)
+            if (row.find(q) != std::string::npos)
+                question = r;
+        if (question >= 0)
+            break;
+    }
+    if (question < 0)
+        return {};
+    std::vector<std::string> down{unbox(screen.row(question))}; // top down
+    bool options = false, body = false;
+    int wrapped = 0;
+    // The question may wrap onto a second row; after that only the link and
+    // option rows (which may wrap too) follow.
+    for (int r = question + 1; r < top; ++r) {
+        const std::string row = screen.row(r);
+        if (trim(row, " ").empty())
+            continue;
+        if (row.find("code.claude.com") != std::string::npos) {
+            body = true;
+        } else if (optionsRow(row)) {
+            body = options = true;
+            down.push_back(unbox(row));
+        } else if (body || ++wrapped > 1) {
+            return {};
+        } else {
+            down.push_back(unbox(row));
+        }
+    }
+    if (!options)
+        return {};
+    return joinLines(std::vector<std::string>(down.rbegin(), down.rend()));
+}
+
+} // namespace
+
+std::vector<std::pair<std::string, std::string>> surveyOptions(const std::string &text)
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    bool survey = false;
+    for (const char *q : kSurveyQuestions)
+        survey = survey || text.find(q) != std::string::npos;
+    if (!survey)
+        return out;
+    std::size_t line = 0;
+    while (line < text.size()) {
+        std::size_t end = text.find('\n', line);
+        if (end == std::string::npos)
+            end = text.size();
+        const std::string row = trim(text.substr(line, end - line), " ");
+        line = end + 1;
+        if (!optionsRow(row))
+            continue;
+        std::vector<std::size_t> starts;
+        for (std::size_t i = 0; i < row.size(); ++i)
+            if (optionAt(row, i))
+                starts.push_back(i);
+        for (std::size_t k = 0; k < starts.size(); ++k) {
+            const std::size_t to = k + 1 < starts.size() ? starts[k + 1] : row.size();
+            out.push_back({row.substr(starts[k], 1), trim(row.substr(starts[k] + 3, to - starts[k] - 3), " ")});
+        }
+    }
+    return out;
+}
+
 std::string screenDialog(const Screen &screen)
 {
     // A dialog always takes the prompt box's place: while the box shows,
     // whatever stands above it is conversation (and a slash or @ menu
     // stands below it), never a dialog.
-    if (std::string box; promptBox(screen, box))
-        return {};
+    int top = -1;
+    if (std::string box; promptBox(screen, box, nullptr, &top)) {
+        // ... except Claude Code's session surveys, drawn above the box.
+        return surveyAbove(screen, top);
+    }
     static const std::array<const char *, 8> footers = {
         "Enter to confirm", "Enter to continue", "Enter to select", "Enter to submit",
         "Esc to cancel",    "Esc to exit",       "Esc to go back",  "Esc to close",
@@ -589,7 +685,8 @@ bool promptBox(const Screen &screen, std::string &text, bool *shell, int *topRul
     auto wrapped = [&](int top, int bottom) {
         for (int k = top + 2; k < bottom; ++k) {
             const std::string row = screen.row(k);
-            if (row.compare(0, 2, "  ") != 0 || trim(row, " ").empty())
+            // (an empty line inside the paste is a blank row)
+            if (!trim(row, " ").empty() && row.compare(0, 2, "  ") != 0)
                 return false;
         }
         return true;
@@ -651,6 +748,17 @@ int promptLinesShown(const Screen &screen, const std::string &text)
             ++count;
     }
     return count;
+}
+
+bool promptHolds(const Screen &screen, const std::string &text)
+{
+    std::string box;
+    if (!promptBox(screen, box))
+        return false;
+    std::string head = trim(text.substr(0, text.find('\n')), " ");
+    if (head.size() > 40)
+        head.resize(utf8Boundary(head, 40));
+    return !head.empty() && box.find(head) != std::string::npos;
 }
 
 bool workingShown(const Screen &screen)

@@ -212,5 +212,60 @@ int main()
         feed(far, draw + rule + "\r\n  ? for shortcuts");
         check(!pvai::promptBox(far, box), "rules far apart with conversation between are no box");
     }
+    // Claude Code's session surveys stand above the prompt box: a dialog.
+    {
+        const std::string r2 = "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80";
+        const std::string q1 = "\xE2\x97\x8F How is Claude doing this session? (optional)"; // ●
+        const std::string o1 = "  1: Bad       2: Fine      3: Good      0: Dismiss";
+        const std::string tail = "\r\n" + r2 + "\r\n\xE2\x9D\xAF \r\n" + r2 + "\r\n  ? for shortcuts";
+        pvai::Screen survey(20, 70);
+        feed(survey, "\x1b[2J\x1b[H\xE2\x8F\xBA Done.\r\n\r\n" + q1 + "\r\n" + o1 + "\r\n" + tail);
+        std::string box;
+        check(pvai::promptBox(survey, box), "the box still shows under a survey");
+        const std::string text = pvai::screenDialog(survey);
+        check(text == "\xE2\x97\x8F How is Claude doing this session? (optional)\n  1: Bad       2: Fine      3: Good      0: Dismiss",
+              "question and options joined: [" + text + "]");
+        const auto options = pvai::surveyOptions(text);
+        check(options.size() == 4 && options[0] == std::make_pair(std::string("1"), std::string("Bad"))
+                  && options[3] == std::make_pair(std::string("0"), std::string("Dismiss")),
+              "the survey's keys");
+
+        // The same words quoted higher up in the conversation: no dialog.
+        pvai::Screen quoted(20, 70);
+        feed(quoted, "\x1b[2J\x1b[H" + q1 + "\r\n" + o1 + "\r\n\r\nI see, a survey.\r\n\r\n" + tail);
+        check(pvai::screenDialog(quoted).empty(), "a quoted survey is no dialog: [" + pvai::screenDialog(quoted) + "]");
+        pvai::Screen nearQuote(20, 70);
+        feed(nearQuote, "\x1b[2J\x1b[H" + q1 + "\r\nI see, a survey.\r\n" + tail);
+        check(pvai::screenDialog(nearQuote).empty(), "a question without options is no dialog");
+
+        // The transcript-share survey: question, link, options.
+        pvai::Screen share(20, 70);
+        feed(share, "\x1b[2J\x1b[H\xE2\x97\x8F Can Anthropic look at your session transcript to help us improve Claude Code?\r\n"
+                    "  https://code.claude.com/docs/en/data-usage#session-quality-surveys\r\n"
+                    "  y: Yes     n: No      d: Don't ask again\r\n" + tail);
+        const std::string st = pvai::screenDialog(share);
+        check(st.find("Can Anthropic look") != std::string::npos && st.find("y: Yes") != std::string::npos
+                  && st.find("https") == std::string::npos,
+              "the transcript survey: [" + st + "]");
+        const auto so = pvai::surveyOptions(st);
+        check(so.size() == 3 && so[2] == std::make_pair(std::string("d"), std::string("Don't ask again")), "its keys y n d");
+        check(pvai::surveyOptions("Pick one\n1: Bad").empty(), "other text has no survey options");
+    }
+    // A long paste standing in a tall box, an equal line in the conversation
+    // above: the box holds it, the line above is not a box row.
+    {
+        pvai::Screen tall(40, 100);
+        const std::string r3 = "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80";
+        const std::string head = "[Message p1 from Mac]";
+        std::string draw = "\x1b[2J\x1b[H\xE2\x9D\xAF " + head + " older\r\n\r\n" + r3 + "\r\n\xE2\x9D\xAF " + head;
+        for (int i = 0; i < 20; ++i)
+            draw += i == 9 ? "\r\n" : "\r\n  more text " + std::to_string(i);
+        feed(tall, draw + "\r\n" + r3 + "\r\n  ? for shortcuts");
+        check(pvai::promptHolds(tall, head + "\nmore"), "the tall box holds the paste");
+        check(pvai::promptLinesShown(tall, head + "\nmore") <= 1, "the box's own first row is no line above it");
+        pvai::Screen gone(40, 100);
+        feed(gone, "\x1b[2J\x1b[H\xE2\x9D\xAF " + head + " older\r\n\r\n" + r3 + "\r\n\xE2\x9D\xAF \r\n" + r3 + "\r\n  ? for shortcuts");
+        check(!pvai::promptHolds(gone, head + "\nmore"), "an empty box holds nothing");
+    }
     return pvai::test::finish();
 }

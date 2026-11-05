@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace pvai {
@@ -59,6 +60,9 @@ private:
 // its text (title, options, footer) when the last lines carry a dialog's
 // footer ("Enter to confirm", "Esc to cancel", ...), else empty.
 std::string screenDialog(const Screen &screen);
+// The options of a session survey as screenDialog's text shows them (id =
+// the key Claude Code takes, label); empty for any other text.
+std::vector<std::pair<std::string, std::string>> surveyOptions(const std::string &text);
 
 // Claude Code's prompt box: the lines between the last two rules on the
 // screen, the first starting with "❯", or with "!" in shell mode (`shell`
@@ -76,6 +80,8 @@ int promptLinesShown(const Screen &screen, const std::string &text);
 // Claude Code works (a turn or a compaction runs): a status line above the
 // prompt box such as "✻ Compacting conversation… (0s)" or "· Thinking… (4s
 // · ↓ 257 tokens)", an ellipsis followed by " (".
+// The prompt box still holds the start of `text` (a paste not sent yet).
+bool promptHolds(const Screen &screen, const std::string &text);
 bool workingShown(const Screen &screen);
 
 // The lower part of the screen as text (the last 20 lines with text, up to

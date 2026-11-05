@@ -671,8 +671,8 @@ int main(int argc, char **argv)
                               "\xE2\x86\x90/\xE2\x86\x92 to change \xC2\xB7 Enter to continue \xC2\xB7 Esc to cancel";
     wrapper.send({{"type", "screen"}, {"dialog", teach}});
     const json asks = a.next("attention");
-    check(asks.value("kind", "") == "screen" && asks.value("text", "") == "Teach auto mode about your environment?",
-          "a screen dialog asks the owner with its first line: " + asks.dump());
+    check(asks.value("kind", "") == "screen" && asks.value("text", "").rfind("Teach auto mode about your environment?\n", 0) == 0,
+          "a screen dialog asks the owner with its first lines: " + asks.dump());
     term = waitSession(a, "wterm", [](const json &s) { return s.value("dialog", json()) == "screen"; });
     check(term.value("state", "") == "waiting" && sub(term, "dialogInfo").value("text", "") == teach,
           "a screen dialog at the prompt: waiting, its text in dialogInfo: " + term.dump());
@@ -779,7 +779,7 @@ int main(int argc, char **argv)
         json typing = ver.next("type");
         check(typing.value("text", "") == "eins" && typing.value("verify", false), "it is typed with verify");
         ver.send({{"type", "typed"}, {"ok", false}, {"screen", "Something new\n\xE2\x9D\xAF 1. Yes"}});
-        check(a.next("attention").value("text", "") == "Something new", "the owner is asked with the first line");
+        check(a.next("attention").value("text", "") == "Something new\n\xE2\x9D\xAF 1. Yes", "the owner is asked with the screen's lines");
         json blocked = waitSession(a, "wver", [](const json &s) { return s.value("dialog", json()) == "screen"; });
         check(blocked.value("state", "") == "waiting" && sub(blocked, "dialogInfo").value("text", "") == "Something new\n\xE2\x9D\xAF 1. Yes"
                   && blocked.value("queued", 0) == 1,
@@ -1015,22 +1015,52 @@ int main(int argc, char **argv)
         check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 60; }).value("session", "") == "wretry", "retry: delivered");
         hook("wretry", {{"hook_event_name", "Stop"}, {"session_id", "r-1"}, {"last_assistant_message", "Eins."}});
         check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "retry: idle again");
-        // A box that never shows the paste: eight tries, then the owner decides
-        // (unbounded, /compact went in 146 times in 3 minutes).
+        // A box that never shows the paste: three tries, then the owner decides
+        // (unbounded, /compact went in 146 times in 3 minutes). The same
+        // screen again waits 2 s, then 4 s, before the next try.
         a.send({{"type", "prompt"}, {"ref", 61}, {"session", "wretry"}, {"text", "/compact"}});
-        for (int i = 0; i < 8; ++i) {
-            check(rw.next("type", {}, 3000).value("text", "") == "/compact", "bounded retry: try " + std::to_string(i + 1));
+        for (int i = 0; i < 3; ++i) {
+            check(rw.next("type", {}, 5000).value("text", "") == "/compact", "bounded retry: try " + std::to_string(i + 1));
             rw.send({{"type", "typed"}, {"ok", false}, {"screen", "busy box"}});
+            if (i < 2) {
+                rw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
+                check(rw.next("type", {}, 1500).empty(), "same screen: not typed again within the pause (try " + std::to_string(i + 1) + ")");
+            }
         }
         check(a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 2000).value("text", "") == "/compact",
-              "bounded retry: the owner is told after eight tries");
+              "bounded retry: the owner is told after three tries");
         rw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
-        check(rw.next("type", {}, 2500).empty(), "bounded retry: not typed a ninth time by itself");
+        check(rw.next("type", {}, 2500).empty(), "bounded retry: not typed a fourth time by itself");
         a.send({{"type", "answer"}, {"ref", 62}, {"session", "wretry"}, {"choice", "send"}});
         check(rw.next("type").value("text", "") == "/compact", "bounded retry: the owner's send types it");
         rw.send({{"type", "output"}, {"data", ""}});
         hook("wretry", {{"hook_event_name", "Stop"}, {"session_id", "r-1"}, {"last_assistant_message", "ok"}});
         check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "bounded retry: idle again");
+
+        // A session survey over a free prompt box: a dialog; nothing is typed
+        // into it (it takes single keys), only the owner's key goes through.
+        {
+            a.send({{"type", "prompt"}, {"ref", 70}, {"session", "wretry"}, {"text", "umfrage"}});
+            check(rw.next("type").value("text", "") == "umfrage", "survey: typed");
+            rw.send({{"type", "typed"}, {"ok", false}, {"screen", "\xE2\x97\x8F How is Claude doing this session? (optional)\n  1: Bad  2: Fine"}});
+            const std::string q = "\xE2\x97\x8F Can Anthropic look at your session transcript to help us improve Claude Code?\n  y: Yes     n: No      d: Don't ask again";
+            rw.send({{"type", "screen"}, {"dialog", q}, {"prompt", false}});
+            json s2 = waitSession(a, "wretry", [&](const json &s) { return s.value("dialog", json()) == "screen" && sub(s, "dialogInfo").value("text", "") == q; });
+            check(!s2.empty(), "survey: shown as a screen dialog");
+            const json opts = sub(s2, "dialogInfo").value("options", json());
+            check(opts == json::parse(R"([{"id":"y","label":"Yes"},{"id":"n","label":"No"},{"id":"d","label":"Don't ask again"}])"),
+                  "survey: options from the screen: " + opts.dump());
+            rw.send({{"type", "screen"}, {"dialog", q}, {"prompt", true}});
+            check(rw.next("type", {}, 3500).empty(), "survey: nothing typed while it stands");
+            a.send({{"type", "answer"}, {"ref", 71}, {"session", "wretry"}, {"choice", "key:y"}});
+            check(rw.next("keys").value("data", "") == "y", "survey: the owner's key goes through as the single key");
+            rw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
+            check(rw.next("type", {}, 3000).value("text", "") == "umfrage", "survey gone: the prompt goes in");
+            rw.send({{"type", "typed"}, {"ok", true}});
+            hook("wretry", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "r-1"}, {"prompt", "umfrage"}});
+            hook("wretry", {{"hook_event_name", "Stop"}, {"session_id", "r-1"}, {"last_assistant_message", "ok"}});
+            check(!waitSession(a, "wretry", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "survey: idle again");
+        }
 
         // Dialog keys: arrows and terminal replies do not answer a dialog;
         // Return does; an older wrapper (no key) counts every key.

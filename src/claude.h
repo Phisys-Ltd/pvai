@@ -163,6 +163,10 @@ private:
     bool snapshotPending_ = false;
     bool blocked_ = false;
     bool retryOnPrompt_ = false;
+    std::optional<Clock::time_point> typedPauseUntil_; // no retry typing before this (failed typed check)
+    std::string failedScreen_;
+    int sameFails_ = 0;
+    bool typedPause() const;
     bool promptFree_ = false;
     bool sendUnchecked_ = false; // answer `send`: the next prompt without the check
     std::optional<Clock::time_point> retryAt_;

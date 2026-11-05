@@ -1,4 +1,5 @@
 #include "claude.h"
+#include "screen.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -22,9 +23,10 @@ namespace {
 const char *kInterruptMark = "[Request interrupted by user";
 constexpr auto kSubmitTimeout = std::chrono::seconds(15);
 constexpr auto kTypedTimeout = std::chrono::seconds(5); // the wrapper checks for up to 2 s
-constexpr int kTypedTries = 8; // typed checks that may fail before the prompt waits for the owner
+constexpr int kTypedTries = 3; // typed checks that may fail before the prompt waits for the owner
 constexpr auto kModelTimeout = std::chrono::seconds(30); // a /model with no output by then has failed
 constexpr auto kRetryAfter = std::chrono::milliseconds(600);
+constexpr auto kTypedRetryBase = std::chrono::seconds(2); // after a failed typed check: 2 s, 4 s, ... while the screen stays the same
 constexpr auto kTailEvery = std::chrono::milliseconds(300);
 constexpr auto kSubagentsEvery = std::chrono::seconds(1);
 // An idle session with nothing queued polls slower; a hook (a turn
@@ -843,6 +845,53 @@ void ClaudeSession::modeDone(const std::string &state, const std::string &error)
     modeEvent(ref, state, error);
 }
 
+// The dialog info of a screen dialog; a session survey also lists its keys.
+static json screenInfo(const std::string &text)
+{
+    json info = dialogInfo("", text, "");
+    if (const auto options = surveyOptions(text); !options.empty()) {
+        info["options"] = json::array();
+        for (const auto &[id, label] : options)
+            info["options"].push_back({{"id", id}, {"label", label}});
+    }
+    return info;
+}
+
+// What the owner is told about a screen: the last lines above the prompt box
+// (the wrapper's snapshot shows rules as ───), or the dialog's own first
+// lines when no box shows; at most 4 lines and 300 bytes.
+static std::string screenGist(const std::string &screen)
+{
+    std::vector<std::string> lines;
+    std::istringstream in(screen);
+    for (std::string line; std::getline(in, line);)
+        lines.push_back(line);
+    const std::string rule = "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80";
+    int top = -1;
+    for (int i = static_cast<int>(lines.size()) - 1; i > 0; --i) {
+        if (lines[i - 1] == rule && (lines[i].compare(0, 3, "\xE2\x9D\xAF") == 0 || lines[i].compare(0, 2, "! ") == 0)) {
+            top = i - 1;
+            break;
+        }
+    }
+    std::vector<std::string> shown;
+    if (top >= 0) {
+        for (int i = top - 1; i >= 0 && shown.size() < 4; --i)
+            if (!trim(lines[i], " \t\r").empty() && lines[i] != rule)
+                shown.insert(shown.begin(), trim(lines[i], " \t\r"));
+    } else {
+        for (std::size_t i = 0; i < lines.size() && shown.size() < 4; ++i)
+            if (!trim(lines[i], " \t\r").empty())
+                shown.push_back(trim(lines[i], " \t\r"));
+    }
+    std::string out;
+    for (const auto &line : shown)
+        out += (out.empty() ? "" : "\n") + line;
+    if (out.size() > 300)
+        out.resize(utf8Boundary(out, 300));
+    return out;
+}
+
 // A dialog no hook reports, read off the screen by the wrapper (empty: it
 // is gone). At a free prompt it counts at once; in a turn only after a
 // moment, since a permission dialog's hook may still be on its way.
@@ -855,10 +904,12 @@ void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::st
     promptFree_ = prompt;
     if (blocked_) {
         if (!text.empty() && dialogInfo_.value("text", json()) != json(text)) {
-            dialogInfo_ = dialogInfo("", text, "");
+            dialogInfo_ = screenInfo(text);
             changed();
         }
-        if (prompt && retryOnPrompt_)
+        // Never while a dialog (a session survey takes single keys) stands,
+        // and not before the pause after a failed typed check is over.
+        if (prompt && retryOnPrompt_ && text.empty() && !typedPause())
             unblock();
         return;
     }
@@ -877,7 +928,7 @@ void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::st
             }
             deliver();
         } else {
-            dialogInfo_ = dialogInfo("", text, "");
+            dialogInfo_ = screenInfo(text);
         }
         changed();
     } else if (!text.empty() && dialog_.empty() && (state_ == "idle" || state_ == "busy")) {
@@ -914,6 +965,10 @@ void ClaudeSession::onTyped(bool ok, const std::string &screen, const std::strin
     if (!inFlight_ || !typedDeadline_)
         return;
     typedDeadline_.reset();
+    if (ok) {
+        failedScreen_.clear();
+        sameFails_ = 0;
+    }
     if (ok && !how.empty())
         host_.log(id_ + ": typed (" + how + ")");
     if (!ok) {
@@ -929,8 +984,15 @@ void ClaudeSession::onTyped(bool ok, const std::string &screen, const std::strin
             attention("stuck", text);
             return;
         }
+        // Typed again only after a pause that doubles while the screen is
+        // the same (old wrappers send no snapshot with `screen`, so this
+        // cannot wait for a change): 2 s, 4 s.
+        sameFails_ = screen == failedScreen_ ? sameFails_ + 1 : 1;
+        failedScreen_ = screen;
         host_.log(id_ + ": typed check failed");
         notDelivered(screen, true);
+        typedPauseUntil_ = Clock::now() + kTypedRetryBase * (1 << std::min(sameFails_ - 1, 3));
+        retryAt_ = *typedPauseUntil_;
         return;
     }
     if (inFlight_->text[0] == '/' || inFlight_->text[0] == '!') {
@@ -1008,9 +1070,9 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry)
     screenFrom_ = "idle";
     state_ = "waiting";
     dialog_ = "screen";
-    dialogInfo_ = dialogInfo("", screen, "");
+    dialogInfo_ = screenInfo(screen);
     if (!asked)
-        attention("screen", screen.substr(0, screen.find('\n')));
+        attention("screen", screenGist(screen));
     changed();
 }
 
@@ -1018,6 +1080,7 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry)
 void ClaudeSession::retryIfBlocked()
 {
     if (blocked_) {
+        typedPauseUntil_.reset(); // the owner acted
         retryOnPrompt_ = true;
         retryAt_ = Clock::now() + kRetryAfter;
     }
@@ -1031,9 +1094,15 @@ void ClaudeSession::endSlash()
         modelDone("failed", "interrupted");
 }
 
+bool ClaudeSession::typedPause() const
+{
+    return typedPauseUntil_ && Clock::now() < *typedPauseUntil_;
+}
+
 void ClaudeSession::unblock()
 {
     blocked_ = false;
+    typedPauseUntil_.reset();
     retryAt_.reset();
     state_ = "idle";
     dialog_.clear();
@@ -1046,8 +1115,8 @@ void ClaudeSession::openScreenDialog()
     screenFrom_ = state_;
     state_ = "waiting";
     dialog_ = "screen";
-    dialogInfo_ = dialogInfo("", screenText_, "");
-    attention("screen", screenText_.substr(0, screenText_.find('\n')));
+    dialogInfo_ = screenInfo(screenText_);
+    attention("screen", screenGist(screenText_));
     changed();
 }
 
@@ -1130,7 +1199,7 @@ void ClaudeSession::tick(Clock::time_point now)
         notDelivered("", true);
     if (retryAt_ && now >= *retryAt_) {
         retryAt_.reset();
-        if (blocked_ && promptFree_)
+        if (blocked_ && promptFree_ && screenText_.empty() && !typedPause())
             unblock();
     }
     if (modeDeadline_ && now >= *modeDeadline_)

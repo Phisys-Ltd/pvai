@@ -176,7 +176,11 @@ daemon knows every live one on its host.
   it) goes back to the front as well and shows the screen the same way;
   that one goes on only after an `answer` from the app (any key) once the
   box is free, so a session without a login does not type it again and
-  again. `answer` `send` types the first queued prompt without the check
+  again. A prompt whose typed check failed is typed again at most 3
+  times, and only after a pause of 2 s, then 4 s, so a
+  screen that stays the same (a survey, a busy box) is not typed into
+  over and over; the `screen` attention text is the last lines above the
+  prompt box (or the dialog's first lines), up to 4 lines and 300 bytes. `answer` `send` types the first queued prompt without the check
   (the owner sees that the prompt is free and the box was not
   recognised). Older wrappers type as before.
 - `draft`: the owner has typed into the session's prompt in the terminal and
@@ -229,7 +233,17 @@ daemon knows every live one on its host.
   (a permission dialog shows such a footer too). `text` follows the
   screen while it is open (a `sessions` update for each change); when it
   is gone the session is back in the state it had before (`idle`: the
-  queue goes on). Claude Code: from its
+  queue goes on). Claude Code's session surveys ("How is Claude doing this
+  session? (optional)", the recollection and memory variants, "Can
+  Anthropic look at your session transcript ...") are drawn above the
+  prompt box, which stays; they count as `screen` dialogs when question
+  and options row stand directly over the box's top rule. `text` is the
+  question and the options row; `dialogInfo.options` lists the keys shown,
+  `[{"id": "1", "label": "Bad"}, ...]` (`1`-`3`, `4` Unsure in some
+  variants, `0` Dismiss; or `y` Yes, `n` No, `d` Don't ask again). They are
+  answered with `answer` `key:<id>` (one key, passed on unchanged); the
+  daemon never types into one or dismisses it by itself, and keeps the
+  queue back while it stands. Claude Code: from its
   `PermissionRequest` hook (tool name and input; `AskUserQuestion` makes a
   `question`, see "Claude Code's questions"), the words from the
   `Notification` that follows or comes first; an older Claude Code without that hook gets the last tool call
@@ -425,7 +439,7 @@ Daemon to app:
 | `projects` | `dirs: [path]` | most recently used first |
 | `browse` | `path`, `dirs: [name]`, `ok` | sorted, hidden ones left out; `ok: false` when `path` cannot be read |
 | `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn counts as spoken (see "What gets spoken") |
-| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the dialog's first line). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models"); since 0.5.50 `kind: "limited"`: a Claude Code session hit its usage limit, `text` is Claude Code's message (see "Usage limit"); since 0.5.63 `kind: "stuck"`: sent when the wrapper reports that Claude Code did not act on the Return (`submitted` with `ok: false`, see `register`): for a slash or shell command the box was emptied and the session is idle again; for a prompt it was typed a second time and failed again, and it waits at the front of the queue behind the `screen` dialog; `text` is the first 40 characters |
+| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the last lines above the prompt box, or the dialog's first lines). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models"); since 0.5.50 `kind: "limited"`: a Claude Code session hit its usage limit, `text` is Claude Code's message (see "Usage limit"); since 0.5.63 `kind: "stuck"`: sent when the wrapper reports that Claude Code did not act on the Return (`submitted` with `ok: false`, see `register`): for a slash or shell command the box was emptied and the session is idle again; for a prompt it was typed a second time and failed again, and it waits at the front of the queue behind the `screen` dialog; `text` is the first 40 characters |
 | `history` | `session`, `entries: [Entry]` | answer to `subscribe`, oldest first; sent again, to every subscriber, when the session moves to another transcript (`/clear`): the view starts over |
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
 | `conversations` | `assistant`, `cwd`, `conversations: [Conversation]` | answer to `conversations` |
