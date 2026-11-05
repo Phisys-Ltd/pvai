@@ -1146,6 +1146,100 @@ int main(int argc, char **argv)
         hook("wclr", {{"hook_event_name", "Stop"}, {"session_id", "c-1"}, {"last_assistant_message", "Drei."}});
     }
 
+    // 0.5.71: "send anyway" never presses Return into something that is not
+    // our text. A fake Claude Code logs every paste (P:) and every Return (R)
+    // it gets; "offer" draws Claude Code's auto mode offer under the box,
+    // "plain" a plain box that never shows a paste.
+    {
+        const std::string tui = bin + "/fake-tui-offer.py";
+        writeFile(tui,
+                  "import os, sys, tty\n"
+                  "tty.setraw(0)\n"
+                  "log, mode = sys.argv[1], sys.argv[2]\n"
+                  "rule = '\\u2500' * 60\n"
+                  "def note(s):\n"
+                  "    with open(log, 'a') as f: f.write(s + '\\n')\n"
+                  "text = '\\x1b[2J\\x1b[20;1H' + rule + '\\r\\n\\u276f \\r\\n' + rule + '\\r\\n'\n"
+                  "if mode == 'offer':\n"
+                  "    text += (rule + '\\r\\n Teach auto mode about your environment?\\r\\n Auto mode works better when it knows your environment.\\r\\n\\r\\n"
+                  " \\u276f 1. Yes\\r\\n   2. Not now\\r\\n   3. Don\\'t show again\\r\\n\\r\\n Enter to confirm \\u00b7 Esc to cancel')\n"
+                  "else:\n"
+                  "    text += '  ? for shortcuts'\n"
+                  "os.write(1, b'\\x1b[?2004h' + text.encode())\n"
+                  "while True:\n"
+                  "    data = os.read(0, 4096)\n"
+                  "    if not data: break\n"
+                  "    if b'\\x1b[200~' in data: note('P:' + data.decode(errors='replace'))\n"
+                  "    if b'\\r' in data: note('R')\n",
+                  false);
+        auto launch = [&](const std::string &id, const std::string &logFile, const std::string &mode) {
+            const std::string pidFile = home + "/" + id + ".pid";
+            (void)std::system(("cd '" + project + "' && " + g_pvai + " run --detached --id " + id + " -- python3 '" + tui + "' '" + logFile + "' " + mode
+                               + " >/dev/null 2>&1 & echo $! > '" + pidFile + "'").c_str());
+            check(!waitSession(a, id, [](const json &) { return true; }, 3000).empty(), id + ": the wrapper registers");
+            hook(id, {{"hook_event_name", "SessionStart"}, {"session_id", id + "-1"}, {"source", "startup"}});
+            check(!waitSession(a, id, [](const json &s) { return s.value("state", "") == "idle"; }).empty(), id + ": idle");
+            return pidFile;
+        };
+        {
+            const std::string log = home + "/offer.log";
+            const std::string pidFile = launch("woffer", log, "offer");
+            const json shown = waitSession(a, "woffer", [](const json &s) { return s.value("dialog", json()) == "screen"; }, 5000);
+            check(!shown.empty() && shown["dialogInfo"].value("options", json::array()).size() == 3,
+                  "the offer is a screen dialog with its three keys: " + shown.dump());
+            a.send({{"type", "prompt"}, {"ref", 120}, {"session", "woffer"}, {"text", "diktat"}});
+            a.send({{"type", "answer"}, {"ref", 121}, {"session", "woffer"}, {"choice", "send"}});
+            std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+            check(readFile(log).empty(), "the offer stands: no paste, no Return: [" + readFile(log) + "]");
+            (void)std::system(("kill $(cat '" + pidFile + "') 2>/dev/null").c_str());
+        }
+        {
+            const std::string log = home + "/plain.log";
+            const std::string pidFile = launch("wplain", log, "plain");
+            a.send({{"type", "prompt"}, {"ref", 122}, {"session", "wplain"}, {"text", "diktat"}});
+            check(!a.next("attention", [](const json &m) { return m.value("session", "") == "wplain" && m.value("kind", "") == "screen"; }, 6000).empty(),
+                  "the box never shows the paste: the owner sees the screen");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1500)); // the wrapper has emptied the box
+            a.send({{"type", "answer"}, {"ref", 123}, {"session", "wplain"}, {"choice", "send"}});
+            check(!a.next("attention", [](const json &m) { return m.value("session", "") == "wplain" && m.value("kind", "") == "stuck"; }, 40000).empty(),
+                  "sent anyway, still not in the box: stuck");
+            check(readFile(log).find('R') == std::string::npos && readFile(log).find("P:") != std::string::npos,
+                  "pasted, but no Return was pressed: [" + readFile(log) + "]");
+            (void)std::system(("kill $(cat '" + pidFile + "') 2>/dev/null").c_str());
+        }
+    }
+
+    // A fake wrapper: a prompt sent anyway that is not reported as typed
+    // gives the screen back; a command Claude Code ran in its place is lost,
+    // told to the owner with the whole text, and never typed again.
+    {
+        LineClient lw;
+        lw.send({{"type", "register"}, {"version", kVersion}, {"id", "wlost"}, {"cwd", project}, {"label", "lost"}, {"restart", true}, {"verify", true},
+                 {"clear", true}, {"submitCheck", true}, {"typedUnchecked", true}});
+        hook("wlost", {{"hook_event_name", "SessionStart"}, {"session_id", "lost-1"}, {"source", "startup"}});
+        check(!waitSession(a, "wlost", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a lost-prompt test session");
+        a.send({{"type", "prompt"}, {"ref", 130}, {"session", "wlost"}, {"text", "ein langer diktierter Satz"}});
+        check(lw.next("type").value("verify", false), "typed with the check");
+        lw.send({{"type", "typed"}, {"ok", false}, {"screen", "busy"}});
+        check(!waitSession(a, "wlost", [](const json &s) { return s.value("dialog", json()) == "screen"; }).empty(), "blocked");
+        a.send({{"type", "answer"}, {"ref", 131}, {"session", "wlost"}, {"choice", "send"}});
+        const json anyway = lw.next("type");
+        check(anyway.value("text", "") == "ein langer diktierter Satz" && !anyway.value("verify", true), "answer send types it unchecked");
+        lw.send({{"type", "typed"}, {"ok", false}, {"screen", "offer"}});
+        const json stuck = a.next("attention", [](const json &m) { return m.value("session", "") == "wlost" && m.value("kind", "") == "stuck"; }, 3000);
+        check(!stuck.empty(), "unchecked and not typed: the owner is told");
+        check(lw.next("type", {}, 2500).empty(), "and it is not typed again by itself");
+        a.send({{"type", "answer"}, {"ref", 132}, {"session", "wlost"}, {"choice", "send"}});
+        check(lw.next("type").value("text", "") == "ein langer diktierter Satz", "sent anyway once more");
+        lw.send({{"type", "typed"}, {"ok", true}});
+        hook("wlost", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "lost-1"}, {"prompt", "/auto-mode-setup"}});
+        const json dropped = a.next("dropped", [](const json &m) { return !m.value("prompts", json::array()).empty(); }, 3000);
+        check(!dropped.empty() && dropped["prompts"][0].value("text", "") == "ein langer diktierter Satz" && dropped["prompts"][0].value("ref", 0) == 130
+                  && dropped["prompts"][0].value("session", "") == "wlost",
+              "the lost prompt comes back whole: " + dropped.dump());
+        check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 130; }, 500).empty(), "it is not reported delivered");
+    }
+
     // A Return Claude Code did not act on (the wrapper says `submitted`
     // ok:false): a slash command ends as stuck, a prompt is typed once more
     // and then shown to the owner. Any compaction ends a pending /compact.

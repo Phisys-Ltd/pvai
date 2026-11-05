@@ -123,6 +123,16 @@ bool goodConversationId(const std::string &id)
         && std::all_of(id.begin(), id.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '-'; });
 }
 
+// A slash command as Claude Code's hook reports it or as we typed it (past
+// a paste frame and the mic mark).
+bool isSlash(const std::string &raw)
+{
+    std::string t = trim(stripPasteFrame(raw), " \t\r\n");
+    if (t.compare(0, std::strlen(kMicMark), kMicMark) == 0)
+        t = trim(t.substr(std::strlen(kMicMark)), " \t\r\n");
+    return !t.empty() && t[0] == '/';
+}
+
 } // namespace
 
 ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration)
@@ -137,6 +147,7 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
         wrapperVersion_ = cut(oneLine(v.get<std::string>(), 64), 32);
     canPace_ = registration.value("paced", false);
     submitCheck_ = registration.value("submitCheck", false);
+    typedUnchecked_ = registration.value("typedUnchecked", false);
     // A wrapper that registers again after a daemon restart has a running
     // Claude Code: idle, unless its transcript shows a turn going on.
     if (registration.value("running", false)) {
@@ -255,6 +266,9 @@ void ClaudeSession::submit(const Prompt &prompt)
     // with its output in the transcript.
     const bool slash = prompt.text[0] == '/' || prompt.text[0] == '!';
     const bool verify = verify_ && !sendUnchecked_;
+    // Sent anyway (answer `send`): a wrapper of 0.5.71 or later still waits
+    // for the paste to show in the box before the Return, and says how it went.
+    const bool pasteChecked = verify_ && !verify && typedUnchecked_;
     sendUnchecked_ = false;
     {
         std::string shown = prompt.text.substr(0, 40);
@@ -265,8 +279,9 @@ void ClaudeSession::submit(const Prompt &prompt)
     wrapper_.send({{"type", "type"}, {"text", (prompt.voice && !slash ? kMicMark : "") + prompt.text}, {"verify", verify}});
     if (verify_)
         inFlight_ = prompt;
-    if (verify) {
+    if (verify || pasteChecked) {
         // The wrapper says whether it went in; until then nothing else may.
+        uncheckedInFlight_ = pasteChecked;
         typedDeadline_ = Clock::now() + kTypedTimeout;
         state_ = "busy";
         return;
@@ -597,6 +612,12 @@ void ClaudeSession::onHook(const json &event)
         retryAt_.reset();
         typedDeadline_.reset();
         if (name == "UserPromptSubmit") {
+            // Claude Code took a slash command where our text was typed (an
+            // offer in its prompt took the Return): ours is not delivered.
+            if (inFlight_ && !isSlash(inFlight_->text) && isSlash(event.value("prompt", ""))) {
+                lost(*inFlight_, "Claude Code ran a command instead");
+                inFlight_.reset();
+            }
             if (!inFlight_)
                 dropQueued(event.value("prompt", ""));
             confirmed = inFlight_;
@@ -969,9 +990,21 @@ void ClaudeSession::onTyped(bool ok, const std::string &screen, const std::strin
     if (!inFlight_ || !typedDeadline_)
         return;
     typedDeadline_.reset();
+    const bool unchecked = uncheckedInFlight_;
+    uncheckedInFlight_ = false;
     if (ok) {
         failedScreen_.clear();
         sameFails_ = 0;
+    }
+    if (!ok && unchecked) {
+        // Sent anyway, and the wrapper pressed no Return (a dialog stands, the
+        // box never showed the paste): not typed again by itself, the owner
+        // looks at the screen.
+        host_.log(id_ + ": typed anyway, the box did not show the paste");
+        const std::string text = inFlight_->text.substr(0, 40);
+        notDelivered(screen, false);
+        attention("stuck", text);
+        return;
     }
     if (ok && !how.empty())
         host_.log(id_ + ": typed (" + how + ")");
@@ -1053,6 +1086,15 @@ void ClaudeSession::delivered()
         return;
     host_.broadcast({{"type", "delivered"}, {"session", id_}, {"ref", inFlight_->ref}});
     inFlight_.reset();
+}
+
+// A prompt that is gone without a trace and will not be typed again: the
+// owner hears it with its whole text (`dropped`), the app may offer to resend.
+void ClaudeSession::lost(const Prompt &prompt, const std::string &why)
+{
+    host_.log(id_ + ": prompt lost (" + why + ")");
+    host_.broadcast({{"type", "dropped"},
+                     {"prompts", json::array({json{{"session", id_}, {"ref", prompt.ref}, {"text", prompt.text}}})}});
 }
 
 // The prompt did not go in: in front of the queue again, and the session
@@ -1281,6 +1323,12 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
         // that verifies, it goes back in the queue and the owner sees the
         // screen (a Claude Code without a login, a dialog not recognised).
         submitDeadline_.reset();
+        // A dialog on the screen holds the prompt's turn up: look again
+        // once it is gone, else the prompt would stay in flight unseen.
+        if (inFlight_ && state_ == "waiting" && dialog_ == "screen") {
+            submitDeadline_ = now + kSubmitTimeout;
+            return;
+        }
         // The transcript shows a turn that began after the prompt went in
         // (the session was idle): it went in, only UserPromptSubmit never
         // came (a slow or lost hook). Typed again it would arrive twice.
@@ -1321,8 +1369,15 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
     // "Not logged in" and no hook); what waited for it goes, so it does not
     // land in the same hole.
     const bool cleared = !seen && !slashPending_;
-    if (cleared)
+    if (cleared) {
+        if (inFlight_) {
+            lost(*inFlight_, "the session hung");
+            inFlight_.reset();
+        }
+        for (const auto &prompt : queue_)
+            lost(prompt, "the session hung");
         queue_.clear();
+    }
     forceIdle_ = false;
     slashPending_ = false;
     if (slashModel_ || cleared) // a kept queue still types the /model

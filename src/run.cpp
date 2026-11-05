@@ -509,7 +509,7 @@ int runWrapper(const WrapperOptions &options)
     auto registerSelf = [&] {
         daemon->send({{"type", "register"}, {"version", kVersion}, {"id", id}, {"label", options.label}, {"cwd", cwd},
                       {"pid", static_cast<int>(::getpid())}, {"running", registered}, {"detached", detached},
-                      {"restart", true}, {"verify", true}, {"modes", true}, {"clear", true}, {"paced", true}, {"submitCheck", true}});
+                      {"restart", true}, {"verify", true}, {"modes", true}, {"clear", true}, {"paced", true}, {"submitCheck", true}, {"typedUnchecked", true}});
         if (draft.dirty() || shellShown)
             reportDraft(true);
         if (trustAsked)
@@ -695,9 +695,22 @@ int runWrapper(const WrapperOptions &options)
                 if (type == "type") {
                     std::string text = message.value("text", "");
                     std::string box;
-                    if (message.value("verify", false) && (typing || submitCheck || leftover || !paced.empty() || !promptFree(box))) {
+                    const bool verify = message.value("verify", false);
+                    if (verify && (typing || submitCheck || leftover || !paced.empty() || !promptFree(box))) {
                         typed(false);
                         continue;
+                    }
+                    if (!verify) {
+                        // The owner says the prompt is free ("send anyway"):
+                        // the free-box check is skipped, nothing else. Never
+                        // into a dialog the screen shows, and the Return
+                        // still waits for the paste to show in the box.
+                        if (typing || submitCheck || !paced.empty() || !screenDialog(screen).empty()) {
+                            typed(false);
+                            continue;
+                        }
+                        leftover = false;
+                        promptBox(screen, box);
                     }
                     if (modes.on("2004")) {
                         toMaster += "\x1b[200~" + text + "\x1b[201~";
@@ -707,12 +720,9 @@ int runWrapper(const WrapperOptions &options)
                                 c = ' ';
                         toMaster += text;
                     }
-                    // Return as a separate keystroke, after the paste has landed
-                    // (with `verify`: once the prompt box shows it).
-                    if (message.value("verify", false))
-                        typing = Typing{box, Clock::now() + std::chrono::milliseconds(2000), text, promptLinesShown(screen, text)};
-                    else
-                        returnAt = Clock::now() + std::chrono::milliseconds(150);
+                    // Return as a separate keystroke, once the prompt box
+                    // shows the paste.
+                    typing = Typing{box, Clock::now() + std::chrono::milliseconds(2000), text, promptLinesShown(screen, text)};
                 } else if (type == "keys") {
                     toMaster += message.value("data", "");
                 } else if (type == "paced") {

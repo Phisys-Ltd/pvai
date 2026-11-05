@@ -86,6 +86,7 @@ private:
     void delivered();
     void dropQueued(const std::string &text);
     void notDelivered(const std::string &screen, bool retry);
+    void lost(const Prompt &prompt, const std::string &why);
     void unblock();
     void retryIfBlocked();
     void endSlash();
@@ -106,6 +107,8 @@ private:
     std::optional<Clock::time_point> modelAt_; // the /model in Claude Code is due its output by then
     void modelDone(const std::string &state, const std::string &error = {});
     void markSlash(const Prompt &prompt);
+    bool typedUnchecked_ = false; // the wrapper answers `typed` also for a prompt sent anyway (0.5.71)
+    bool uncheckedInFlight_ = false; // the prompt in flight was sent anyway
     bool submitCheck_ = false; // the wrapper checks that Return took (`submitCheck`, 0.5.63)
     std::size_t slashMark_ = 0;
     // A pending /compact also ends with any compaction in the transcript.

@@ -180,9 +180,14 @@ daemon knows every live one on its host.
   times, and only after a pause of 2 s, then 4 s, so a
   screen that stays the same (a survey, a busy box) is not typed into
   over and over; the `screen` attention text is the last lines above the
-  prompt box (or the dialog's first lines), up to 4 lines and 300 bytes. `answer` `send` types the first queued prompt without the check
-  (the owner sees that the prompt is free and the box was not
-  recognised). Older wrappers type as before.
+  prompt box (or the dialog's first lines), up to 4 lines and 300 bytes. `answer` `send` types the first queued prompt without the free-box check
+  (the owner sees that the prompt is free and the box was not recognised).
+  Since 0.5.71 the wrapper still never presses Return into something that is
+  not the paste: it refuses (`typed` `ok: false`) while a `screen` dialog
+  stands (answer the dialog instead), and presses Return only once the box
+  shows the paste; if it does not within 2 s the paste is cleared once no
+  dialog stands and the prompt goes back to the front of `queued` with
+  attention `stuck`; it is never retried by itself. Older wrappers type as before.
 - `draft`: the owner has typed into the session's prompt in the terminal and
   not sent it, or (since 0.5.30) the prompt box is in shell mode (it starts
   with `!`, as after `!` or a command called back from the history: what is
@@ -243,7 +248,13 @@ daemon knows every live one on its host.
   variants, `0` Dismiss; or `y` Yes, `n` No, `d` Don't ask again). They are
   answered with `answer` `key:<id>` (one key, passed on unchanged); the
   daemon never types into one or dismisses it by itself, and keeps the
-  queue back while it stands. Claude Code: from its
+  queue back while it stands. Since 0.5.71 the same holds for an ask drawn
+  under the prompt box (Claude Code's offers, such as "Teach auto mode about
+  your environment?" with `1. Yes`, `2. Not now`, `3. Don't show again`, then
+  "Enter to confirm · Esc to cancel"): numbered options and a footer in the
+  last two lines under the box. Its select takes Return and the digits, so
+  text typed for the box would answer it. `dialogInfo.options` lists the
+  digits (`id` `1`...`9`) for any `screen` dialog with two or more numbered rows. Claude Code: from its
   `PermissionRequest` hook (tool name and input; `AskUserQuestion` makes a
   `question`, see "Claude Code's questions"), the words from the
   `Notification` that follows or comes first; an older Claude Code without that hook gets the last tool call
@@ -453,7 +464,7 @@ Daemon to app:
 | `assistants` | `assistants`, `installed` | (since 0.5.24) `welcome.assistants` and `welcome.installed` again, to every app, when an install, a login or a logout changed them |
 | `proposals` | `proposals: [Proposal]` | the agent messages waiting for the owner, sent after `welcome` and after every change (see "Agent messages") |
 | `dismissed` | `ref`, `proposal` | answer to `dismiss`; `proposal` is gone from `proposals` (also when it was unknown) |
-| `dropped` | `prompts: [{session, ref, text, kept?}]` | (since 0.5.21, extended 0.5.52) prompts that will not be typed: a session ended with a queue or a prompt typed and not yet confirmed (Claude Code exited, `stop`, a restart that failed, the daemon dropped its wrapper; Codex and Kimi: the thread or session ended), or the daemon is stopping by `pvai daemon stop|restart --force`. `ref` is the one of their `prompt`; `text` is the whole prompt (before 0.5.52 the first 80 bytes, and only on a forced stop). `kept: true` (since 0.5.52, Claude Code only) says the daemon keeps that prompt for the conversation (see "Kept prompts"); it is omitted otherwise. A prompt kept and later lost for good (24 h, `daemon stop`, `forget`, the caps) comes in a second `dropped` with the same `session` and `ref`, without `kept`. To every app. Without `--force` the daemon does not stop while any prompt is queued (`pvai` gets `rejected` with `queued` over loopback, from `{"type": "shutdown", "ref", "force"}`) |
+| `dropped` | `prompts: [{session, ref, text, kept?}]` | (since 0.5.21, extended 0.5.52) prompts that will not be typed: a session ended with a queue or a prompt typed and not yet confirmed (Claude Code exited, `stop`, a restart that failed, the daemon dropped its wrapper; Codex and Kimi: the thread or session ended), or the daemon is stopping by `pvai daemon stop|restart --force`. Since 0.5.71 also a prompt typed and lost without a trace: Claude Code took a slash command (a `UserPromptSubmit` starting with `/`) instead of it, or the queue was dropped after an interrupt of a hung session; the daemon never types it again, the app may offer to resend. `ref` is the one of their `prompt`; `text` is the whole prompt (before 0.5.52 the first 80 bytes, and only on a forced stop). `kept: true` (since 0.5.52, Claude Code only) says the daemon keeps that prompt for the conversation (see "Kept prompts"); it is omitted otherwise. A prompt kept and later lost for good (24 h, `daemon stop`, `forget`, the caps) comes in a second `dropped` with the same `session` and `ref`, without `kept`. To every app. Without `--force` the daemon does not stop while any prompt is queued (`pvai` gets `rejected` with `queued` over loopback, from `{"type": "shutdown", "ref", "force"}`) |
 | `entry` | `session`, `entry: Entry` | one new piece of the conversation |
 | `pong` | | keepalive |
 | `error` | `code`, `text` | `auth` (then the daemon closes), `bad-message`, `unknown-session` (`text` is the id) |

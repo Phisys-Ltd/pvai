@@ -58,10 +58,13 @@ private:
 
 // The dialog Claude Code shows in place of its prompt, read off the screen:
 // its text (title, options, footer) when the last lines carry a dialog's
-// footer ("Enter to confirm", "Esc to cancel", ...), else empty.
+// footer ("Enter to confirm", "Esc to cancel", ...), else empty. Over a
+// prompt box that stays: a session survey above it, an ask with numbered
+// options and a footer under it.
 std::string screenDialog(const Screen &screen);
 // The options of a session survey as screenDialog's text shows them (id =
-// the key Claude Code takes, label); empty for any other text.
+// the key Claude Code takes, label), or the numbered rows ("1. Yes") of any
+// other text with at least two; else empty.
 std::vector<std::pair<std::string, std::string>> surveyOptions(const std::string &text);
 
 // Claude Code's prompt box: the lines between the last two rules on the

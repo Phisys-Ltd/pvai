@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <array>
 
 namespace pvai {
@@ -582,6 +583,94 @@ std::string surveyAbove(const Screen &screen, int top)
     return joinLines(std::vector<std::string>(down.rbegin(), down.rend()));
 }
 
+
+const std::array<const char *, 8> kFooters = {
+    "Enter to confirm", "Enter to continue", "Enter to select", "Enter to submit",
+    "Esc to cancel",    "Esc to exit",       "Esc to go back",  "Esc to close",
+};
+
+bool footerRow(const std::string &row)
+{
+    for (const char *marker : kFooters)
+        if (row.find(marker) != std::string::npos)
+            return true;
+    return false;
+}
+
+// One row of a numbered list as Claude Code's select draws it: "1. Yes", the
+// focused one behind a "❯". `id` is the digit (one key), `label` the rest.
+bool numberedRow(const std::string &row, std::string *id = nullptr, std::string *label = nullptr)
+{
+    std::string t = trim(row, " ");
+    for (const char *mark : {"\xE2\x9D\xAF", ">"}) {
+        if (t.compare(0, std::strlen(mark), mark) == 0) {
+            t = trim(t.substr(std::strlen(mark)), " ");
+            break;
+        }
+    }
+    if (t.size() < 4 || !std::isdigit(static_cast<unsigned char>(t[0])) || t[1] != '.' || t[2] != ' ')
+        return false;
+    if (id)
+        *id = t.substr(0, 1);
+    if (label)
+        *label = trim(t.substr(3), " ");
+    return true;
+}
+
+// An ask drawn under the prompt box, which stays (Claude Code's offers and
+// consent questions: "Teach auto mode about your environment?" with
+// "1. Yes / 2. Not now / 3. Don't show again", then "Enter to confirm · Esc
+// to cancel"): its select takes Return and the digits, so what is typed for
+// the box would answer it. Numbered options and a footer in the last two
+// lines with text, nothing but the dialog's own rows between the box's
+// bottom rule and them. A menu under the box has neither.
+std::string askBelow(const Screen &screen, int top)
+{
+    int bottom = -1;
+    for (int r = top + 1; r < screen.rows() && bottom < 0; ++r)
+        if (isRule(screen.row(r)))
+            bottom = r;
+    if (bottom < 0)
+        return {};
+    int footer = -1, seen = 0;
+    for (int r = screen.rows() - 1; r > bottom && seen < 2 && footer < 0; --r) {
+        const std::string row = screen.row(r);
+        if (trim(row, " ").empty())
+            continue;
+        ++seen;
+        if (footerRow(row))
+            footer = r;
+    }
+    if (footer < 0)
+        return {};
+    std::vector<std::string> lines;
+    int blanks = 0, numbered = 0;
+    for (int r = footer; r > bottom && footer - r < 30; --r) {
+        const std::string row = screen.row(r);
+        if (isRule(row)) {
+            if (r != footer && !lines.empty())
+                break;
+            continue;
+        }
+        std::string text = unbox(row);
+        // (a title may sit in the dialog's top border)
+        const auto from = text.find_first_not_of(" \xE2\x94\x80");
+        if (from != std::string::npos && text.compare(0, 3, "\xE2\x94\x80") == 0)
+            text = std::string(" ") + text.substr(from);
+        if (text.empty()) {
+            if (++blanks >= 3)
+                break;
+            if (!lines.empty() && !lines.back().empty())
+                lines.push_back({});
+            continue;
+        }
+        blanks = 0;
+        numbered += numberedRow(text) ? 1 : 0;
+        lines.push_back(text);
+    }
+    return numbered >= 2 ? joinLines(lines) : std::string();
+}
+
 } // namespace
 
 std::vector<std::pair<std::string, std::string>> surveyOptions(const std::string &text)
@@ -590,8 +679,20 @@ std::vector<std::pair<std::string, std::string>> surveyOptions(const std::string
     bool survey = false;
     for (const char *q : kSurveyQuestions)
         survey = survey || text.find(q) != std::string::npos;
-    if (!survey)
+    if (!survey) {
+        std::size_t from = 0;
+        while (from < text.size()) {
+            std::size_t end = text.find('\n', from);
+            if (end == std::string::npos)
+                end = text.size();
+            if (std::string id, label; numberedRow(text.substr(from, end - from), &id, &label))
+                out.push_back({id, label});
+            from = end + 1;
+        }
+        if (out.size() < 2)
+            out.clear();
         return out;
+    }
     std::size_t line = 0;
     while (line < text.size()) {
         std::size_t end = text.find('\n', line);
@@ -620,13 +721,12 @@ std::string screenDialog(const Screen &screen)
     // stands below it), never a dialog.
     int top = -1;
     if (std::string box; promptBox(screen, box, nullptr, &top)) {
-        // ... except Claude Code's session surveys, drawn above the box.
-        return surveyAbove(screen, top);
+        // ... except Claude Code's session surveys, drawn above the box, and
+        // its asks, drawn under it.
+        if (std::string survey = surveyAbove(screen, top); !survey.empty())
+            return survey;
+        return askBelow(screen, top);
     }
-    static const std::array<const char *, 8> footers = {
-        "Enter to confirm", "Enter to continue", "Enter to select", "Enter to submit",
-        "Esc to cancel",    "Esc to exit",       "Esc to go back",  "Esc to close",
-    };
     // The footer is one of the last two lines with text: further up it is
     // something said in the conversation.
     // A panel taller than the screen (/usage at 40 rows) shows no footer,
@@ -640,9 +740,8 @@ std::string screenDialog(const Screen &screen)
             footer = r - 1;
             break;
         }
-        for (const char *marker : footers)
-            if (row.find(marker) != std::string::npos)
-                footer = r;
+        if (footerRow(row))
+            footer = r;
     }
     if (footer < 0)
         return {};

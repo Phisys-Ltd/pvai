@@ -251,6 +251,50 @@ int main()
         check(so.size() == 3 && so[2] == std::make_pair(std::string("d"), std::string("Don't ask again")), "its keys y n d");
         check(pvai::surveyOptions("Pick one\n1: Bad").empty(), "other text has no survey options");
     }
+    // Claude Code's offer under the prompt box (auto mode setup): the select
+    // under it takes Return and the digits.
+    {
+        const std::string r2 = "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80";
+        const std::string offer =
+            " Teach auto mode about your environment?\r\n"
+            " Auto mode works better when it knows your environment. Takes about a minute.\r\n\r\n"
+            " \xE2\x9D\xAF 1. Yes\r\n   2. Not now\r\n   3. Don't show again\r\n\r\n"
+            " Enter to confirm \xC2\xB7 Esc to cancel";
+        pvai::Screen under(24, 80);
+        feed(under, "\x1b[2J\x1b[H\xE2\x8F\xBA Done.\r\n\r\n" + r2 + "\r\n\xE2\x9D\xAF \r\n" + r2 + "\r\n" + r2 + "\r\n" + offer);
+        std::string box;
+        check(pvai::promptBox(under, box), "the box shows over the offer");
+        const std::string text = pvai::screenDialog(under);
+        check(text == "Teach auto mode about your environment?\nAuto mode works better when it knows your environment. "
+                      "Takes about a minute.\n\n\xE2\x9D\xAF 1. Yes\n  2. Not now\n  3. Don't show again\n\nEnter to confirm \xC2\xB7 Esc to cancel",
+              "the offer under the box: [" + text + "]");
+        const auto options = pvai::surveyOptions(text);
+        check(options.size() == 3 && options[0] == std::make_pair(std::string("1"), std::string("Yes"))
+                  && options[2] == std::make_pair(std::string("3"), std::string("Don't show again")),
+              "the offer's keys 1 2 3");
+
+        // A title in the dialog's top border, a mode line under the footer.
+        pvai::Screen titled(24, 80);
+        feed(titled, "\x1b[2J\x1b[H" + r2 + "\r\n\xE2\x9D\xAF \r\n" + r2 + "\r\n" + r2 + " Teach auto mode about your environment? " + r2
+                         + "\r\n Auto mode works better.\r\n\r\n 1. Yes\r\n 2. Not now\r\n\r\n Enter to confirm \xC2\xB7 Esc to cancel\r\n"
+                           "  auto mode on (shift+tab to cycle)");
+        const std::string tt = pvai::screenDialog(titled);
+        check(tt.find("Teach auto mode") != std::string::npos && tt.find("2. Not now") != std::string::npos,
+              "a title in the border: [" + tt + "]");
+
+        // The same words quoted in the conversation above the box: no dialog.
+        pvai::Screen quoted(30, 80);
+        feed(quoted, "\x1b[2J\x1b[H" + offer + "\r\n\r\nThat was the offer.\r\n\r\n" + r2 + "\r\n\xE2\x9D\xAF \r\n" + r2 + "\r\n  ? for shortcuts");
+        check(pvai::screenDialog(quoted).empty(), "a quoted offer is no dialog: [" + pvai::screenDialog(quoted) + "]");
+        // A menu under the box (no footer, no numbers) is none either.
+        pvai::Screen menu(24, 80);
+        feed(menu, "\x1b[2J\x1b[H" + r2 + "\r\n\xE2\x9D\xAF /mo\r\n" + r2 + "\r\n  /model   Set the model\r\n  /mobile  Get the app");
+        check(pvai::screenDialog(menu).empty(), "a slash menu under the box is no dialog");
+        // Numbers without a footer: no dialog.
+        pvai::Screen plain(24, 80);
+        feed(plain, "\x1b[2J\x1b[H" + r2 + "\r\n\xE2\x9D\xAF \r\n" + r2 + "\r\n 1. a\r\n 2. b\r\n  ? for shortcuts");
+        check(pvai::screenDialog(plain).empty(), "numbers without a footer are no dialog");
+    }
     // A long paste standing in a tall box, an equal line in the conversation
     // above: the box holds it, the line above is not a box row.
     {
