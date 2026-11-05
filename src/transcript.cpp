@@ -257,6 +257,40 @@ bool turnRunning(const std::string &path, long long *runAt)
     return running || freshNote(noteAt);
 }
 
+bool lastPromptSpoken(const std::string &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return false;
+    in.seekg(0, std::ios::end);
+    const std::streamoff size = in.tellg();
+    in.seekg(std::max<std::streamoff>(0, size - 4 * 1024 * 1024));
+    std::string line;
+    if (size > 4 * 1024 * 1024)
+        std::getline(in, line); // a partial first line
+    bool spoken = false;
+    while (std::getline(in, line)) {
+        if (skippable(line.data(), line.size()) || line.find("\"user\"") == std::string::npos)
+            continue;
+        const json entry = json::parse(line, nullptr, false);
+        if (!entry.is_object() || entry.value("type", "") != "user" || entry.value("isSidechain", false) || isBookkeeping(entry)
+            || !entry.contains("message") || !entry["message"].is_object())
+            continue;
+        const json content = entry["message"].value("content", json());
+        if (!content.is_string())
+            continue;
+        const std::string text = stripPasteFrame(content.get<std::string>());
+        if (isMachinePrompt(text) || text.empty() || text[0] == '/')
+            continue;
+        bool machine = false;
+        for (const char *mark : {"[Message ", "Another Claude session sent a message", "<task-notification>"})
+            machine = machine || text.rfind(mark, 0) == 0;
+        if (!machine)
+            spoken = text.rfind("\xF0\x9F\x8E\x99 ", 0) == 0;
+    }
+    return spoken;
+}
+
 std::optional<bool> TranscriptTail::turnRunningSeen() const
 {
     if (turnRunning_ || freshNote(noteAt_))

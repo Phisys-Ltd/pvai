@@ -55,6 +55,22 @@ int main()
     check(!pvai::turnRunning(bangs), "! input starts no turn");
     check(pvai::turnRunning(path), "an owner prompt after them does, whether or not a turn ever ended");
 
+    // The voice state of a transcript: the owner's last own prompt.
+    {
+        const std::string mic = "\xF0\x9F\x8E\x99 ";
+        const std::string spoken = home.path + "/spoken.jsonl";
+        std::ofstream(spoken) << userLine(1, "typed before") << userLine(2, mic + "what time is it") << userLine(3, "<system-reminder>x</system-reminder>")
+                              << userLine(4, "[Message p1 from Mac]\nhello");
+        check(pvai::lastPromptSpoken(spoken), "a 🎙 prompt, then an agent message: still spoken");
+        const std::string typedAfter = home.path + "/typed.jsonl";
+        std::ofstream(typedAfter) << userLine(1, mic + "spoken") << userLine(2, "<command-name>/model</command-name>") << userLine(3, "typed later");
+        check(!pvai::lastPromptSpoken(typedAfter), "then a typed prompt: not spoken");
+        const std::string slash = home.path + "/slash.jsonl";
+        std::ofstream(slash) << userLine(1, mic + "spoken") << userLine(2, "<command-name>/model</command-name>") << userLine(3, "/model sonnet");
+        check(pvai::lastPromptSpoken(slash), "slash and local command lines are no prompt");
+        check(!pvai::lastPromptSpoken(home.path + "/none.jsonl"), "no file: not spoken");
+    }
+
     // An idle compaction after a finished turn (Claude Code 2.1.31x): the
     // summary is no prompt, and no turn runs.
     const std::string idle = home.path + "/idle.jsonl";

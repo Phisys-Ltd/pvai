@@ -40,6 +40,11 @@ bool isBookkeeping(const json &line);
 // line that said running (0 without a timestamp).
 bool turnRunning(const std::string &path, long long *runAt = nullptr);
 
+// Whether the owner's last own prompt in a transcript was spoken (starts
+// with the 🎙 mark): not a sidechain, meta, slash, shell or machine line (a
+// message from another session, a task notification). False without one.
+bool lastPromptSpoken(const std::string &path);
+
 class TranscriptTail {
 public:
     static constexpr std::size_t kKeep = 500;           // entries kept for `history`

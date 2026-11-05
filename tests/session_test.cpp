@@ -1353,6 +1353,17 @@ int main(int argc, char **argv)
         wake.send({{"type", "register"}, {"version", kVersion}, {"id", "wwake"}, {"cwd", project}, {"label", "wake"}, {"running", true}, {"restart", true}});
         check(!waitSession(a, "wwake", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),
               "taken over in a turn a task notification started: busy");
+        // A spoken turn taken over while it runs is still spoken at its Stop.
+        const std::string spokenFile = home + "/elsewhere/spoken.jsonl";
+        const std::string spokenPrompt = json({{"type", "user"}, {"message", {{"role", "user"}, {"content", "\xF0\x9F\x8E\x99 wie spaet ist es"}}}}).dump();
+        writeFile(spokenFile, end + "\n" + spokenPrompt + "\n" + answer + "\n");
+        writeFile(runtime + "/pvai/wspoken.claude", json({{"claudeSession", "spoken-1"}, {"transcript", spokenFile}}).dump() + "\n");
+        LineClient spoken;
+        spoken.send({{"type", "register"}, {"version", kVersion}, {"id", "wspoken"}, {"cwd", project}, {"label", "spoken"}, {"running", true}, {"restart", true}});
+        check(!waitSession(a, "wspoken", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "a spoken turn taken over: busy");
+        hook("wspoken", {{"hook_event_name", "Stop"}, {"session_id", "spoken-1"}, {"last_assistant_message", "Kurz vor drei."}});
+        const json spokenSay = a.next("say", [](const json &m) { return m.value("session", "") == "wspoken"; });
+        check(!spokenSay.empty() && spokenSay.value("voice", false), "its Stop says voice=true: " + spokenSay.dump());
     }
 
     // The permission mode: from the hooks and the footer; a change is

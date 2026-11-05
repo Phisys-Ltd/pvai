@@ -152,8 +152,12 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
                 wakeMark_ = tail_.wakeTurns();
                 // A daemon restarted during a turn: the turn goes on.
                 const auto seen = tail_.turnRunningSeen();
-                if (seen ? *seen : turnRunning(transcript_))
+                if (seen ? *seen : turnRunning(transcript_)) {
                     state_ = "busy";
+                    // The prompt of the turn in progress was spoken or not.
+                    spokenLast_ = lastPromptSpoken(transcript_);
+                    voiceTurn_ = spokenLast_;
+                }
                 // A limit end is a turn end in the file, yet Claude Code
                 // goes on at the reset: waiting, while that is ahead.
                 syncMarks();
