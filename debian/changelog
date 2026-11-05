@@ -1,3 +1,17 @@
+pvai (0.5.70-1) trixie; urgency=medium
+
+  * Claude Code's session surveys (the rating and the transcript-share
+    question) stand above a prompt box that stays: they are screen dialogs
+    with dialogInfo.options; neither daemon nor wrapper types into one, only
+    the owner's answer key goes in.
+  * After a failed typed check the prompt is typed again at most 3 times,
+    after a growing pause, never while a dialog stands; the screen attention
+    shows the last lines above the prompt box.
+  * The wrapper takes a typed prompt as taken only when the box no longer
+    holds it; a tall prompt box with an empty line is found again.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 05 Nov 2026 12:03:09 +0100
+
 pvai (0.5.69-1) trixie; urgency=medium
 
   * A subagent's hand-back (a meta "Another Claude session sent a message"
