@@ -1,3 +1,18 @@
+pvai (0.5.69-1) trixie; urgency=medium
+
+  * A subagent's hand-back (a meta "Another Claude session sent a message"
+    line, no UserPromptSubmit) starts a turn like a task notification: the
+    session is busy, nothing is typed into it.
+  * A turn no prompt started is spoken as the owner's last prompt was,
+    whatever state it passed through (a permission dialog during it no
+    longer makes it silent).
+  * Peers carry `offline` and `seenAt` from the app; `pvai peers` shows an
+    offline host with its last known sessions.
+  * `proposed` warns `host-offline` or `unknown-session`; `pvai propose`
+    prints the warning at once.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 05 Nov 2026 10:59:09 +0100
+
 pvai (0.5.68-1) trixie; urgency=medium
 
   * A prompt without UserPromptSubmit is taken as delivered only when the
