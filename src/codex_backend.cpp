@@ -491,7 +491,7 @@ void CodexSession::onNotification(const std::string &method, const json &params)
         if (str(turn, "status") == "interrupted") {
             const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
             pushEntries({{{"kind", "interrupted"}, {"id", str(turn, "id") + ":interrupted"}, {"time", isoTime(now.count())}}});
-            voiceTurn_ = false;
+            turnOver();
         } else {
             std::string answer = answer_;
             if (answer.empty())

@@ -383,7 +383,8 @@ void TranscriptTail::clearLimited()
 void TranscriptTail::take(const json &line, std::vector<json> &out)
 {
     const std::string type = line.value("type", "");
-    if (isWake(line)) {
+    // A hand-back is taken up like a task notification, with no hook.
+    if (isWake(line) || (!line.value("isSidechain", false) && isHandBack(line))) {
         wakePending_ = true;
     } else if (!line.value("isSidechain", false) && !line.value("isMeta", false)) {
         if (type == "assistant" && wakePending_) {

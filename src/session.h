@@ -167,6 +167,7 @@ protected:
     bool draft_ = false;     // the owner has typed into the prompt and not sent it
     bool voiceTurn_ = false; // the running turn's prompt was spoken
     bool spokenLast_ = false; // the owner's last own prompt was spoken
+    bool prompted_ = false;  // the running turn began with a prompt (promptVoice ran)
     // A turn starts with `text` as its prompt: spoken when it has the 🎙
     // mark; an agent message (`[Message `) goes on as the owner's last
     // prompt did, any other text is the owner typing and ends that.
@@ -178,6 +179,12 @@ protected:
     // A turn without a prompt (a background task or agent came back): it
     // is spoken when the owner's last prompt was.
     void wakeVoice() { voiceTurn_ = spokenLast_; }
+    // A turn ended or was given up: the next one starts clean.
+    void turnOver()
+    {
+        voiceTurn_ = false;
+        prompted_ = false;
+    }
     json usage_;             // context window, rate limits, model, cost, version
     json mode_;              // the permission mode's id, null when unknown
 

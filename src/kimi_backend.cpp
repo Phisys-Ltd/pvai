@@ -174,7 +174,7 @@ void KimiSession::turnEnded(const json &result, const json &error)
         say(message);
     } else if (str(result, "stopReason") == "cancelled") {
         pushEntries({{{"kind", "interrupted"}, {"id", "i" + randomHex(6)}, {"time", nowIso()}}});
-        voiceTurn_ = false;
+        turnOver();
     } else {
         say(answer_);
     }

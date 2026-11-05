@@ -1683,6 +1683,47 @@ int main(int argc, char **argv)
     check(said("\n\n<pasted_content id=\"1\">\nplain words\n</pasted_content id=\"1\">") == json(false),
           "terminal-typed plain text in a frame ends it");
     check(said("typed again") == json(false), "plain terminal text is not spoken");
+    // A subagent's hand-back written as a meta line, no UserPromptSubmit: it
+    // starts a turn the daemon sees only in the transcript.
+    const std::string handBack =
+        R"({"type":"user","isMeta":true,"message":{"role":"user","content":"Another Claude session sent a message:\n<agent-message from=\"a3\">\ndone\n</agent-message>"}})";
+    auto handBackTurn = [&](const std::string &uuid) {
+        append(handBack);
+        std::string line = answerLine;
+        line.replace(line.find("u-a1"), 4, uuid);
+        append(line);
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 3000).empty(),
+              "a meta hand-back and its answer make the idle session busy");
+    };
+    auto stopSaid = [&]() {
+        // Claude Code writes the turn's end into the file before the Stop hook runs.
+        append(R"({"type":"system","subtype":"turn_duration","isSidechain":false})");
+        std::this_thread::sleep_for(std::chrono::milliseconds(600)); // apart from the last Stop
+        hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok " + std::to_string(++turn)}});
+        const json voice = a.next("say", [](const json &m) { return m.value("session", "") == "wterm"; }).value("voice", json());
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "Stop ends the turn");
+        a.drain();
+        return voice;
+    };
+    auto unpromptedPermission = [&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(600));
+        hook("wterm", {{"hook_event_name", "PermissionRequest"}, {"tool_name", "Bash"}, {"tool_input", {{"command", "ls"}}}});
+        a.next("attention");
+        hook("wterm", {{"hook_event_name", "Notification"}, {"notification_type", "permission_prompt"}, {"message", "Claude needs your permission"}});
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        a.drain();
+    };
+    check(said("typed") == json(false), "a typed prompt");
+    handBackTurn("u-h0");
+    { const json v = stopSaid(); check(v == json(false), "a meta hand-back turn after a typed prompt is not spoken: " + v.dump()); }
+    unpromptedPermission();
+    check(stopSaid() == json(false), "nor a turn that waited for a permission after a typed prompt");
+    check(said("\xF0\x9F\x8E\x99 spoken") == json(true), "a spoken prompt");
+    handBackTurn("u-h1");
+    check(stopSaid() == json(true), "a meta hand-back turn after a spoken prompt is spoken");
+    check(said("\xF0\x9F\x8E\x99 spoken again") == json(true), "a spoken prompt");
+    unpromptedPermission();
+    check(stopSaid() == json(true), "a turn that waited for a permission after a spoken prompt is spoken");
     // A notification and its answer inside a turn, read only after its Stop:
     // no turn of its own.
     hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "go"}});

@@ -248,10 +248,15 @@ void Session::promptVoice(const std::string &raw, const Prompt *typed)
         spokenLast_ = false;
     }
     voiceTurn_ = spokenLast_;
+    prompted_ = true;
 }
 
 void Session::say(const std::string &answer)
 {
+    // A turn no prompt started (a hand-back, a task) is spoken as the owner's
+    // last prompt was, whatever state it passed through on the way.
+    if (!prompted_)
+        voiceTurn_ = spokenLast_;
     std::string text = speakLine(answer);
     std::size_t words = 0;
     bool inWord = false;
@@ -266,7 +271,7 @@ void Session::say(const std::string &answer)
     if (text.empty() && !voiceTurn_)
         text = firstSentence(answer);
     host_.broadcast({{"type", "say"}, {"session", id_}, {"text", text}, {"voice", voiceTurn_}});
-    voiceTurn_ = false;
+    turnOver();
 }
 
 void Session::attention(const std::string &kind, const std::string &text)

@@ -998,7 +998,7 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry)
     inFlight_.reset();
     typedDeadline_.reset();
     submitDeadline_.reset();
-    voiceTurn_ = false;
+    turnOver();
     const bool asked = dialog_ == "screen";
     blocked_ = true;
     retryOnPrompt_ = retry;
@@ -1077,7 +1077,7 @@ void ClaudeSession::onSubmitted(bool ok, const std::string &why)
             modelDone("failed", "did not run");
         if (state_ == "busy") {
             state_ = "idle";
-            voiceTurn_ = false;
+            turnOver();
             deliver();
         }
         attention("stuck", slashText_.substr(0, 40));
@@ -1106,7 +1106,7 @@ void ClaudeSession::tick(Clock::time_point now)
         stopCheck_.reset();
         if (state_ == "busy" && !limited_.is_object() && !slashPending_ && !inFlight_ && !turnRunning(transcript_)) {
             state_ = "idle";
-            voiceTurn_ = false;
+            turnOver();
             submitDeadline_.reset();
             deliver();
             changed();
@@ -1120,7 +1120,7 @@ void ClaudeSession::tick(Clock::time_point now)
             limited_ = nullptr;
             if (state_ == "busy" && !slashPending_) {
                 state_ = "idle";
-                voiceTurn_ = false;
+                turnOver();
                 deliver();
             }
             changed();
@@ -1144,7 +1144,7 @@ void ClaudeSession::tick(Clock::time_point now)
             modelDone("failed", "no answer");
             if (state_ == "busy") {
                 state_ = "idle";
-                voiceTurn_ = false;
+                turnOver();
                 deliver();
             }
             changed();
@@ -1227,7 +1227,7 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
             wrapper_.send({{"type", "snapshot"}});
         } else if (state_ == "busy" && !slashPending_) {
             state_ = "idle";
-            voiceTurn_ = false;
+            turnOver();
             deliver();
             changed();
         }
@@ -1241,7 +1241,7 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
     escapeChecks_.clear();
     state_ = "idle";
     limited_ = nullptr;
-    voiceTurn_ = false;
+    turnOver();
     submitDeadline_.reset();
     // Interrupted by the app and nothing in the transcript says so: the
     // session hung (a Claude Code without a login answers every prompt with
@@ -1336,7 +1336,7 @@ void ClaudeSession::pollTranscript()
             if (freshLine(tail_.limitedAt())) {
                 if (state_ == "busy" && !slashPending_) {
                     state_ = "idle";
-                    voiceTurn_ = false;
+                    turnOver();
                 }
                 stopCheck_.reset();
                 attention("limited", tail_.limited().value("text", ""));

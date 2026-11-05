@@ -151,6 +151,15 @@ int main()
     check(turnOf("mac3", prev + macStart), "a fresh meta hand-back alone: running");
     check(!turnOf("mac4", prev + macStart + macTool + done), "and ended by turn_duration: not running");
     check(turnOf("wake4", prev + userLine(34, "do it")), "an owner prompt starts a turn at once");
+    {
+        // A meta hand-back followed by Claude's answer is a turn of its own, like a notification.
+        const std::string file = home.path + "/handback-wake.jsonl";
+        std::ofstream(file) << macStart << macTool;
+        pvai::TranscriptTail t;
+        t.follow(file);
+        t.poll();
+        check(t.wakeTurns() == 1, "a meta hand-back and an answer: one wake turn");
+    }
 
     tail.follow(idle);
     got.clear();
