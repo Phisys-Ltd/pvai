@@ -446,7 +446,7 @@ int runWrapper(const WrapperOptions &options)
         bool shell = false;
         // The box shows and no dialog stands over it; a session survey stands
         // above a box that stays and takes single keys, so it counts too.
-        return promptBox(screen, box, &shell) && !shell && screenDialog(screen).empty();
+        return !screen.syncOpen() && promptBox(screen, box, &shell) && !shell && screenDialog(screen).empty();
     };
     // Keys that go in one small group at a time: Claude Code drops control
     // keys that arrive in one large chunk.
@@ -468,6 +468,19 @@ int runWrapper(const WrapperOptions &options)
         Clock::time_point until;
         std::string text;
         int seen = 0; // lines already showing it as a prompt before the paste
+        bool already = false; // the box held it before: no paste, only the Return
+    };
+    // Claude Code redraws its box in several writes (taller for a long
+    // paste): a screen read in the middle shows the new box above the old
+    // empty one. A decision about the box waits for a screen that stood
+    // still for kSettle; a synchronized-update frame left open counts as
+    // done after kSyncStale, so a program that died mid-frame cannot block it.
+    constexpr std::chrono::milliseconds kSettle{300};
+    constexpr std::chrono::milliseconds kSyncStale{1000};
+    Clock::time_point lastOutputAt{};
+    auto screenSettled = [&] {
+        const auto quiet = Clock::now() - lastOutputAt;
+        return quiet >= kSettle && (!screen.syncOpen() || quiet >= kSyncStale);
     };
     std::optional<Typing> typing;
     // After the Return of a verified paste: the box must change (emptied by
@@ -651,6 +664,7 @@ int runWrapper(const WrapperOptions &options)
                         appendFrame(viewer->out, 'd', buffer, static_cast<std::size_t>(n));
                 modes.feed(buffer, static_cast<std::size_t>(n));
                 screen.feed(buffer, static_cast<std::size_t>(n));
+                lastOutputAt = Clock::now();
                 screenCheckAt = Clock::now() + std::chrono::milliseconds(250);
                 if (trust.feed(buffer, static_cast<std::size_t>(n))) {
                     trustAsked = true;
@@ -705,12 +719,19 @@ int runWrapper(const WrapperOptions &options)
                         // the free-box check is skipped, nothing else. Never
                         // into a dialog the screen shows, and the Return
                         // still waits for the paste to show in the box.
-                        if (typing || submitCheck || !paced.empty() || !screenDialog(screen).empty()) {
+                        if (typing || submitCheck || !paced.empty() || screen.syncOpen() || !screenDialog(screen).empty()) {
                             typed(false);
                             continue;
                         }
                         leftover = false;
                         promptBox(screen, box);
+                    }
+                    // The text already stands in the box (a retry, or "send
+                    // anyway" after a Return that did not take): pasted again
+                    // it would stand there twice. Only the Return follows.
+                    if (promptStands(screen, text)) {
+                        typing = Typing{box, Clock::now() + std::chrono::milliseconds(2000), text, promptLinesShown(screen, text), true};
+                        continue;
                     }
                     if (modes.on("2004")) {
                         toMaster += "\x1b[200~" + text + "\x1b[201~";
@@ -818,18 +839,20 @@ int runWrapper(const WrapperOptions &options)
             ::ioctl(master, TIOCSWINSZ, &size);
             resizeBackAt.reset();
         }
-        if (typing) {
+        if (typing && (screenSettled() || Clock::now() >= typing->until)) {
+            // Taken is decided on a settled screen only; at the deadline the
+            // screen is read as it is, for the Return or the failure.
+            const bool settled = screenSettled();
             std::string box;
-            const bool shown = promptBox(screen, box) && box != typing->before;
+            const bool shown = promptBox(screen, box) && (typing->already || box != typing->before);
             // Claude Code may have taken the prompt already (a quick Return of
-            // its own, a screen seen between two frames): it shows as a
-            // conversation line above the box. That is delivered; a Return
-            // now would send it twice.
+            // its own): it shows as a conversation line above the box. That
+            // is delivered; a Return now would send it twice.
             // Only once the box no longer holds the paste: a long paste
             // still standing in it, with an equal line in the conversation
             // above, is not taken (no Return yet).
-            const bool holds = promptHolds(screen, typing->text) && box != typing->before;
-            if (!holds && promptLinesShown(screen, typing->text) > typing->seen) {
+            const bool holds = promptHolds(screen, typing->text) && (typing->already || box != typing->before);
+            if (settled && !holds && promptLinesShown(screen, typing->text) > typing->seen) {
                 typing.reset();
                 typed(true, "taken");
             } else if (shown || Clock::now() >= typing->until) {
@@ -882,6 +905,11 @@ int runWrapper(const WrapperOptions &options)
                 leftover = false;
                 clearBox();
             }
+        }
+        if (screenCheckAt && Clock::now() >= *screenCheckAt && screen.syncOpen() && !screenSettled()) {
+            // A frame is half drawn: its dialog (or lack of one) is not yet
+            // what the screen shows.
+            screenCheckAt = Clock::now() + std::chrono::milliseconds(50);
         }
         if (screenCheckAt && Clock::now() >= *screenCheckAt) {
             screenCheckAt.reset();

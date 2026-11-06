@@ -215,6 +215,7 @@ void Screen::resize(int rows, int cols)
     wrapPending_ = false;
     lastR_ = lastC_ = -1;
     joinNext_ = riOpen_ = false;
+    sync_ = false;
 }
 
 std::string Screen::row(int r) const
@@ -333,6 +334,8 @@ void Screen::csi(char final)
     if (private_) {
         if (final == 'h' || final == 'l') {
             const int mode = param(0, 0);
+            if (mode == 2026)
+                sync_ = final == 'h';
             if (mode == 1049 || mode == 1047 || mode == 47) {
                 const bool on = final == 'h';
                 if (on && !alternate_) {
@@ -858,6 +861,47 @@ bool promptHolds(const Screen &screen, const std::string &text)
     if (head.size() > 40)
         head.resize(utf8Boundary(head, 40));
     return !head.empty() && box.find(head) != std::string::npos;
+}
+
+namespace {
+// Text as the box shows it: one line, runs of blanks (and the no-break
+// space Claude Code draws after the mark) as one space.
+std::string flat(const std::string &in)
+{
+    std::string s = in;
+    for (std::size_t at; (at = s.find("\xC2\xA0")) != std::string::npos;)
+        s.replace(at, 2, " ");
+    std::string out;
+    for (char c : s) {
+        const bool blank = c == ' ' || c == '\n' || c == '\r' || c == '\t';
+        if (blank) {
+            if (!out.empty() && out.back() != ' ')
+                out += ' ';
+        } else {
+            out += c;
+        }
+    }
+    return trim(out, " ");
+}
+} // namespace
+
+bool promptStands(const Screen &screen, const std::string &text)
+{
+    std::string box;
+    if (!promptBox(screen, box))
+        return false;
+    static const std::string mark = "\xE2\x9D\xAF"; // ❯
+    std::string shown = flat(box);
+    if (shown.compare(0, mark.size(), mark) == 0)
+        shown = trim(shown.substr(mark.size()), " ");
+    const std::string want = flat(text);
+    if (want.empty())
+        return false;
+    constexpr std::size_t kLong = 80;
+    if (want.size() <= kLong)
+        return shown == want;
+    const std::string head = want.substr(0, utf8Boundary(want, kLong));
+    return shown.compare(0, head.size(), head) == 0;
 }
 
 bool workingShown(const Screen &screen)

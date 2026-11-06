@@ -918,6 +918,40 @@ static std::string screenGist(const std::string &screen)
     return out;
 }
 
+// The prompt text when the snapshot's prompt box (the lines between the last
+// rule pair, the first starting with the mark) holds its start: the prompt
+// was pasted and its Return never took, the lines above the box are only the
+// conversation. Empty when the box does not hold it.
+static std::string promptInBox(const std::string &screen, const std::string &text)
+{
+    std::vector<std::string> lines;
+    std::istringstream in(screen);
+    for (std::string line; std::getline(in, line);)
+        lines.push_back(line);
+    const std::string rule = "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80";
+    std::string head = trim(text.substr(0, text.find('\n')), " \t\r");
+    if (const auto at = head.find(kMicMark); at == 0)
+        head = trim(head.substr(std::strlen(kMicMark)), " \t\r");
+    if (head.size() > 40)
+        head.resize(utf8Boundary(head, 40));
+    if (head.empty())
+        return "";
+    std::size_t below = lines.size();
+    for (int i = static_cast<int>(lines.size()) - 1; i > 0; --i) {
+        if (lines[i] == rule || lines[i].compare(0, 3, rule) == 0) {
+            below = static_cast<std::size_t>(i);
+            continue;
+        }
+        if (lines[i - 1].compare(0, 3, rule) == 0 && lines[i].compare(0, 3, "\xE2\x9D\xAF") == 0) {
+            std::string box;
+            for (std::size_t k = i; k < below; ++k)
+                box += lines[k] + "\n";
+            return box.find(head) != std::string::npos ? trim(text, " \t\r\n") : "";
+        }
+    }
+    return "";
+}
+
 // A dialog no hook reports, read off the screen by the wrapper (empty: it
 // is gone). At a free prompt it counts at once; in a turn only after a
 // moment, since a permission dialog's hook may still be on its way.
@@ -1102,6 +1136,11 @@ void ClaudeSession::lost(const Prompt &prompt, const std::string &why)
 // waits on the screen until the prompt box is free.
 void ClaudeSession::notDelivered(const std::string &screen, bool retry)
 {
+    // Its own prompt stands unsent in the box: say that, the lines above the
+    // box are only the conversation and read as if it had gone.
+    std::string stands;
+    if (inFlight_ && !screen.empty())
+        stands = promptInBox(screen, inFlight_->text);
     if (inFlight_)
         queue_.push_front(*inFlight_);
     inFlight_.reset();
@@ -1118,8 +1157,12 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry)
     state_ = "waiting";
     dialog_ = "screen";
     dialogInfo_ = screenInfo(screen);
-    if (!asked)
-        attention("screen", screenGist(screen));
+    if (!asked) {
+        std::string first = stands.substr(0, stands.find('\n'));
+        if (first.size() > 60)
+            first.resize(utf8Boundary(first, 60));
+        attention("screen", stands.empty() ? screenGist(screen) : "The prompt stands in the box, not sent: " + first);
+    }
     changed();
 }
 

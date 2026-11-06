@@ -21,6 +21,10 @@ public:
     void feed(const char *data, std::size_t n);
 
     int rows() const { return rows_; }
+    // A synchronized update (DEC private mode 2026) is open: the program has
+    // begun a frame and not finished it, so the grid may show half of it
+    // (a new box drawn above the old one still standing).
+    bool syncOpen() const { return sync_; }
     // One row's text, without trailing blanks.
     std::string row(int r) const;
 
@@ -40,6 +44,7 @@ private:
     int rows_ = 24, cols_ = 80;
     Grid main_, alt_;
     bool alternate_ = false;
+    bool sync_ = false;
     int r_ = 0, c_ = 0;
     int savedR_ = 0, savedC_ = 0;
     int top_ = 0, bottom_ = 23; // scrolling region
@@ -85,6 +90,11 @@ int promptLinesShown(const Screen &screen, const std::string &text);
 // · ↓ 257 tokens)", an ellipsis followed by " (".
 // The prompt box still holds the start of `text` (a paste not sent yet).
 bool promptHolds(const Screen &screen, const std::string &text);
+// The prompt box holds `text` itself, not just its start: the whole text
+// when it is short (a short dictated "ja" must not match the owner's draft
+// "ja, aber ..."), its first 80 bytes at the box's start when it is long.
+// Rows are joined with one space, the mark and the indentation dropped.
+bool promptStands(const Screen &screen, const std::string &text);
 bool workingShown(const Screen &screen);
 
 // The lower part of the screen as text (the last 20 lines with text, up to

@@ -180,7 +180,10 @@ daemon knows every live one on its host.
   times, and only after a pause of 2 s, then 4 s, so a
   screen that stays the same (a survey, a busy box) is not typed into
   over and over; the `screen` attention text is the last lines above the
-  prompt box (or the dialog's first lines), up to 4 lines and 300 bytes. `answer` `send` types the first queued prompt without the free-box check
+  prompt box (or the dialog's first lines), up to 4 lines and 300 bytes; when
+  the prompt that did not go in stands unsent in the box (since 0.5.72) it
+  is `The prompt stands in the box, not sent: ` and its first 60 characters
+  instead, and `dialogInfo.text` stays the screen. `answer` `send` types the first queued prompt without the free-box check
   (the owner sees that the prompt is free and the box was not recognised).
   Since 0.5.71 the wrapper still never presses Return into something that is
   not the paste: it refuses (`typed` `ok: false`) while a `screen` dialog
@@ -188,6 +191,17 @@ daemon knows every live one on its host.
   shows the paste; if it does not within 2 s the paste is cleared once no
   dialog stands and the prompt goes back to the front of `queued` with
   attention `stuck`; it is never retried by itself. Older wrappers type as before.
+  Since 0.5.72 the wrapper decides about the box (`typed` `how` `taken`, the
+  Return, the `screen` dialog) only on a settled screen: no output for 300 ms,
+  and no synchronized update (DEC mode 2026, `ESC[?2026h` ... `ESC[?2026l`)
+  open (one left open counts as closed after 1 s). Claude Code draws a tall
+  box (a long paste) in several writes, and a screen read in between shows
+  the new box above the old empty one, which looked like a prompt it had
+  taken. `how` is `taken` only for a prompt that stands as a line above a
+  box that no longer holds it, seen on a settled screen. A prompt whose text
+  already stands in the box (a retry, or `send` after a Return that did not
+  take) is not pasted a second time: only the Return follows, with the usual
+  submit check.
 - `draft`: the owner has typed into the session's prompt in the terminal and
   not sent it, or (since 0.5.30) the prompt box is in shell mode (it starts
   with `!`, as after `!` or a command called back from the history: what is

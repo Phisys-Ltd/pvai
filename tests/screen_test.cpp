@@ -310,6 +310,39 @@ int main()
         pvai::Screen gone(40, 100);
         feed(gone, "\x1b[2J\x1b[H\xE2\x9D\xAF " + head + " older\r\n\r\n" + r3 + "\r\n\xE2\x9D\xAF \r\n" + r3 + "\r\n  ? for shortcuts");
         check(!pvai::promptHolds(gone, head + "\nmore"), "an empty box holds nothing");
+        // The text itself must stand there, not only its start: a short
+        // prompt does not match the owner's longer draft.
+        pvai::Screen draft(40, 100);
+        feed(draft, "\x1b[2J\x1b[H" + r3 + "\r\n\xE2\x9D\xAF ja, aber erst morgen\r\n" + r3 + "\r\n  ? for shortcuts");
+        check(pvai::promptHolds(draft, "ja"), "the start alone is held");
+        check(!pvai::promptStands(draft, "ja"), "a short prompt does not stand in a longer draft");
+        check(pvai::promptStands(draft, "ja, aber  erst morgen"), "the same text stands, blanks aside");
+        pvai::Screen wrapped(40, 60);
+        const std::string longText = "[Message p2 from srv] Vorschlag: bitte einen Lauf des Workflows nur mit dem Upload starten und danach melden";
+        feed(wrapped, "\x1b[2J\x1b[H" + r3 + "\r\n\xE2\x9D\xAF [Message p2 from srv] Vorschlag: bitte einen Lauf\r\n  des Workflows nur mit dem Upload starten und danach\r\n  melden\r\n" + r3 + "\r\n  ? for shortcuts");
+        check(pvai::promptStands(wrapped, longText), "a long wrapped paste stands in the box");
+    }
+    // A long paste redraws the box taller. Half way through the frame the new
+    // top rule and "❯ [Message ..." row stand higher up while the old empty
+    // box still stands below: promptBox finds the old one and the new row
+    // counts as a submitted line above it (the false "taken"). Inside a
+    // synchronized update (2026) the screen says the frame is open.
+    {
+        pvai::Screen half(30, 100);
+        const std::string r3 = "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80";
+        const std::string head = "[Message paad6e016 from phisys/w9950894f]";
+        const std::string text = head + "\nsecond line";
+        feed(half, "\x1b[2J\x1b[Hanswer\x1b[10;1H" + r3 + "\r\n\xE2\x9D\xAF \r\n" + r3 + "\r\n  ? for shortcuts");
+        check(!half.syncOpen(), "no frame open at first");
+        feed(half, "\x1b[?2026h\x1b[5;1H" + r3 + "\r\n\xE2\x9D\xAF " + head + "\r\n  second line");
+        check(half.syncOpen(), "mode 2026 h opens a frame");
+        check(pvai::promptLinesShown(half, text) == 1, "the half drawn frame reads as a taken prompt");
+        feed(half, "\x1b[?2026l");
+        check(!half.syncOpen(), "mode 2026 l closes it");
+        half.resize(30, 100);
+        feed(half, "\x1b[?2026h");
+        half.resize(30, 100);
+        check(!half.syncOpen(), "a resize drops the open frame");
     }
     return pvai::test::finish();
 }
