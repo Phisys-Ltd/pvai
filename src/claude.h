@@ -71,6 +71,8 @@ private:
     void armEscapeCheck(bool forceIdle = false);
     void runEscapeChecks(Clock::time_point now);
     void pollTranscript();
+    void checkClaudeQueue();
+    bool canSubmit() const override { return !(inFlight_ && queuedInClaude_); }
     void scanSubagents(Clock::time_point now);
     void catchUp();
     void syncMarks();
@@ -130,6 +132,14 @@ private:
     // Code without a login answers "Not logged in" and fires no hook.
     std::optional<Clock::time_point> submitDeadline_;
     long long typedAt_ = 0; // unix seconds when the last prompt was typed
+    // The prompt in flight stands in Claude Code's own queue (the transcript
+    // has its enqueue and no dequeue): it was typed while a turn still ran,
+    // the box emptied, and no UserPromptSubmit comes until Claude Code takes
+    // the queue up. It stays in flight, nothing is typed after it, and it is
+    // reported when it is not taken up in kQueuedWait after the turn's end.
+    bool queuedInClaude_ = false;
+    std::optional<Clock::time_point> queuedUntil_;
+    static constexpr std::chrono::seconds kQueuedWait{20};
     // Turns Claude Code started on its own, seen so far (see wakeTurns()).
     std::size_t wakeMark_ = 0;
     // The usage limit the session waits on (see Session.limited in the

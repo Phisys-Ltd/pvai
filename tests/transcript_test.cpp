@@ -168,6 +168,28 @@ int main()
     check(!turnOf("mac4", prev + macStart + macTool + done), "and ended by turn_duration: not running");
     check(turnOf("wake4", prev + userLine(34, "do it")), "an owner prompt starts a turn at once");
     {
+        // Claude Code's own queue: a prompt typed during a turn is enqueued with
+        // its text and stays until a dequeue (oldest first) or a remove.
+        const std::string file = home.path + "/queue-list.jsonl";
+        const auto op = [](const char *operation, const char *text = nullptr) {
+            pvai::json j = {{"type", "queue-operation"}, {"operation", operation}};
+            if (text)
+                j["content"] = text;
+            return j.dump() + "\n";
+        };
+        std::ofstream(file) << op("enqueue", "eins") << op("dequeue") << op("enqueue", "zwei") << op("enqueue", "drei");
+        pvai::TranscriptTail t;
+        t.follow(file);
+        t.poll();
+        check(t.queued().size() == 2 && t.queued()[0] == "zwei" && t.queued()[1] == "drei", "a taken-up prompt left the queue, two wait");
+        std::ofstream(file, std::ios::app) << op("remove", "drei");
+        t.poll();
+        check(t.queued().size() == 1 && t.queued()[0] == "zwei", "a remove takes its text out");
+        std::ofstream(file, std::ios::app) << op("dequeue");
+        t.poll();
+        check(t.queued().empty(), "and the queue is empty");
+    }
+    {
         // A meta hand-back followed by Claude's answer is a turn of its own, like a notification.
         const std::string file = home.path + "/handback-wake.jsonl";
         std::ofstream(file) << macStart << macTool;

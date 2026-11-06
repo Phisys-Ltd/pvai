@@ -12,6 +12,7 @@
 #include <optional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace pvai {
@@ -97,6 +98,16 @@ public:
     std::size_t limitClears() const { return limitClears_; }
     // How many turn_duration lines (a turn ended in the file) were read.
     std::size_t turnEndCount() const { return turnEndCount_; }
+    // The texts Claude Code holds in its own queue: a prompt typed while a
+    // turn runs is written as a `queue-operation` enqueue with its text and
+    // leaves the queue with a dequeue (taken up, oldest first) or a remove.
+    // One typed at a free prompt is in and out within milliseconds. Task
+    // notifications queue the same way and are in the list too.
+    const std::deque<std::string> &queued() const { return queued_; }
+    // Texts whose `remove` said `absorbed_mid_turn`: Claude Code put the
+    // prompt into the running turn itself (a `queued_command` attachment),
+    // with no UserPromptSubmit. Taken (and cleared) by the caller.
+    std::vector<std::string> takeAbsorbed() { return std::exchange(absorbed_, {}); }
 
 private:
     void resetState();
@@ -121,6 +132,8 @@ private:
     std::size_t limitHits_ = 0, limitClears_ = 0, turnEndCount_ = 0;
     bool turnRunning_ = false, turnEnds_ = false, windowed_ = false;
     long long noteAt_ = 0; // an unanswered task notification, written then
+    std::deque<std::string> queued_;
+    std::vector<std::string> absorbed_;
 };
 
 } // namespace pvai

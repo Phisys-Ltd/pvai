@@ -96,6 +96,11 @@ bool promptHolds(const Screen &screen, const std::string &text);
 // Rows are joined with one space, the mark and the indentation dropped.
 bool promptStands(const Screen &screen, const std::string &text);
 bool workingShown(const Screen &screen);
+// A turn is still being drawn: workingShown() narrowed to what a gate can
+// trust, the status line within the six rows above the prompt box and
+// starting with a spinner glyph. A line of the conversation higher up that
+// happens to hold "… (" does not count.
+bool turnWorkingShown(const Screen &screen);
 
 // The lower part of the screen as text (the last 20 lines with text, up to
 // 2000 bytes): what an unknown dialog shows.

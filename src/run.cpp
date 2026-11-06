@@ -483,6 +483,19 @@ int runWrapper(const WrapperOptions &options)
         return quiet >= kSettle && (!screen.syncOpen() || quiet >= kSyncStale);
     };
     std::optional<Typing> typing;
+    // A verified prompt that arrives while Claude Code is still drawing (its
+    // answer just ended, a status line runs, the screen moves) waits for a
+    // settled screen without one: typed on the Stop hook, the Return of a
+    // prompt went into Claude Code's own queue, behind the turn that was
+    // still closing. Past kHoldMax the daemon hears `typed` false and
+    // retries as usual.
+    struct Held {
+        json message;
+        Clock::time_point until;
+    };
+    constexpr std::chrono::milliseconds kHoldMax{3000};
+    std::optional<Held> held;
+    auto drawing = [&] { return !screenSettled() || turnWorkingShown(screen); };
     // After the Return of a verified paste: the box must change (emptied by
     // the submit, or anything else); else Claude Code ignored the Return and
     // it is pressed again, twice at most, 1.5 s apart.
@@ -612,6 +625,10 @@ int runWrapper(const WrapperOptions &options)
             typing.reset();
             typed(false);
         }
+        if (held) {
+            held.reset();
+            typed(false);
+        }
         toMaster.clear();
         returnAt.reset();
         submitCheck.reset();
@@ -621,6 +638,46 @@ int runWrapper(const WrapperOptions &options)
         return true;
     };
 
+    // A prompt typed with `verify`, from the daemon or after it was held.
+    auto startType = [&](const json &message) {
+        std::string text = message.value("text", "");
+        std::string box;
+        const bool verify = message.value("verify", false);
+        if (verify && (typing || submitCheck || leftover || !paced.empty() || !promptFree(box))) {
+            typed(false);
+            return;
+        }
+        if (!verify) {
+            // The owner says the prompt is free ("send anyway"):
+            // the free-box check is skipped, nothing else. Never
+            // into a dialog the screen shows, and the Return
+            // still waits for the paste to show in the box.
+            if (typing || submitCheck || !paced.empty() || screen.syncOpen() || !screenDialog(screen).empty()) {
+                typed(false);
+                return;
+            }
+            leftover = false;
+            promptBox(screen, box);
+        }
+        // The text already stands in the box (a retry, or "send
+        // anyway" after a Return that did not take): pasted again
+        // it would stand there twice. Only the Return follows.
+        if (promptStands(screen, text)) {
+            typing = Typing{box, Clock::now() + std::chrono::milliseconds(2000), text, promptLinesShown(screen, text), true};
+            return;
+        }
+        if (modes.on("2004")) {
+            toMaster += "\x1b[200~" + text + "\x1b[201~";
+        } else {
+            for (char &c : text)
+                if (c == '\n' || c == '\r')
+                    c = ' ';
+            toMaster += text;
+        }
+        // Return as a separate keystroke, once the prompt box
+        // shows the paste.
+        typing = Typing{box, Clock::now() + std::chrono::milliseconds(2000), text, promptLinesShown(screen, text)};
+    };
     for (;;) {
         std::vector<pollfd> fds;
         fds.push_back({master, static_cast<short>(POLLIN | (toMaster.empty() ? 0 : POLLOUT)), 0});
@@ -644,6 +701,8 @@ int runWrapper(const WrapperOptions &options)
             soonest(msUntil(*screenCheckAt));
         if (typing)
             soonest(std::min(msUntil(typing->until), 50LL));
+        if (held)
+            soonest(50);
         if (submitCheck)
             soonest(std::min(msUntil(submitCheck->at), 100LL));
         if (!daemon)
@@ -707,43 +766,15 @@ int runWrapper(const WrapperOptions &options)
             for (const auto &message : messages) {
                 const std::string type = message.is_object() ? message.value("type", "") : "";
                 if (type == "type") {
-                    std::string text = message.value("text", "");
-                    std::string box;
-                    const bool verify = message.value("verify", false);
-                    if (verify && (typing || submitCheck || leftover || !paced.empty() || !promptFree(box))) {
-                        typed(false);
+                    if (message.value("verify", false) && held) {
+                        typed(false); // one waits already
                         continue;
                     }
-                    if (!verify) {
-                        // The owner says the prompt is free ("send anyway"):
-                        // the free-box check is skipped, nothing else. Never
-                        // into a dialog the screen shows, and the Return
-                        // still waits for the paste to show in the box.
-                        if (typing || submitCheck || !paced.empty() || screen.syncOpen() || !screenDialog(screen).empty()) {
-                            typed(false);
-                            continue;
-                        }
-                        leftover = false;
-                        promptBox(screen, box);
-                    }
-                    // The text already stands in the box (a retry, or "send
-                    // anyway" after a Return that did not take): pasted again
-                    // it would stand there twice. Only the Return follows.
-                    if (promptStands(screen, text)) {
-                        typing = Typing{box, Clock::now() + std::chrono::milliseconds(2000), text, promptLinesShown(screen, text), true};
+                    if (message.value("verify", false) && drawing()) {
+                        held = Held{message, Clock::now() + kHoldMax};
                         continue;
                     }
-                    if (modes.on("2004")) {
-                        toMaster += "\x1b[200~" + text + "\x1b[201~";
-                    } else {
-                        for (char &c : text)
-                            if (c == '\n' || c == '\r')
-                                c = ' ';
-                        toMaster += text;
-                    }
-                    // Return as a separate keystroke, once the prompt box
-                    // shows the paste.
-                    typing = Typing{box, Clock::now() + std::chrono::milliseconds(2000), text, promptLinesShown(screen, text)};
+                    startType(message);
                 } else if (type == "keys") {
                     toMaster += message.value("data", "");
                 } else if (type == "paced") {
@@ -838,6 +869,16 @@ int runWrapper(const WrapperOptions &options)
         if (resizeBackAt && Clock::now() >= *resizeBackAt) {
             ::ioctl(master, TIOCSWINSZ, &size);
             resizeBackAt.reset();
+        }
+        if (held) {
+            if (!drawing()) {
+                const json message = held->message;
+                held.reset();
+                startType(message);
+            } else if (Clock::now() >= held->until) {
+                held.reset();
+                typed(false);
+            }
         }
         if (typing && (screenSettled() || Clock::now() >= typing->until)) {
             // Taken is decided on a settled screen only; at the deadline the

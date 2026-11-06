@@ -1338,6 +1338,71 @@ int main(int argc, char **argv)
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }, 8000).empty(), "the turn end in the transcript ends it");
     }
 
+    // A prompt typed in the last moments of a turn (right on its Stop hook):
+    // Claude Code puts it in its own queue, the box empties, and no
+    // UserPromptSubmit comes. It stays in flight, the next prompt is not
+    // typed on top of it; Claude Code's UserPromptSubmit delivers it, and a
+    // queue it never takes up is reported.
+    {
+        LineClient qw;
+        qw.send({{"type", "register"}, {"version", kVersion}, {"id", "wqueue"}, {"cwd", project}, {"label", "queue"}, {"restart", true}, {"verify", true}, {"clear", true}, {"submitCheck", true}});
+        const std::string queueTr = home + "/queue-tr/queue-1.jsonl";
+        writeFile(queueTr, userLine("start"));
+        hook("wqueue", {{"hook_event_name", "SessionStart"}, {"session_id", "queue-1"}, {"source", "startup"}, {"transcript_path", queueTr}});
+        check(!waitSession(a, "wqueue", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a queue test session");
+        const auto enqueue = [](const std::string &text) {
+            return json({{"type", "queue-operation"}, {"operation", "enqueue"}, {"content", text}}).dump() + "\n";
+        };
+        // (a) the prompt stands in Claude Code's queue when the Stop hook comes
+        a.send({{"type", "prompt"}, {"ref", 200}, {"session", "wqueue"}, {"text", "Titel bei 16"}});
+        check(qw.next("type").value("text", "") == "Titel bei 16", "the first prompt is typed");
+        qw.send({{"type", "typed"}, {"ok", true}});
+        qw.send({{"type", "submitted"}, {"ok", true}, {"why", "box"}});
+        std::ofstream(queueTr, std::ios::app) << enqueue("Titel bei 16");
+        std::this_thread::sleep_for(std::chrono::milliseconds(900)); // the transcript is read
+        hook("wqueue", {{"hook_event_name", "Stop"}, {"session_id", "queue-1"}, {"last_assistant_message", "Fertig."}});
+        a.send({{"type", "prompt"}, {"ref", 201}, {"session", "wqueue"}, {"text", "Brauchen wir 4 Gradients"}});
+        const json held = waitSession(a, "wqueue", [](const json &s) { return s.value("queued", 0) == 2; });
+        check(!held.empty() && held.value("dialog", json()).is_null() && held.value("state", "") == "idle", "both count as queued, idle, no screen dialog: " + held.dump());
+        check(qw.next("type", {}, 2500).empty(), "the next prompt is not typed on top of the queued one");
+        check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 200; }, 300).empty(), "and the queued one is not reported delivered yet");
+        // Claude Code takes its queue up after the turn: the prompt is delivered, then the next goes in
+        std::ofstream(queueTr, std::ios::app) << json({{"type", "queue-operation"}, {"operation", "dequeue"}}).dump() << "\n";
+        hook("wqueue", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "queue-1"}, {"prompt", "Titel bei 16"}});
+        check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 200; }, 2000).value("ref", 0) == 200, "the queued prompt is delivered by its UserPromptSubmit");
+        hook("wqueue", {{"hook_event_name", "Stop"}, {"session_id", "queue-1"}, {"last_assistant_message", "Ok."}});
+        check(qw.next("type").value("text", "") == "Brauchen wir 4 Gradients", "then the next prompt is typed");
+        qw.send({{"type", "typed"}, {"ok", true}});
+        hook("wqueue", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "queue-1"}, {"prompt", "Brauchen wir 4 Gradients"}});
+        hook("wqueue", {{"hook_event_name", "Stop"}, {"session_id", "queue-1"}, {"last_assistant_message", "Ok."}});
+        check(!waitSession(a, "wqueue", [](const json &s) { return s.value("state", "") == "idle" && s.value("queued", -1) == 0; }, 5000).empty(), "idle, nothing queued");
+        // (b) Claude Code never takes the queue up: reported, not typed again
+        a.send({{"type", "prompt"}, {"ref", 202}, {"session", "wqueue"}, {"text", "drei Gradients"}});
+        check(qw.next("type").value("text", "") == "drei Gradients", "another prompt is typed");
+        qw.send({{"type", "typed"}, {"ok", true}});
+        std::ofstream(queueTr, std::ios::app) << enqueue("drei Gradients");
+        std::this_thread::sleep_for(std::chrono::milliseconds(900));
+        hook("wqueue", {{"hook_event_name", "Stop"}, {"session_id", "queue-1"}, {"last_assistant_message", "Zu."}});
+        a.send({{"type", "prompt"}, {"ref", 203}, {"session", "wqueue"}, {"text", "und vier"}});
+        check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 202; }, 25000).value("ref", 0) == 202, "it counts as delivered, it goes in with the next one");
+        const json gone = a.next("attention", [](const json &m) { return m.value("session", "") == "wqueue" && m.value("kind", "") == "stuck"; }, 25000);
+        check(!gone.empty() && gone.value("text", "") == "In Claude Code's queue: drei Gradients", "a queue Claude Code never takes up is reported: " + gone.dump());
+        check(a.next("dropped", {}, 300).empty(), "and is not dropped (a resend would arrive twice)");
+        check(qw.next("type", {}, 3000).value("text", "") == "und vier", "and the prompt behind it goes in then");
+        qw.send({{"type", "typed"}, {"ok", true}});
+        hook("wqueue", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "queue-1"}, {"prompt", "drei Gradients\nund vier"}});
+        hook("wqueue", {{"hook_event_name", "Stop"}, {"session_id", "queue-1"}, {"last_assistant_message", "Ok."}});
+        check(!waitSession(a, "wqueue", [](const json &s) { return s.value("state", "") == "idle" && s.value("queued", -1) == 0; }, 5000).empty(), "idle, nothing queued");
+        // (c) Claude Code absorbs the queued prompt into the running turn: no UserPromptSubmit, delivered, not typed again
+        a.send({{"type", "prompt"}, {"ref", 204}, {"session", "wqueue"}, {"text", "Bis jetzt auf 63."}, {"voice", true}});
+        check(!qw.next("type").empty(), "the voice prompt is typed");
+        qw.send({{"type", "typed"}, {"ok", true}});
+        std::ofstream(queueTr, std::ios::app) << enqueue("\xF0\x9F\x8E\x99 Bis jetzt auf 63.")
+            << json({{"type", "queue-operation"}, {"operation", "remove"}, {"content", "\xF0\x9F\x8E\x99 Bis jetzt auf 63."}, {"reason", "absorbed_mid_turn"}}).dump() << "\n";
+        check(a.next("delivered", [](const json &m) { return m.value("ref", 0) == 204; }, 3000).value("ref", 0) == 204, "an absorbed prompt is delivered without UserPromptSubmit");
+        check(qw.next("snapshot", {}, 600).empty() && qw.next("type", {}, 300).empty(), "no snapshot, not typed again");
+    }
+
     // AskUserQuestion (0.5.33): the questions with their choices; option,
     // next and text answer them, the review comes last.
     {

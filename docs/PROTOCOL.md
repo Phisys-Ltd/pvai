@@ -202,6 +202,31 @@ daemon knows every live one on its host.
   already stands in the box (a retry, or `send` after a Return that did not
   take) is not pasted a second time: only the Return follows, with the usual
   submit check.
+  Since 0.5.73 (unreleased) a prompt is not pasted while Claude Code still
+  draws a turn: a verified `type` that arrives on a screen that is not
+  settled, or with a status line within the six rows above the prompt box
+  (`✻ ... (4s`, `· Running stop hooks... (3s)`: a spinner glyph, an ellipsis
+  and ` (`), waits in the wrapper until neither holds, at most 3 s; then the
+  wrapper answers `typed` `ok: false` as for a busy box and the prompt is
+  retried as above. The daemon used to type the next prompt right on the
+  `Stop` hook, while Claude Code was still closing the turn; Claude Code
+  took that Return into its own queue, the box emptied, and `UserPromptSubmit`
+  never came for it. Since 0.5.73 the daemon also reads that queue from the
+  transcript (`queue-operation` lines: an `enqueue` with the prompt's text
+  and no `dequeue` or `remove` yet) once the wrapper has typed the prompt:
+  the prompt stays in flight (counted in `queued`, not `delivered`, no
+  `screen` dialog, not typed again), and nothing else is typed behind it.
+  Claude Code takes the queue up after the turn and `UserPromptSubmit`
+  delivers the prompt as usual. When Claude Code puts the prompt into the
+  running turn itself it fires no `UserPromptSubmit`: the transcript has a
+  `queue-operation` `remove` with `reason: "absorbed_mid_turn"` and the
+  prompt's text, and that is the delivery (`delivered`, the turn counts as
+  the prompt's for the voice rule), never a second typing. When the session
+  is `idle` and the prompt is still in Claude Code's queue 20 s after the
+  turn's `Stop`, it is counted as `delivered` (Claude Code merges it into
+  the next prompt) and sent as `attention` `stuck` with the text `In Claude
+  Code's queue: ` and its first 40 characters. It is not `dropped` (a resend
+  would arrive twice) and not typed again; the prompts behind it go in.
 - `draft`: the owner has typed into the session's prompt in the terminal and
   not sent it, or (since 0.5.30) the prompt box is in shell mode (it starts
   with `!`, as after `!` or a command called back from the history: what is

@@ -159,6 +159,24 @@ int main()
                          + "\r\n\xE2\x9D\xAF\xC2\xA0noch eine Frage\r\n" + rules2);
     check(pvai::workingShown(compacting), "a compaction with the prompt still in the box: Claude Code works");
 
+    // The gate before a prompt is typed: a status line right above the box
+    // (still closing a turn, or running the hooks) is a turn that is not over;
+    // an ellipsis in an answer higher up, or a free box, is not.
+    check(pvai::turnWorkingShown(compacting), "the compaction status line is a turn drawing");
+    check(pvai::turnWorkingShown(taken), "a hook status line without a time counts too");
+    check(!pvai::turnWorkingShown(menu), "the command menu is no turn");
+    pvai::Screen done(14, 70);
+    feed(done, "\x1b[2J\x1b[H\xE2\x8F\xBA Das sp\xC3\xA4ter\xE2\x80\xA6 (siehe unten) bleibt offen.\r\n\r\n\xE2\x9C\xBB Cogitated for 1m 19s\r\n\r\n" + rules2
+                     + "\r\n\xE2\x9D\xAF\xC2\xA0\r\n" + rules2);
+    check(!pvai::turnWorkingShown(done) && pvai::workingShown(done), "an answer with an ellipsis: workingShown is fooled, the gate is not");
+    pvai::Screen closing(14, 70);
+    feed(closing, "\x1b[2J\x1b[H\xE2\x8F\xBA Fertig.\r\n\r\n\xC2\xB7 Running stop hooks\xE2\x80\xA6 (3s)\r\n\r\n" + rules2
+                      + "\r\n\xE2\x9D\xAF\xC2\xA0\r\n" + rules2);
+    check(pvai::turnWorkingShown(closing), "stop hooks still running right above the box");
+    pvai::Screen far(20, 70);
+    feed(far, "\x1b[2J\x1b[H\xC2\xB7 Thinking\xE2\x80\xA6 (4s)\r\n\r\n\r\na\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\n" + rules2 + "\r\n\xE2\x9D\xAF\xC2\xA0\r\n" + rules2);
+    check(!pvai::turnWorkingShown(far), "a status line far above the box is not looked at");
+
     pvai::Screen select_(14, 70);
     // Claude Code's select list (/model with usage credits): its footer is "Enter to select".
     feed(select_, "\x1b[2J\x1b[H" + rule + "\r\n You've used your included Fable usage for this week\r\n\r\n \xE2\x9D\xAF 1. Switch to Opus and continue\r\n   2. Continue with usage credits\r\n   3. Manage on claude.ai\r\n\r\n \xE2\x86\x91/\xE2\x86\x93 to navigate \xC2\xB7 Enter to select \xC2\xB7 Esc to cancel");

@@ -277,6 +277,8 @@ void ClaudeSession::submit(const Prompt &prompt)
         host_.log(id_ + ": types " + shown + (verify ? " (verify)" : " (unchecked)"));
     }
     typedAt_ = static_cast<long long>(std::time(nullptr));
+    queuedInClaude_ = false;
+    queuedUntil_.reset();
     wrapper_.send({{"type", "type"}, {"text", (prompt.voice && !slash ? kMicMark : "") + prompt.text}, {"verify", verify}});
     if (verify_)
         inFlight_ = prompt;
@@ -623,6 +625,11 @@ void ClaudeSession::onHook(const json &event)
                 dropQueued(event.value("prompt", ""));
             confirmed = inFlight_;
             delivered();
+        } else if (inFlight_ && queuedInClaude_ && name == "Stop") {
+            // Typed during the turn's last moments: Claude Code holds it in
+            // its own queue and takes it up by itself. Typed again it would
+            // arrive twice.
+            queuedUntil_ = Clock::now() + kQueuedWait;
         } else if (inFlight_) { // a turn ended or started over without it
             queue_.push_front(*inFlight_);
             inFlight_.reset();
@@ -1117,6 +1124,8 @@ void ClaudeSession::dropQueued(const std::string &text)
 
 void ClaudeSession::delivered()
 {
+    queuedInClaude_ = false;
+    queuedUntil_.reset();
     if (!inFlight_)
         return;
     host_.broadcast({{"type", "delivered"}, {"session", id_}, {"ref", inFlight_->ref}});
@@ -1144,6 +1153,8 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry)
     if (inFlight_)
         queue_.push_front(*inFlight_);
     inFlight_.reset();
+    queuedInClaude_ = false;
+    queuedUntil_.reset();
     typedDeadline_.reset();
     submitDeadline_.reset();
     turnOver();
@@ -1285,6 +1296,21 @@ void ClaudeSession::tick(Clock::time_point now)
             changed();
         }
     }
+    if (queuedUntil_ && now >= *queuedUntil_) {
+        queuedUntil_.reset();
+        // The turn is over and Claude Code did not take its queue up: it
+        // still holds the message and merges it into the next prompt. Not
+        // dropped (the app would offer a resend and it would arrive twice),
+        // not typed again: it counts as delivered, the owner is told.
+        if (inFlight_ && queuedInClaude_ && state_ == "idle") {
+            const std::string text = inFlight_->text.substr(0, 40);
+            host_.log(id_ + ": the prompt is still in Claude Code's own queue, counted as delivered");
+            delivered();
+            attention("stuck", "In Claude Code's queue: " + text);
+            deliver();
+            changed();
+        }
+    }
     if (typedDeadline_ && now >= *typedDeadline_) // the wrapper never answered
         notDelivered("", true);
     if (retryAt_ && now >= *retryAt_) {
@@ -1347,6 +1373,8 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
         next = std::min(next, *stopCheck_);
     if (submitDeadline_)
         next = std::min(next, *submitDeadline_);
+    if (queuedUntil_)
+        next = std::min(next, *queuedUntil_);
     if (screenAt_)
         next = std::min(next, *screenAt_);
     if (modeDeadline_)
@@ -1362,6 +1390,10 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
 
 void ClaudeSession::runEscapeChecks(Clock::time_point now)
 {
+    if (submitDeadline_ && *submitDeadline_ <= now) {
+        drain();
+        checkClaudeQueue();
+    }
     if (submitDeadline_ && *submitDeadline_ <= now) {
         // The prompt never became a turn: free the session. Under a wrapper
         // that verifies, it goes back in the queue and the owner sees the
@@ -1561,6 +1593,50 @@ void ClaudeSession::pollTranscript()
         }
     }
     sendEntries(std::move(fresh));
+    checkClaudeQueue();
+}
+
+// The prompt in flight against Claude Code's own queue (see queuedInClaude_).
+void ClaudeSession::checkClaudeQueue()
+{
+    if (!inFlight_ || isSlash(inFlight_->text)) {
+        queuedInClaude_ = false;
+        queuedUntil_.reset();
+        return;
+    }
+    const auto plain = [](const std::string &raw) {
+        std::string text = trim(stripPasteFrame(raw), " \t\r\n");
+        if (text.compare(0, std::strlen(kMicMark), kMicMark) == 0)
+            text = trim(text.substr(std::strlen(kMicMark)), " \t\r\n");
+        return text;
+    };
+    const std::string sent = plain(inFlight_->text);
+    // Claude Code put it into the running turn itself: no UserPromptSubmit
+    // comes, this is the delivery.
+    if (submitDeadline_ || queuedInClaude_) {
+        const auto absorbed = tail_.takeAbsorbed();
+        if (std::any_of(absorbed.begin(), absorbed.end(), [&](const std::string &q) { return !sent.empty() && plain(q) == sent; })) {
+            host_.log(id_ + ": the prompt was absorbed into the running turn: taken as delivered");
+            submitDeadline_.reset();
+            promptVoice(inFlight_->text, &*inFlight_);
+            delivered();
+            changed();
+            return;
+        }
+    }
+    const auto &held = tail_.queued();
+    const bool standing = !sent.empty() && std::any_of(held.begin(), held.end(), [&](const std::string &q) { return plain(q) == sent; });
+    if (standing && !queuedInClaude_ && submitDeadline_) { // typed, and the Return went in
+        queuedInClaude_ = true;
+        submitDeadline_.reset();
+        host_.log(id_ + ": the prompt stands in Claude Code's own queue: kept in flight, nothing typed after it");
+        if (state_ == "idle")
+            queuedUntil_ = Clock::now() + kQueuedWait;
+    } else if (!standing && queuedInClaude_) { // taken up: UserPromptSubmit is due
+        queuedInClaude_ = false;
+        queuedUntil_.reset();
+        submitDeadline_ = Clock::now() + kSubmitTimeout;
+    }
 }
 
 void ClaudeSession::scanSubagents(Clock::time_point)

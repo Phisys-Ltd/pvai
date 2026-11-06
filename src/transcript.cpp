@@ -326,6 +326,8 @@ void TranscriptTail::resetState()
     limitHits_ = limitClears_ = turnEndCount_ = 0;
     turnRunning_ = turnEnds_ = windowed_ = false;
     noteAt_ = 0;
+    queued_.clear();
+    absorbed_.clear();
     recent_.clear();
 }
 
@@ -434,7 +436,24 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
     // The usage limit: Claude Code writes the 429 as an assistant line and
     // goes on by itself at the reset, after a dequeue of its own prompt.
     if (type == "queue-operation") {
-        if (line.value("operation", "") == "dequeue" && limited_.is_object()) {
+        const std::string operation = line.value("operation", "");
+        const json content = line.value("content", json());
+        if (operation == "enqueue" && content.is_string()) {
+            queued_.push_back(content.get<std::string>());
+            if (queued_.size() > 64)
+                queued_.pop_front();
+        } else if (operation == "dequeue" && !queued_.empty()) {
+            queued_.pop_front();
+        } else if (operation == "remove" && content.is_string()) {
+            if (line.value("reason", "") == "absorbed_mid_turn") {
+                absorbed_.push_back(content.get<std::string>());
+                if (absorbed_.size() > 64)
+                    absorbed_.erase(absorbed_.begin());
+            }
+            if (const auto it = std::find(queued_.begin(), queued_.end(), content.get<std::string>()); it != queued_.end())
+                queued_.erase(it);
+        }
+        if (operation == "dequeue" && limited_.is_object()) {
             clearLimited();
             json entry = {{"kind", "resumed"}, {"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}};
             out.push_back(std::move(entry));

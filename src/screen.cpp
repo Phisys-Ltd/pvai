@@ -916,6 +916,28 @@ bool workingShown(const Screen &screen)
     return false;
 }
 
+bool turnWorkingShown(const Screen &screen)
+{
+    std::string box;
+    int top = -1;
+    if (!promptBox(screen, box, nullptr, &top))
+        return false;
+    int seen = 0;
+    for (int r = top - 1; r >= 0 && seen < 6; --r) {
+        const std::string row = trim(screen.row(r), " ");
+        if (row.empty())
+            continue;
+        ++seen;
+        // A status line starts with its spinner glyph; the conversation's
+        // own lines (an answer "\xE2\x8F\xBA", a tool result "\xE2\x8E\xBF") do not count.
+        if (static_cast<unsigned char>(row[0]) < 0x80 || row.compare(0, 3, "\xE2\x8F\xBA") == 0 || row.compare(0, 3, "\xE2\x8E\xBF") == 0)
+            continue;
+        if (row.find("\xE2\x80\xA6 (") != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
 std::string screenMode(const Screen &screen)
 {
     static const std::pair<const char *, const char *> marks[] = {
