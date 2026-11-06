@@ -1,3 +1,11 @@
+pvai (0.5.73-1) trixie; urgency=medium
+
+  * A prompt Claude Code queued itself is kept and no longer lost; the
+    wrapper types only on a settled screen without a running status line.
+  * PVAI_HOST overrides the machine name; tests no longer depend on it.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 06 Nov 2026 17:30:00 +0100
+
 pvai (0.5.72-1) trixie; urgency=medium
 
   * A long paste is no longer taken for sent on a half-drawn screen.
