@@ -70,6 +70,7 @@ public:
         std::filesystem::permissions(runtime, std::filesystem::perms::owner_all);
         ::setenv("HOME", path.c_str(), 1);
         ::setenv("XDG_RUNTIME_DIR", runtime.c_str(), 1);
+        ::setenv("PVAI_HOST", "testhost", 1); // daemons and CLIs see one host name everywhere
     }
     ~TestHome()
     {

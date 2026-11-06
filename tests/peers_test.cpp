@@ -106,6 +106,8 @@ int main(int argc, char **argv)
     check(r.status == 0 && warningOf(r.out) == "unknown-session"
               && r.out.find("warning: M4 lists no session wmissing (it may have been restarted; see pvai peers)") != std::string::npos,
           "unknown-session: " + r.out);
+    r = run("propose testhost/wx text");
+    check(r.status == 0 && warningOf(r.out).empty(), "no warning for a session of this host: " + r.out);
     r = run("propose M4/w97dde1bd text");
     check(r.status == 0 && warningOf(r.out).empty(), "no warning for a known id: " + r.out);
     r = run("propose M4/Projekte text");

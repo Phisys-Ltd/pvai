@@ -497,7 +497,8 @@ The flow:
 
 1. The agent runs `pvai propose [--reply ID] TO TEXT` (or the text on
    stdin) in its session. `TO` is `host/session`: `host` is the target
-   daemon's short hostname (`welcome.host`), `session` a session id or a
+   daemon's short hostname (`welcome.host`; `PVAI_HOST` in the environment
+   overrides the machine's name, the tests use it), `session` a session id or a
    label. A bare `host` means "whichever session the owner picks".
    `--reply ID` names the proposal this one answers (the id in the first
    line of the message being answered).

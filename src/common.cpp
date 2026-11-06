@@ -155,6 +155,8 @@ std::string selfExe()
 
 std::string hostName()
 {
+    if (const char *forced = std::getenv("PVAI_HOST"); forced && *forced)
+        return forced; // override, used by the tests
     char buffer[256] = {};
     ::gethostname(buffer, sizeof buffer - 1);
     std::string name = buffer;

@@ -427,7 +427,7 @@ private:
                     sessions_.erase(found);
                     sessionsDirty_ = true;
                     if (again) // a restart that replaces the wrapper
-                        claude_->start(*again, [this, id = again->id](const std::string &, const std::string &reason) {
+                        claude_->start(*again, [id = again->id](const std::string &, const std::string &reason) {
                             logLine(id + (reason.empty() ? ": a new pvai run takes over" : ": no new pvai run: " + reason));
                         });
                 }
