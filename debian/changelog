@@ -1,3 +1,12 @@
+pvai (0.5.72-1) trixie; urgency=medium
+
+  * A long paste is no longer taken for sent on a half-drawn screen.
+  * A prompt already standing in the box is only submitted, not pasted
+    twice.
+  * The app hears that a prompt stands unsent in the box.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 06 Nov 2026 16:55:40 +0100
+
 pvai (0.5.71-1) trixie; urgency=medium
 
   * Claude Code's asks under the prompt box (the auto-mode setup offer,
