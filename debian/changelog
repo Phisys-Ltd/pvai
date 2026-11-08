@@ -1,3 +1,10 @@
+pvai (0.5.74-1) trixie; urgency=medium
+
+  * The app can rename a session (rename request, welcome.rename); the
+    name survives restarts.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 08 Nov 2026 12:00:00 +0100
+
 pvai (0.5.73-1) trixie; urgency=medium
 
   * A prompt Claude Code queued itself is kept and no longer lost; the
