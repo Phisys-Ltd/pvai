@@ -8,6 +8,7 @@
 
 #include <ctime>
 #include <fstream>
+#include <memory>
 
 using namespace pvai;
 using namespace pvai::test;
@@ -266,6 +267,7 @@ int main(int argc, char **argv)
     g_pvai = fs::canonical(argv[1]).string();
     const TestHome testHome;
     const std::string home = testHome.path;
+    const std::string configHome = home + "/.config";
     const std::string runtime = testHome.runtime;
     const std::string bin = home + "/bin";
     // claude: a version that `update` raises, and a session that records
@@ -466,6 +468,20 @@ int main(int argc, char **argv)
               "with its history played back: " + old.dump());
         check(a.next("say", [](const json &m) { return m.value("session", "") == "k-old"; }, 300).empty(), "the playback says nothing");
 
+        // A rename is kept for the assistant's own sessions and wins when one is rebuilt.
+        a.send({{"type", "rename"}, {"ref", 90}, {"session", "k-old"}, {"label", "  Mein Name  "}});
+        const json kimiRenamed = a.next("renamed", [](const json &m) { return m.value("ref", 0) == 90; });
+        check(kimiRenamed.value("session", "") == "k-old" && kimiRenamed.value("label", "") == "Mein Name", "kimi: renamed, trimmed: " + kimiRenamed.dump());
+        check(json::parse(readFile(configHome + "/pvai/labels.json"), nullptr, false).value("kimi/k-old", "") == "Mein Name",
+              "kimi: the rename is in labels.json");
+        a.send({{"type", "stop"}, {"ref", 91}, {"session", "k-old"}});
+        check(kimi.call("session/close").value("params", json()).value("sessionId", "") == "k-old", "kimi: closed");
+        a.send({{"type", "start"}, {"ref", 92}, {"assistant", "kimi"}, {"cwd", project}, {"resume", "k-old"}, {"label", "Anders"}});
+        call = kimi.call("session/load");
+        kimi.respond(call, {{"configOptions", {modelOption}}});
+        check(a.next("started").value("session", "") == "k-old", "kimi: played back again");
+        check(!waitSession(a, "k-old", [](const json &s) { return s.value("label", "") == "Mein Name"; }).empty(),
+              "kimi: the kept rename wins over the start request's label");
         a.send({{"type", "stop"}, {"ref", 45}, {"session", "k-old"}});
         check(kimi.call("session/close").value("params", json()).value("sessionId", "") == "k-old", "stop is session/close");
         a.send({{"type", "stop"}, {"ref", 46}, {"session", "k-1"}});
@@ -613,11 +629,21 @@ int main(int argc, char **argv)
     codex.send({{"method", "thread/started"}, {"params", {{"thread", {{"id", "t-free"}, {"parentThreadId", nullptr}}}}}});
     check(!waitSession(a, "t-free", [](const json &s) { return s.value("stoppable", false) && !s.value("detached", true); }).empty(),
           "a thread no TUI holds is stoppable");
+    a.send({{"type", "rename"}, {"ref", 93}, {"session", "t-free"}, {"label", "Frei"}});
+    check(a.next("renamed", [](const json &m) { return m.value("ref", 0) == 93; }).value("label", "") == "Frei", "codex: renamed");
     a.send({{"type", "stop"}, {"ref", 9}, {"session", "t-free"}});
     check(!a.next("stopping").empty(), "and stops");
     check(!codex.call("thread/unsubscribe", [](const json &p) { return p.value("threadId", "") == "t-free"; }).is_null(), "by unsubscribing");
     check(codex.call("thread/archive", [](const json &p) { return p.value("threadId", "") == "t-free"; }, 300).is_null(),
           "not by archiving");
+    // The thread comes back (a rebuilt session): the kept name is on it again.
+    a.next("sessions", [](const json &m) { return sessionIn(m, "t-free").empty(); });
+    a.send({{"type", "start"}, {"ref", 94}, {"assistant", "codex"}, {"cwd", project}, {"resume", "t-free"}, {"label", "Anders"}});
+    check(a.next("started", [](const json &m) { return m.value("ref", 0) == 94; }).value("session", "") == "t-free", "codex: resumed again");
+    check(!waitSession(a, "t-free", [](const json &s) { return s.value("label", "") == "Frei"; }).empty(),
+          "codex: a recreated session carries the kept rename");
+    check(json::parse(readFile(configHome + "/pvai/labels.json"), nullptr, false).value("codex/t-free", "") == "Frei",
+          "codex: the rename is in labels.json");
 
     // ---- Claude in a terminal: a fake wrapper and hooks.
     LineClient wrapper;
@@ -2153,6 +2179,52 @@ int main(int argc, char **argv)
     check(a.next("rejected").value("reason", "") == "unknown-assistant", "an unknown assistant is refused");
     a.send({{"type", "conversations"}, {"assistant", "gemini"}, {"cwd", project}});
     check(a.next("conversations").value("conversations", json()) == json::array(), "and has no conversations");
+
+    // ---- Renaming a Claude session: the wrapper learns the label and registers with it again.
+    {
+        const std::string longLabel(65, 'x');
+        auto w1 = std::make_unique<LineClient>();
+        LineClient w2;
+        w1->send({{"type", "register"}, {"version", kVersion}, {"id", "wren"}, {"cwd", project}, {"label", "alpha"}});
+        w2.send({{"type", "register"}, {"version", kVersion}, {"id", "wren2"}, {"cwd", project}, {"label", "beta"}});
+        check(!waitSession(a, "wren2", [](const json &) { return true; }).empty(), "rename: two sessions");
+        auto reason = [&](int ref, const std::string &session, const json &label) {
+            a.send({{"type", "rename"}, {"ref", ref}, {"session", session}, {"label", label}});
+            return a.next("rejected", [&](const json &m) { return m.value("ref", 0) == ref; }, 1000).value("reason", "");
+        };
+        check(reason(100, "nope", "x") == "unknown-session", "rename: unknown-session");
+        check(reason(101, "wren", "") == "bad-label", "rename: empty is bad-label");
+        check(reason(102, "wren", " \t\n ") == "bad-label", "rename: blank is bad-label");
+        check(reason(103, "wren", longLabel) == "bad-label", "rename: 65 bytes is bad-label");
+        check(reason(104, "wren", "a\nb") == "bad-label", "rename: a newline inside is bad-label");
+        check(reason(105, "wren", "a\x01" "b") == "bad-label", "rename: a control char is bad-label");
+        check(reason(106, "wren", "beta") == "taken", "rename: another session's label is taken");
+        check(reason(107, "wren", json(7)) == "bad-label", "rename: a non-string label is bad-label");
+        a.send({{"type", "rename"}, {"ref", 108}, {"session", "wren"}, {"label", "alpha"}});
+        check(a.next("renamed", [](const json &m) { return m.value("ref", 0) == 108; }).value("label", "") == "alpha", "rename: its own label is a no-op success");
+        a.send({{"type", "rename"}, {"ref", 109}, {"session", "wren"}, {"label", std::string(64, 'y')}});
+        check(!a.next("renamed", [](const json &m) { return m.value("ref", 0) == 109; }).empty(), "rename: 64 bytes are fine");
+        a.send({{"type", "rename"}, {"ref", 110}, {"session", "wren"}, {"label", " gamma "}});
+        const json ok = a.next("renamed", [](const json &m) { return m.value("ref", 0) == 110; });
+        check(ok.value("session", "") == "wren" && ok.value("label", "") == "gamma", "rename: renamed, trimmed: " + ok.dump());
+        check(!waitSession(a, "wren", [](const json &s) { return s.value("label", "") == "gamma"; }).empty(), "rename: the sessions list has it");
+        const json pushed = w1->next("label", [](const json &m) { return m.value("label", "") == "gamma"; });
+        check(!pushed.empty(), "rename: the wrapper is told the new label");
+        // The wrapper registers again after a daemon restart with what it was told.
+        w1 = std::make_unique<LineClient>(); // the old connection closes
+        w1->send({{"type", "register"}, {"version", kVersion}, {"id", "wren"}, {"cwd", project}, {"label", "gamma"}, {"running", true}});
+        check(!waitSession(a, "wren", [](const json &s) { return s.value("label", "") == "gamma"; }).empty(), "rename: a re-registered wrapper keeps it");
+        {
+            LineClient b;
+            b.send(app());
+            check(sessionIn(b.next("sessions"), "wren2").value("label", "") == "beta", "rename: the other session is untouched");
+        }
+        const json labels = json::parse(readFile(configHome + "/pvai/labels.json"), nullptr, false);
+        check(!labels.is_object() || !labels.contains("claude/wren"), "rename: Claude sessions are not in labels.json");
+        LineClient fresh;
+        fresh.send(app());
+        check(fresh.next("welcome").value("rename", false), "welcome.rename");
+    }
 
     // ---- Hooks: pvai run puts them in place, once.
     auto shell = [](const std::string &command) { return runCommand(command + " </dev/null", false).out; };

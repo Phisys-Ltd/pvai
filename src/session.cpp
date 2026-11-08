@@ -23,6 +23,16 @@ Session::Session(Host &host, std::string id, std::string cwd, std::string label)
 
 void Session::setLabel(const std::string &label)
 {
+    if (label.empty() || label == label_ || renamed_)
+        return;
+    label_ = label;
+    changed();
+}
+
+void Session::applyLabel(const std::string &label)
+{
+    renamed_ = true;
+    labelPushed(label);
     if (label.empty() || label == label_)
         return;
     label_ = label;

@@ -460,6 +460,7 @@ App to daemon:
 | `answer` | `ref`, `session`, `choice` | answer the session's dialog: `allow` (the first choice of a permission or question, "Yes, I trust this folder" for trust; Return for `screen`) or `deny` (Esc: the tool is refused and the turn ends; for trust, Claude Code exits; for `screen` it closes the dialog). Since 0.5.13 also `key:NAME`, one key into any dialog but `trust`: `up`, `down`, `left`, `right`, `enter`, `esc`, `tab`, `space`, or a digit or lower-case letter (an option's number, a shortcut such as `s`); the dialog stays open until the screen or a hook says otherwise. `send`: see "Delivery" under the session fields. Kimi: also `always` and `option:<id>`, see "Kimi sessions" |
 | `interrupt` | `ref`, `session` | stop the running turn, like Esc in the terminal (into a dialog: deny); nothing happens while `idle`, `starting` or on the trust dialog |
 | `stop` | `ref`, `session` | end a `stoppable` session |
+| `rename` | `ref`, `session`, `label` | (since 0.5.74, `welcome.rename`) give a running session a new label, see "Renaming a session" |
 | `clearInput` | `ref`, `session` | empty the session's prompt box, wherever its cursor is, and leave shell mode (Ctrl+K and Ctrl+U to each line, then Backspace; Esc does not empty it); queued prompts go on once the box is free. Only while `inputClearable`. Not Claude Code's `/clear`, which starts a new conversation |
 | `restart` | `ref`, `session` | end the session's process and start it again, going on with the same conversation (see "Restart") |
 | `projects` | | the directories Claude Code has run in on this host |
@@ -475,13 +476,14 @@ Daemon to app:
 
 | type | fields | meaning |
 |---|---|---|
-| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout` |
+| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `answer`, `clearInput`, `mode`, `model` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `answer`, `clearInput`, `mode`, `model` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
+| `renamed` | `ref`, `session`, `label` | the session carries `label` (trimmed) now; the `sessions` list follows |
 | `inputCleared` | `ref`, `session` | the keys for `clearInput` went in; `draft` and the state follow from the screen |
 | `interrupting` | `ref`, `session` | the Esc went in; the session turns `idle` when the transcript shows the interrupt, or after about 4 s anyway, then with its queue dropped (a hung session, such as one without a login) |
 | `restarting` | `ref`, `session` | the session is ending for a restart; it goes `starting`, then `idle` again with the same `id` |
@@ -996,6 +998,36 @@ one task per assistant at a time.
   10 minutes, or "not installed". Running sessions are never stopped or
   restarted for an update: they keep the version they started with until
   they end, and new sessions get the new one.
+
+## Renaming a session
+
+`{"type": "rename", "ref", "session", "label"}` (since 0.5.74, `welcome.rename:
+true`) renames a running session. The daemon trims the label (spaces, tabs,
+CR, LF at both ends) and answers `{"type": "renamed", "ref", "session",
+"label"}` with the trimmed label; every app then hears the new label in
+`sessions`. Otherwise `{"type": "rejected", "ref", "session", "reason"}`:
+
+- `unknown-session`: no such session on this host (or it has ended).
+- `bad-label`: empty after trimming, not a string, longer than 64 bytes, or
+  holding a control character (below 0x20, or 0x7f; a newline inside counts).
+- `taken`: another session on this host already has exactly that label.
+  Renaming a session to the label it has is a success and changes nothing.
+
+A rename stays over restarts:
+
+- Claude sessions: the daemon sends the wrapper `{"type": "label", "label"}`
+  (daemon to `pvai run`, since 0.5.74); the wrapper keeps it and sends it as
+  `label` in every later `register`, so a wrapper that registers again after
+  a daemon restart brings the new name, not the one from its command line.
+  Nothing else sets a Claude session's label afterwards. A session the daemon
+  replaces for a `restart` starts with the current label.
+- Codex and Kimi sessions are rebuilt from the assistant's own state, which
+  does not know the name. The daemon keeps these renames in
+  `~/.config/pvai/labels.json` (`$XDG_CONFIG_HOME/pvai`; mode 0600), a JSON
+  object from `"<assistant>/<session id>"` (such as `"codex/019a..."`) to the
+  label. The name is put on the session whenever it is created again, and
+  from then on a label from the assistant's title or from `start.label` does
+  not replace it. `forget` of the conversation removes the entry.
 
 ## Restart
 

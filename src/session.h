@@ -60,6 +60,9 @@ public:
     // taken out of the daemon's memory: a session that went on with that
     // conversation queues them again.
     virtual std::vector<Prompt> takeKept(const std::string &conversation, const std::string &cwd) = 0;
+    // The owner renames a session: answers the reason to reject ("bad-label",
+    // "taken") or empty when it went through (stored, kept over restarts).
+    virtual std::string renameSession(Session &session, const std::string &label) = 0;
 };
 
 class Session {
@@ -73,7 +76,12 @@ public:
     const std::string &label() const { return label_; }
     const std::string &cwd() const { return cwd_; }
     const std::string &state() const { return state_; }
+    // A label from the assistant or the starting request; ignored once the
+    // owner renamed the session.
     void setLabel(const std::string &label);
+    // The owner's rename (already checked): wins over every setLabel after it.
+    void applyLabel(const std::string &label);
+    std::string rename(const std::string &label) { return host_.renameSession(*this, label); }
     virtual std::string assistant() const = 0;
     // Started by the daemon (stop ends it), not in a terminal or TUI of the
     // owner's.
@@ -160,6 +168,9 @@ protected:
     std::string id_;
     std::string cwd_;
     std::string label_;
+    bool renamed_ = false; // the owner chose label_: setLabel leaves it
+    // The session's own process (a Claude wrapper) learns the owner's label.
+    virtual void labelPushed(const std::string &) {}
     std::string state_ = "starting";
     std::string dialog_; // while waiting: "permission", "question" or "trust"
     json dialogInfo_;    // what the dialog is about (dialogInfo()); shown while dialog_ is set

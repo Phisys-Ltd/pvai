@@ -173,6 +173,7 @@ public:
         : unixFd_(unixFd)
         , tcpFd_(tcpFd)
     {
+        loadLabels();
         // The assistants this daemon knows, in the order the app lists them.
         auto claude = std::make_unique<ClaudeBackend>(*this);
         claude_ = claude.get();
@@ -320,6 +321,10 @@ public:
     void addSession(std::unique_ptr<Session> session) override
     {
         const std::string id = session->id();
+        // A rename kept over a restart wins over what the assistant says.
+        if (session->assistant() != "claude")
+            if (const auto saved = savedLabels_.find(labelKey(*session)); saved != savedLabels_.end() && saved->is_string())
+                session->applyLabel(saved->get<std::string>());
         sessions_[id] = std::move(session);
         sessionsDirty_ = true;
     }
@@ -687,7 +692,7 @@ private:
         }
         return {{"type", "welcome"}, {"host", hostName()}, {"user", userName()}, {"version", kVersion},
                 {"assistants", assistants}, {"installed", installed}, {"conversations", true},
-                {"peers", true}, {"forget", true}, {"model", true}, {"logout", true}};
+                {"peers", true}, {"forget", true}, {"model", true}, {"logout", true}, {"rename", true}};
     }
 
     void handle(Peer *peer, const json &message)
@@ -908,6 +913,8 @@ private:
             Peer *peer = peerBySerial(serial);
             if (!peer)
                 return;
+            if (reason.empty())
+                forgetLabel(assistant, id);
             if (reason.empty() && assistant == "claude")
                 dropKept([&](const KeptPrompt &k) { return k.conversation == id && k.cwd == cwd; });
             if (reason.empty())
@@ -1082,6 +1089,7 @@ private:
                  s.interrupt();
                  return std::string();
              }},
+            {"rename", "renamed", [](Session &s, const json &m, const json &) { return s.rename(m.contains("label") && m["label"].is_string() ? m["label"].get<std::string>() : std::string()); }},
             {"restart", "restarting", [](Session &s, const json &, const json &) { return s.restart(); }},
             {"clearInput", "inputCleared", [](Session &s, const json &, const json &) { return s.clear(); }},
         };
@@ -1105,8 +1113,63 @@ private:
             return reject(peer, ref, id, "stale-wrapper");
         if (const std::string reason = command.run(*session, message, ref); !reason.empty())
             return reject(peer, ref, id, reason);
-        if (command.okType)
-            peer->conn->send({{"type", command.okType}, {"ref", ref}, {"session", id}});
+        if (command.okType) {
+            json ok = {{"type", command.okType}, {"ref", ref}, {"session", id}};
+            if (std::string(command.type) == "rename")
+                ok["label"] = session->label();
+            peer->conn->send(ok);
+        }
+    }
+
+    // ---- Renames: kept in ~/.config/pvai/labels.json ----
+
+    // A Claude session's wrapper keeps its label itself (and registers with
+    // it again); the file holds the sessions rebuilt from an assistant's own
+    // state, by "<assistant>/<id>".
+    static std::string labelKey(const Session &session) { return session.assistant() + "/" + session.id(); }
+
+    std::string renameSession(Session &session, const std::string &raw) override
+    {
+        const std::string label = trim(raw);
+        if (label.empty() || label.size() > 64
+            || std::any_of(label.begin(), label.end(), [](unsigned char c) { return c < 0x20 || c == 0x7f; }))
+            return "bad-label";
+        for (Session *other : sessions())
+            if (other != &session && other->label() == label)
+                return "taken";
+        session.applyLabel(label);
+        if (session.assistant() != "claude") {
+            savedLabels_[labelKey(session)] = label;
+            saveLabels();
+        }
+        return "";
+    }
+
+    std::string labelsPath() const { return configDir() + "/labels.json"; }
+
+    void loadLabels()
+    {
+        std::ifstream in(labelsPath());
+        const json file = json::parse(in, nullptr, false);
+        savedLabels_ = file.is_object() ? file : json::object();
+    }
+
+    void saveLabels()
+    {
+        const std::string path = labelsPath(), temp = path + ".tmp";
+        {
+            std::ofstream out(temp, std::ios::trunc);
+            out << savedLabels_.dump(1) << "\n";
+        }
+        ::chmod(temp.c_str(), 0600);
+        std::error_code ec;
+        std::filesystem::rename(temp, path, ec);
+    }
+
+    void forgetLabel(const std::string &assistant, const std::string &id)
+    {
+        if (savedLabels_.erase(assistant + "/" + id))
+            saveLabels();
     }
 
     void onSubscribe(Peer *peer, const json &message)
@@ -1833,6 +1896,7 @@ private:
     std::vector<std::unique_ptr<Peer>> peers_;
     std::vector<Peer *> dead_;
     std::map<std::string, std::unique_ptr<Session>> sessions_;
+    json savedLabels_ = json::object(); // "<assistant>/<id>" -> the owner's label (labels.json)
     // Prompts of ended Claude sessions, by conversation and folder (see
     // sessionGone); in memory only, oldest first.
     std::deque<KeptPrompt> kept_;

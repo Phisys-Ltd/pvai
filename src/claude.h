@@ -33,6 +33,8 @@ public:
     // only under a wrapper that can (pvai 0.5.0 and later).
     bool restartable() const override { return canRestart_ && !claudeSession_.empty(); }
     std::string restart() override;
+    // The wrapper keeps the owner's label for its next register.
+    void labelPushed(const std::string &label) override { wrapper_.send({{"type", "label"}, {"label", label}}); }
     // At the prompt (idle, or blocked by what the box holds), under a
     // wrapper that can (pvai 0.5.30 and later).
     bool clearable() const override { return canClear_ && (state_ == "idle" || (state_ == "waiting" && blocked_)); }

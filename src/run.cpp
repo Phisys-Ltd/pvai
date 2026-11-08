@@ -532,8 +532,9 @@ int runWrapper(const WrapperOptions &options)
             sendScreen();
     };
     bool registered = false;
+    std::string label = options.label; // the owner's rename (daemon `label`) replaces it
     auto registerSelf = [&] {
-        daemon->send({{"type", "register"}, {"version", kVersion}, {"id", id}, {"label", options.label}, {"cwd", cwd},
+        daemon->send({{"type", "register"}, {"version", kVersion}, {"id", id}, {"label", label}, {"cwd", cwd},
                       {"pid", static_cast<int>(::getpid())}, {"running", registered}, {"detached", detached},
                       {"restart", true}, {"verify", true}, {"modes", true}, {"clear", true}, {"paced", true}, {"submitCheck", true}, {"typedUnchecked", true}});
         if (draft.dirty() || shellShown)
@@ -789,6 +790,8 @@ int runWrapper(const WrapperOptions &options)
                         if (!paced.empty())
                             pacedAt = Clock::now();
                     }
+                } else if (type == "label") {
+                    label = message.value("label", label);
                 } else if (type == "clear") {
                     leftover = false;
                     clearBox();
