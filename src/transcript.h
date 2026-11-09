@@ -22,10 +22,16 @@ namespace pvai {
 // several.
 std::string commandFile(const std::string &command);
 
-// A user line Claude Code wrote itself (reminders, task notifications,
-// command echoes and output, ! shell input and output), by its known
-// leading tag; an owner's prompt that starts with another tag is none.
+// A prompt nobody typed: a user line Claude Code wrote itself (reminders,
+// task notifications, command echoes and output, ! shell input and output),
+// by its known leading tag, or a message another Claude session or pvai
+// handed in (isAgentMessage). An owner's prompt that starts with another tag
+// is none. The one list for the voice state, the titles and the history.
 bool isMachinePrompt(const std::string &text);
+// A message from another session or a subagent's hand-back ("[Message p1
+// from ...", "Another Claude session sent a message"): a machine prompt that
+// the history still shows, as it says what came in.
+bool isAgentMessage(const std::string &text);
 // `text` without Claude Code's paste frame (<pasted_content id="..."> ...
 // </pasted_content id="...">, also around only a part of the text) and
 // without the whitespace around it. Unchanged when there is no frame.

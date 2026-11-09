@@ -31,6 +31,11 @@ int main()
     check(!isMachinePrompt("<pasted_content id=\"x\">text</pasted_content>"), "a paste stays");
     check(!isMachinePrompt("<bash-inputs>x"), "only whole tag names");
     check(!isMachinePrompt("plain"), "plain text is the owner's");
+    check(isMachinePrompt("[Message p1 from M4/w1, released by the owner]\nhi") && pvai::isAgentMessage("[Message p1 from M4/w1]"),
+          "an agent message is the machine's");
+    check(isMachinePrompt("Another Claude session sent a message:\n<agent-message>") && !pvai::isAgentMessage("<task-notification>\nx"),
+          "a hand-back is, a task notification is the machine's but no agent message");
+    check(!isMachinePrompt("what is [Message ] in C++?"), "the mark counts at the start only");
     check(pvai::stripPasteFrame("\n\n<pasted_content id=\"8916\">\n[Message p1 from x]\nhi\n</pasted_content id=\"8916\">") == "[Message p1 from x]\nhi",
           "a paste frame is stripped");
     check(pvai::stripPasteFrame("plain") == "plain", "no frame, no change");
@@ -48,6 +53,14 @@ int main()
     for (const auto &e : entries)
         got += e.value("kind", "") + ":" + e.value("text", "") + "|";
     check(got == "command:! ssh pi5 uptime|output:up 3 days\nwarn\n|prompt:<div>mine</div>|", "the entries: " + got);
+    // The history still shows what another session handed in; a title does not take it.
+    const std::string agentFile = home.path + "/agent.jsonl";
+    std::ofstream(agentFile) << userLine(60, "[Message p1 from M4/w1]\nhi there") << userLine(61, "<task-notification>x</task-notification>");
+    pvai::TranscriptTail agentTail;
+    agentTail.follow(agentFile);
+    const auto agentEntries = agentTail.poll();
+    check(agentEntries.size() == 1 && agentEntries[0].value("text", "") == "[Message p1 from M4/w1]\nhi there",
+          "an agent message stays in the history, a task notification does not: " + std::to_string(agentEntries.size()));
     check(tail.localOutputs() == 0, "! output is no slash command's");
     check(tail.shellOutputs() == 2, "each ! output counts, also an empty one: " + std::to_string(tail.shellOutputs()));
     const std::string bangs = home.path + "/bangs.jsonl";

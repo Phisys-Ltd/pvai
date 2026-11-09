@@ -74,6 +74,14 @@ bool isBookkeeping(const json &line)
     return flag(line, "isMeta") || flag(line, "isCompactSummary") || flag(line, "isVisibleInTranscriptOnly");
 }
 
+bool isAgentMessage(const std::string &text)
+{
+    for (const char *mark : {"[Message ", "Another Claude session sent a message"})
+        if (text.rfind(mark, 0) == 0)
+            return true;
+    return false;
+}
+
 bool isMachinePrompt(const std::string &text)
 {
     static const char *const kTags[] = {
@@ -81,6 +89,8 @@ bool isMachinePrompt(const std::string &text)
         "local-command-stderr", "command-name", "command-message", "command-args", "bash-input",
         "bash-stdout", "bash-stderr", "artifact-content-authored-by-others", "user-prompt-submit-hook",
     };
+    if (isAgentMessage(text))
+        return true;
     if (text.empty() || text[0] != '<')
         return false;
     for (const char *tag : kTags) {
@@ -282,11 +292,7 @@ bool lastPromptSpoken(const std::string &path)
         const std::string text = stripPasteFrame(content.get<std::string>());
         if (isMachinePrompt(text) || text.empty() || text[0] == '/')
             continue;
-        bool machine = false;
-        for (const char *mark : {"[Message ", "Another Claude session sent a message", "<task-notification>"})
-            machine = machine || text.rfind(mark, 0) == 0;
-        if (!machine)
-            spoken = text.rfind("\xF0\x9F\x8E\x99 ", 0) == 0;
+        spoken = text.rfind("\xF0\x9F\x8E\x99 ", 0) == 0;
     }
     return spoken;
 }
@@ -583,7 +589,7 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
                 both += (hasOut && both.back() != '\n' ? "\n" : "") + err;
             if (hasOut || hasErr)
                 emit({{"kind", "output"}, {"text", cut(both, kMaxResult)}});
-        } else if (!isMachinePrompt(text)) {
+        } else if (!isMachinePrompt(text) || isAgentMessage(text)) {
             emit({{"kind", "prompt"}, {"text", cut(text, kMaxText)}});
         }
     };

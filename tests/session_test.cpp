@@ -2465,6 +2465,7 @@ esac
           "a subagent's hand-back after it is spoken too");
     check(said("<task-notification>\n<status>completed</status>\n</task-notification>") == json(true),
           "a task notification through UserPromptSubmit is spoken too");
+    check(said("<system-reminder>\nnote</system-reminder>") == json(true), "a machine tag through UserPromptSubmit leaves the voice state");
     check(saidUnseen() == json(true), "a turn whose Stop comes before the transcript shows it is spoken too");
     append(notification);
     check(waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "busy"; }, 1200).empty(),
