@@ -164,6 +164,7 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
     canPace_ = flag(registration, "paced");
     submitCheck_ = flag(registration, "submitCheck");
     typedUnchecked_ = flag(registration, "typedUnchecked");
+    clearIf_ = flag(registration, "clearIf");
     // A wrapper that registers again after a daemon restart has a running
     // Claude Code: idle, unless its transcript shows a turn going on.
     if (flag(registration, "running")) {
@@ -295,6 +296,7 @@ void ClaudeSession::submit(const Prompt &prompt)
     typedAt_ = static_cast<long long>(std::time(nullptr));
     queuedInClaude_ = false;
     queuedUntil_.reset();
+    typedText_ = slash ? std::string() : (prompt.voice ? kMicMark : "") + prompt.text;
     wrapper_.send({{"type", "type"}, {"text", (prompt.voice && !slash ? kMicMark : "") + prompt.text}, {"verify", verify}});
     if (verify_)
         inFlight_ = prompt;
@@ -450,6 +452,7 @@ void ClaudeSession::interrupt()
 {
     if (state_ != "busy" && !(state_ == "waiting" && dialog_ != "trust"))
         return;
+    host_.log(id_ + ": interrupt from the app (state " + state_ + (inFlight_ ? ", a prompt in flight" : "") + ")");
     wrapper_.send({{"type", "keys"}, {"data", "\x1b"}});
     if (dialog_ == "screen") { // Esc closes it; the screen says when
         retryIfBlocked();
@@ -640,6 +643,8 @@ void ClaudeSession::onHook(const json &event)
             if (!inFlight_)
                 dropQueued(str(event, "prompt"));
             confirmed = inFlight_;
+            if (!confirmed)
+                typedText_.clear(); // a prompt the owner typed started this turn
             delivered();
         } else if (inFlight_ && queuedInClaude_ && name == "Stop") {
             // Typed during the turn's last moments: Claude Code holds it in
@@ -1505,10 +1510,26 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
     if (!seen && !(forceIdle_ && escapeChecks_.empty()))
         return;
     escapeChecks_.clear();
+    const bool fromApp = forceIdle_;
+    host_.log(id_ + ": Esc ended the turn" + (seen ? " (the transcript says so)" : fromApp ? " (forced idle, no mark in the transcript)" : ""));
     state_ = "idle";
     limited_ = nullptr;
     turnOver();
     submitDeadline_.reset();
+    // Claude Code puts a prompt it has not answered back into the box, and the
+    // next paste would be glued to it: the wrapper empties the box when it
+    // holds the text the daemon typed (never the owner's own draft). Before
+    // anything is delivered. The prompt counts as cancelled, never typed again.
+    if (fromApp && clearIf_ && !typedText_.empty() && !slashPending_) {
+        host_.log(id_ + ": the box may hold the interrupted prompt, asking the wrapper to empty it if so");
+        wrapper_.send({{"type", "clear"}, {"if", typedText_}});
+        draft_ = true; // until the wrapper says (its `draft`)
+        typedText_.clear();
+    }
+    if (fromApp && seen && inFlight_ && !isSlash(inFlight_->text)) {
+        host_.log(id_ + ": the interrupted prompt is not typed again");
+        delivered();
+    }
     // Interrupted by the app and nothing in the transcript says so: the
     // session hung (a Claude Code without a login answers every prompt with
     // "Not logged in" and no hook); what waited for it goes, so it does not

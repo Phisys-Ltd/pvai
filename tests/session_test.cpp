@@ -1274,6 +1274,90 @@ esac
         }
     }
 
+    // 0.5.76: an Esc before any reply makes Claude Code put the unanswered
+    // prompt back into its box (a real 2.1.319 does); the next paste would be
+    // glued to it. After the app's interrupt the wrapper empties the box when
+    // it holds the text the daemon typed. The fake puts the text back on a
+    // lone Esc (mode restore) or does not (mode none).
+    {
+        const std::string tui = bin + "/fake-tui-esc.py";
+        writeFile(tui,
+                  "import os, sys, tty\n"
+                  "tty.setraw(0)\n"
+                  "log, mode = sys.argv[1], sys.argv[2]\n"
+                  "box = ''\n"
+                  "last = ''\n"
+                  "def draw():\n"
+                  "    rule = '\u2500' * 40\n"
+                  "    os.write(1, ('\\x1b[2J\\x1b[28;1H' + rule + '\\r\\n\u276f ' + box + '\\r\\n' + rule + '\\r\\n  ? for shortcuts').encode())\n"
+                  "def note(s):\n"
+                  "    with open(log, 'a') as f: f.write(s + '\\n')\n"
+                  "os.write(1, b'\\x1b[?2004h')\n"
+                  "draw()\n"
+                  "buf = b''\n"
+                  "while True:\n"
+                  "    data = os.read(0, 4096)\n"
+                  "    if not data: break\n"
+                  "    buf += data\n"
+                  "    while buf:\n"
+                  "        if buf.startswith(b'\\x1b[200~'):\n"
+                  "            end = buf.find(b'\\x1b[201~')\n"
+                  "            if end < 0: break\n"
+                  "            box += buf[6:end].decode()\n"
+                  "            buf = buf[end + 6:]\n"
+                  "            note('P:' + box)\n"
+                  "        elif buf == b'\\x1b':\n"
+                  "            buf = b''\n"
+                  "            if mode == 'restore' and last: box = last\n"
+                  "            note('E:' + box)\n"
+                  "        elif buf[:1] == b'\\x1b':\n"
+                  "            if len(buf) < 6: break\n"
+                  "            buf = buf[6:]\n"
+                  "        else:\n"
+                  "            c = buf[:1]; buf = buf[1:]\n"
+                  "            if c == b'\\r':\n"
+                  "                note('S:' + box); last = box; box = ''\n"
+                  "            elif c == b'\\x15': box = ''\n"
+                  "            elif c == b'\\x7f': box = box[:-1]\n"
+                  "            elif c != b'\\x0b': box += c.decode()\n"
+                  "        draw()\n",
+                  false);
+        const auto lines = [](const std::string &file) {
+            std::vector<std::string> out;
+            std::istringstream in(readFile(file));
+            for (std::string l; std::getline(in, l);)
+                out.push_back(l);
+            return out;
+        };
+        for (const std::string mode : {"restore", "none"}) {
+            const std::string id = "wesc-" + mode;
+            const std::string log = home + "/" + id + ".log";
+            const std::string pidFile = home + "/" + id + ".pid";
+            (void)std::system(("cd '" + project + "' && " + g_pvai + " run --detached --id " + id + " -- python3 '" + tui + "' '" + log + "' " + mode
+                               + " >/dev/null 2>&1 & echo $! > '" + pidFile + "'").c_str());
+            check(!waitSession(a, id, [](const json &) { return true; }, 3000).empty(), id + ": the wrapper registers");
+            hook(id, {{"hook_event_name", "SessionStart"}, {"session_id", id + "-1"}, {"source", "startup"}});
+            check(!waitSession(a, id, [](const json &s) { return s.value("state", "") == "idle"; }).empty(), id + ": idle");
+            a.send({{"type", "prompt"}, {"ref", 160}, {"session", id}, {"text", "write a story about a cat"}});
+            for (int i = 0; i < 80 && lines(log).size() < 2; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            hook(id, {{"hook_event_name", "UserPromptSubmit"}, {"session_id", id + "-1"}, {"prompt", "write a story about a cat"}});
+            // Quickly, within the wrapper's 1.5 s check that the Return took: the restored
+            // prompt is no Return that did not take, no second Return for it.
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            a.send({{"type", "interrupt"}, {"ref", 161}, {"session", id}});
+            check(!a.next("interrupting").empty(), id + ": interrupting");
+            check(!waitSession(a, id, [](const json &s) { return s.value("state", "") == "idle"; }, 8000).empty(), id + ": idle after the interrupt");
+            a.send({{"type", "prompt"}, {"ref", 162}, {"session", id}, {"text", "/compact"}});
+            for (int i = 0; i < 80 && lines(log).size() < 5; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            const std::string restored = mode == "restore" ? "E:write a story about a cat" : "E:";
+            check(lines(log) == std::vector<std::string>({"P:write a story about a cat", "S:write a story about a cat", restored, "P:/compact", "S:/compact"}),
+                  id + ": the restored prompt is emptied before the next paste: [" + readFile(log) + "]");
+            (void)std::system(("kill $(cat '" + pidFile + "') 2>/dev/null").c_str());
+        }
+    }
+
     // 0.5.44: a typed ok:false without a screen is retried; trust answered in
     // the terminal; dialog keys; big hook events.
     {

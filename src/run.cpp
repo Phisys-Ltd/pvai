@@ -5,6 +5,7 @@
 #include "run.h"
 #include "screen.h"
 #include "service.h"
+#include "text.h"
 
 #include <fcntl.h>
 #include <poll.h>
@@ -547,7 +548,7 @@ int runWrapper(const WrapperOptions &options)
     auto registerSelf = [&] {
         daemon->send({{"type", "register"}, {"version", kVersion}, {"id", id}, {"label", label}, {"cwd", cwd},
                       {"pid", static_cast<int>(::getpid())}, {"running", registered}, {"detached", detached},
-                      {"restart", true}, {"verify", true}, {"modes", true}, {"clear", true}, {"paced", true}, {"submitCheck", true}, {"typedUnchecked", true}});
+                      {"restart", true}, {"verify", true}, {"modes", true}, {"clear", true}, {"paced", true}, {"submitCheck", true}, {"typedUnchecked", true}, {"clearIf", true}});
         if (draft.dirty() || shellShown)
             reportDraft(true);
         if (trustAsked)
@@ -791,6 +792,10 @@ int runWrapper(const WrapperOptions &options)
                     startType(message);
                 } else if (type == "keys") {
                     toMaster += message.value("data", "");
+                    // The app's Esc: a prompt Claude Code puts back into the box is not
+                    // a Return that did not take, no second Return for it.
+                    if (message.value("data", "") == "\x1b")
+                        submitCheck.reset();
                 } else if (type == "paced") {
                     // Keys for a dialog that needs a moment between them (a
                     // choice, then text into the field it opens, then Return).
@@ -806,8 +811,15 @@ int runWrapper(const WrapperOptions &options)
                 } else if (type == "label") {
                     label = message.value("label", label);
                 } else if (type == "clear") {
-                    leftover = false;
-                    clearBox();
+                    // With `if`: only when the box holds that text and the owner
+                    // typed nothing (Claude Code put an interrupted prompt back).
+                    const std::string only = pvai::str(message, "if");
+                    if (only.empty() || (!draft.dirty() && !shellShown && !typing && paced.empty() && promptStands(screen, only))) {
+                        leftover = false;
+                        clearBox();
+                    } else {
+                        reportDraft(true); // the box stays: the daemon hears how things are
+                    }
                 } else if (type == "snapshot") {
                     daemon->send({{"type", "snapshot"}, {"screen", screenSnapshot(screen)}});
                 } else if (type == "terminate") {

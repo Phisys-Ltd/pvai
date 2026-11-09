@@ -133,6 +133,11 @@ private:
     // The app asked to stop the turn: if no interrupt shows up in the
     // transcript, the turn is given up anyway and the queue dropped.
     bool forceIdle_ = false;
+    // The text of the prompt the daemon typed last (with the mic mark), while
+    // its turn is the one running: what Claude Code puts back into the box
+    // when an Esc comes before any reply.
+    std::string typedText_;
+    bool clearIf_ = false; // the wrapper can empty the box only when it holds that text (`clearIf`)
     // A prompt went in; UserPromptSubmit should confirm it by then. Claude
     // Code without a login answers "Not logged in" and fires no hook.
     std::optional<Clock::time_point> submitDeadline_;

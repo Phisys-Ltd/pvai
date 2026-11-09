@@ -377,6 +377,14 @@ daemon knows every live one on its host.
   not go in. `pvai daemon stop|restart`
   prints how many sessions run a `pvai run` that is not its own version
   (the daemon lists the wrappers' versions in `shutting-down.wrappers`).
+  `clearIf` (0.5.76) says the wrapper understands `{"type": "clear", "if":
+  "<text>"}`: it empties the box only when the box holds exactly that text,
+  the owner has typed nothing and no shell mode is on, else it leaves the
+  box alone and reports its `draft` as it is. After the app's `interrupt`
+  the daemon sends it with the text of the prompt it typed: Claude Code
+  puts a prompt it has not answered back into the box on an Esc, and the
+  next paste would be glued to it. A `clear` without `if` empties the box
+  unconditionally, as before.
 - `limited` (since 0.5.50): `null`, or `{"resetsAt": <Unix seconds, null
   when unknown>, "type": "<rateLimitType, e.g. five_hour|seven_day, or
   null>", "text": "<the assistant's text, one line>"}` while a Claude Code
@@ -493,7 +501,7 @@ Daemon to app:
 | `answered` | `ref`, `session` | the keys went in |
 | `renamed` | `ref`, `session`, `label` | the session carries `label` (trimmed) now; the `sessions` list follows |
 | `inputCleared` | `ref`, `session` | the keys for `clearInput` went in; `draft` and the state follow from the screen |
-| `interrupting` | `ref`, `session` | the Esc went in; the session turns `idle` when the transcript shows the interrupt, or after about 4 s anyway, then with its queue dropped (a hung session, such as one without a login) |
+| `interrupting` | `ref`, `session` | the Esc went in; the session turns `idle` when the transcript shows the interrupt, or after about 4 s anyway, then with its queue dropped (a hung session, such as one without a login). The prompt that was interrupted counts as cancelled and is never typed again; the prompt box is emptied first when Claude Code put the prompt back into it (`clearIf`, see `register`) |
 | `restarting` | `ref`, `session` | the session is ending for a restart; it goes `starting`, then `idle` again with the same `id` |
 | `stopping` | `ref`, `session` | the session is told to end; it leaves `sessions` when it has |
 | `projects` | `dirs: [path]` | most recently used first |
