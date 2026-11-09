@@ -74,6 +74,30 @@ json waitSession(LineClient &client, const std::string &id, const std::function<
     return sessionIn(found, id);
 }
 
+// Everything the app hears for `ms`: whether the session was ever listed as
+// waiting or with a dialog, and the kinds of attention raised for it.
+struct Observed {
+    bool shown = false;
+    std::vector<std::string> attention;
+    bool has(const std::string &kind) const { return std::find(attention.begin(), attention.end(), kind) != attention.end(); }
+};
+Observed observe(LineClient &client, const std::string &id, int ms)
+{
+    Observed seen;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < until) {
+        const json m = client.next(static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now()).count()));
+        if (!m.is_object() || m.empty())
+            break;
+        if (m.value("type", "") == "attention" && m.value("session", "") == id)
+            seen.attention.push_back(m.value("kind", ""));
+        const json entry = sessionIn(m, id);
+        if (!entry.empty() && (entry.value("state", "") == "waiting" || !entry.value("dialog", json()).is_null()))
+            seen.shown = true;
+    }
+    return seen;
+}
+
 // ---- A fake Codex app server: one WebSocket client on its control socket.
 
 class FakeCodex : public FakeServer {
@@ -1058,6 +1082,7 @@ esac
               "accepted says queued until Claude Code confirms");
         json typing = ver.next("type");
         check(typing.value("text", "") == "eins" && typing.value("verify", false), "it is typed with verify");
+        ver.send({{"type", "screen"}, {"dialog", "Something new\n\xE2\x9D\xAF 1. Yes"}, {"prompt", false}}); // a real dialog stands
         ver.send({{"type", "typed"}, {"ok", false}, {"screen", "Something new\n\xE2\x9D\xAF 1. Yes"}});
         check(a.next("attention").value("text", "") == "Something new\n\xE2\x9D\xAF 1. Yes", "the owner is asked with the screen's lines");
         json blocked = waitSession(a, "wver", [](const json &s) { return s.value("dialog", json()) == "screen"; });
@@ -1090,6 +1115,7 @@ esac
         check(ver.next("keys").value("data", "") == "\x1b", "the owner answers");
         typing = ver.next("type");
         check(typing.value("text", "") == "zwei" && typing.value("verify", false), "then it goes in again");
+        ver.send({{"type", "screen"}, {"dialog", "?"}, {"prompt", false}});
         ver.send({{"type", "typed"}, {"ok", false}, {"screen", "?"}});
         check(!waitSession(a, "wver", [](const json &s) { return s.value("dialog", json()) == "screen"; }).empty(), "blocked once more");
         a.send({{"type", "answer"}, {"ref", 33}, {"session", "wver"}, {"choice", "send"}});
@@ -1497,6 +1523,7 @@ esac
         a.send({{"type", "clearInput"}, {"ref", 43}, {"session", "wclr"}});
         check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 43; }).value("reason", "") == "busy",
               "not while a prompt is going in");
+        clr.send({{"type", "screen"}, {"dialog", "!  echo old"}, {"prompt", false}});
         clr.send({{"type", "typed"}, {"ok", false}, {"screen", "!  echo old"}});
         json blocked = waitSession(a, "wclr", [](const json &s) { return s.value("dialog", json()) == "screen"; });
         check(blocked.value("inputClearable", false), "blocked by the box: clearable: " + blocked.dump());
@@ -1561,8 +1588,8 @@ esac
             const std::string log = home + "/plain.log";
             const std::string pidFile = launch("wplain", log, "plain");
             a.send({{"type", "prompt"}, {"ref", 122}, {"session", "wplain"}, {"text", "diktat"}});
-            check(!a.next("attention", [](const json &m) { return m.value("session", "") == "wplain" && m.value("kind", "") == "screen"; }, 6000).empty(),
-                  "the box never shows the paste: the owner sees the screen");
+            check(!a.next("attention", [](const json &m) { return m.value("session", "") == "wplain" && m.value("kind", "") == "screen"; }, 30000).empty(),
+                  "the box never shows the paste: the owner sees the screen once the retries are over");
             std::this_thread::sleep_for(std::chrono::milliseconds(1500)); // the wrapper has emptied the box
             a.send({{"type", "answer"}, {"ref", 123}, {"session", "wplain"}, {"choice", "send"}});
             check(!a.next("attention", [](const json &m) { return m.value("session", "") == "wplain" && m.value("kind", "") == "stuck"; }, 40000).empty(),
@@ -1584,6 +1611,7 @@ esac
         check(!waitSession(a, "wlost", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "a lost-prompt test session");
         a.send({{"type", "prompt"}, {"ref", 130}, {"session", "wlost"}, {"text", "ein langer diktierter Satz"}});
         check(lw.next("type").value("verify", false), "typed with the check");
+        lw.send({{"type", "screen"}, {"dialog", "busy"}, {"prompt", false}});
         lw.send({{"type", "typed"}, {"ok", false}, {"screen", "busy"}});
         check(!waitSession(a, "wlost", [](const json &s) { return s.value("dialog", json()) == "screen"; }).empty(), "blocked");
         a.send({{"type", "answer"}, {"ref", 131}, {"session", "wlost"}, {"choice", "send"}});
@@ -3037,6 +3065,111 @@ esac
         screen(false);
         check(!waitSession(a, "wquiet", [](const json &s) { return s.value("state", "") == "idle" && !s.value("limited", json()).is_object(); }, 6000).empty(),
               "a free prompt with no work gives the limit up");
+    }
+
+    // A failed typed check that pvai retries by itself on a free screen shows
+    // the app no dialog and raises no attention; after three failures, or
+    // with a real dialog on the screen, it does.
+    {
+        LineClient fw;
+        fw.send({{"type", "register"}, {"version", kVersion}, {"id", "wflash"}, {"cwd", project}, {"label", "flash"}, {"restart", true}, {"verify", true}});
+        hook("wflash", {{"hook_event_name", "SessionStart"}, {"session_id", "flash-1"}, {"source", "startup"}});
+        check(!waitSession(a, "wflash", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "flash: a session");
+        fw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
+        auto shownDialog = [&](const json &s) { return s.value("state", "") == "waiting" || !s.value("dialog", json()).is_null(); };
+        // (c) free screen: no waiting/screen state, no attention, typed again
+        a.send({{"type", "prompt"}, {"ref", 180}, {"session", "wflash"}, {"text", "eins"}});
+        check(fw.next("type").value("text", "") == "eins", "flash (c): typed");
+        fw.send({{"type", "typed"}, {"ok", false}, {"screen", "busy box"}});
+        const Observed c = observe(a, "wflash", 1500);
+        check(!c.shown && c.attention.empty(), "flash (c): no dialog and no attention during the retry");
+        check(fw.next("type", {}, 5000).value("text", "") == "eins", "flash (c): typed again");
+        fw.send({{"type", "typed"}, {"ok", true}});
+        hook("wflash", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "flash-1"}, {"prompt", "eins"}});
+        hook("wflash", {{"hook_event_name", "Stop"}, {"session_id", "flash-1"}, {"last_assistant_message", "ok"}});
+        check(!waitSession(a, "wflash", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "flash (c): idle again");
+        // (d) three failures: the dialog and the attention appear
+        a.send({{"type", "prompt"}, {"ref", 181}, {"session", "wflash"}, {"text", "zwei"}});
+        for (int i = 0; i < 3; ++i) {
+            check(fw.next("type", {}, 6000).value("text", "") == "zwei", "flash (d): try " + std::to_string(i + 1));
+            fw.send({{"type", "typed"}, {"ok", false}, {"screen", "busy box"}});
+            if (i < 2) {
+                fw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
+                const Observed hidden = observe(a, "wflash", 400);
+                check(!hidden.shown && hidden.attention.empty(), "flash (d): still hidden after failure " + std::to_string(i + 1));
+            }
+        }
+        const Observed d = observe(a, "wflash", 1500);
+        check(d.shown && d.has("stuck") && d.has("screen"), "flash (d): the dialog and the attention show after the last failure");
+        a.send({{"type", "answer"}, {"ref", 182}, {"session", "wflash"}, {"choice", "send"}});
+        check(fw.next("type", {}, 3000).value("text", "") == "zwei", "flash (d): the owner's send types it");
+        fw.send({{"type", "typed"}, {"ok", true}});
+        hook("wflash", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "flash-1"}, {"prompt", "zwei"}});
+        hook("wflash", {{"hook_event_name", "Stop"}, {"session_id", "flash-1"}, {"last_assistant_message", "ok"}});
+        check(!waitSession(a, "wflash", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "flash (d): idle again");
+        // (e) a real dialog on the screen: shown at once
+        a.send({{"type", "prompt"}, {"ref", 183}, {"session", "wflash"}, {"text", "drei"}});
+        check(fw.next("type").value("text", "") == "drei", "flash (e): typed");
+        const std::string q = "How is Claude doing this session? (optional)\n  1: Bad  2: Fine";
+        fw.send({{"type", "screen"}, {"dialog", q}, {"prompt", false}});
+        fw.send({{"type", "typed"}, {"ok", false}, {"screen", q}});
+        const Observed e = observe(a, "wflash", 1500);
+        check(e.shown && e.has("screen"), "flash (e): the dialog shows at once, with its attention");
+        fw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
+        check(fw.next("type", {}, 4000).value("text", "") == "drei", "flash (e): typed once the dialog is gone");
+        fw.send({{"type", "typed"}, {"ok", true}});
+        hook("wflash", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "flash-1"}, {"prompt", "drei"}});
+        hook("wflash", {{"hook_event_name", "Stop"}, {"session_id", "flash-1"}, {"last_assistant_message", "ok"}});
+    }
+
+    // The app interrupts a slash command (Claude Code puts it back into the
+    // box): the wrapper is asked to empty the box if it holds that text, the
+    // slash command is not typed again, and the next one goes in only after
+    // the wrapper's draft report.
+    {
+        LineClient ew;
+        ew.send({{"type", "register"}, {"version", kVersion}, {"id", "wslashesc"}, {"cwd", project}, {"label", "slashesc"}, {"restart", true}, {"verify", true},
+                 {"clear", true}, {"submitCheck", true}, {"clearIf", true}});
+        const std::string escTr = home + "/slashesc-tr/slashesc-1.jsonl";
+        writeFile(escTr, userLine("start"));
+        hook("wslashesc", {{"hook_event_name", "SessionStart"}, {"session_id", "slashesc-1"}, {"source", "startup"}, {"transcript_path", escTr}});
+        check(!waitSession(a, "wslashesc", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "slash Esc: a session");
+        ew.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}, {"working", true}}); // a compaction shows work
+        a.send({{"type", "prompt"}, {"ref", 170}, {"session", "wslashesc"}, {"text", "/compact"}});
+        check(ew.next("type").value("text", "") == "/compact", "slash Esc: typed");
+        ew.send({{"type", "typed"}, {"ok", true}});
+        check(!waitSession(a, "wslashesc", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "slash Esc: busy");
+        a.send({{"type", "interrupt"}, {"ref", 171}, {"session", "wslashesc"}});
+        const json clear = ew.next("clear", {}, 8000);
+        check(!clear.empty() && clear.value("if", "") == "/compact", "slash Esc: the box is emptied if it holds the command: " + clear.dump());
+        a.send({{"type", "prompt"}, {"ref", 172}, {"session", "wslashesc"}, {"text", "/compact"}});
+        check(ew.next("type", {}, 800).empty(), "slash Esc: nothing goes in before the wrapper's draft report");
+        ew.send({{"type", "draft"}, {"dirty", false}});
+        check(ew.next("type", {}, 3000).value("text", "") == "/compact", "slash Esc: the next command goes in alone after it");
+        ew.send({{"type", "typed"}, {"ok", true}});
+    }
+
+    // A slash command typed after the screen has been free for longer than
+    // the quiet time is not taken as done before the quiet time has passed
+    // since it was typed.
+    {
+        LineClient qs;
+        qs.send({{"type", "register"}, {"version", kVersion}, {"id", "wquietslash"}, {"cwd", project}, {"label", "quietslash"}, {"restart", true}, {"verify", true},
+                 {"clear", true}, {"submitCheck", true}});
+        const std::string qsTr = home + "/quietslash-tr/quietslash-1.jsonl";
+        writeFile(qsTr, userLine("start"));
+        hook("wquietslash", {{"hook_event_name", "SessionStart"}, {"session_id", "quietslash-1"}, {"source", "startup"}, {"transcript_path", qsTr}});
+        check(!waitSession(a, "wquietslash", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "late slash: a session");
+        qs.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}, {"working", false}});
+        std::this_thread::sleep_for(std::chrono::milliseconds(900)); // well over the 0.25 s quiet time
+        a.send({{"type", "prompt"}, {"ref", 173}, {"session", "wquietslash"}, {"text", "/foo"}});
+        check(qs.next("type").value("text", "") == "/foo", "late slash: typed");
+        qs.send({{"type", "typed"}, {"ok", true}});
+        check(!waitSession(a, "wquietslash", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "late slash: busy");
+        check(waitSession(a, "wquietslash", [](const json &s) { return s.value("state", "") != "busy"; }, 150).empty(),
+              "late slash: not done before the quiet time since it was typed");
+        check(!waitSession(a, "wquietslash", [](const json &s) { return s.value("state", "") == "idle"; }, 3000).empty(),
+              "late slash: done afterwards");
     }
 
     // ---- Hooks: pvai run puts them in place, once.

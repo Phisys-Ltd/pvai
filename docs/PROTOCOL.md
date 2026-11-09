@@ -183,7 +183,12 @@ daemon knows every live one on its host.
   again. A prompt whose typed check failed is typed again at most 3
   times, and only after a pause of 2 s, then 4 s, so a
   screen that stays the same (a survey, a busy box) is not typed into
-  over and over; the `screen` attention text is the last lines above the
+  over and over. While such a retry is pending and the screen shows no
+  dialog of its own (since 0.5.77), the session is published `busy` with
+  no `dialog` and raises no `screen` attention: the prompt is on its way.
+  The dialog and its attention appear at once when a real dialog shows up
+  or the owner acts, after the last failed try (then with `stuck`), or when
+  the retry has not happened a few seconds after its pause; the `screen` attention text is the last lines above the
   prompt box (or the dialog's first lines), up to 4 lines and 300 bytes; when
   the prompt that did not go in stands unsent in the box (since 0.5.72) it
   is `The prompt stands in the box, not sent: ` and its first 60 characters
@@ -383,7 +388,10 @@ daemon knows every live one on its host.
   box alone and reports its `draft` as it is. After the app's `interrupt`
   the daemon sends it with the text of the prompt it typed: Claude Code
   puts a prompt it has not answered back into the box on an Esc, and the
-  next paste would be glued to it. A `clear` without `if` empties the box
+  next paste would be glued to it. A slash command (since 0.5.77) counts
+  like any prompt, also with the argument hint Claude Code draws behind it
+  (`/compact <optional custom summarization instructions>`); a shell
+  command never does. A `clear` without `if` empties the box
   unconditionally, as before.
 - `limited` (since 0.5.50): `null`, or `{"resetsAt": <Unix seconds, null
   when unknown>, "type": "<rateLimitType, e.g. five_hour|seven_day, or

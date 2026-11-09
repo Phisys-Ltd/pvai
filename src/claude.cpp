@@ -39,6 +39,7 @@ constexpr auto kSubmitTimeout = std::chrono::seconds(15);
 // and checks for up to 2 s: an answer within 5 s is normal, so wait well past it
 // (a late `typed` after the daemon gave up would type the prompt twice).
 constexpr auto kTypedTimeout = std::chrono::seconds(8);
+constexpr auto kQuietRetryGrace = std::chrono::seconds(5); // a retried failure stays hidden this long after its pause
 constexpr int kTypedTries = 3; // typed checks that may fail before the prompt waits for the owner
 constexpr auto kModelTimeout = std::chrono::seconds(30); // a /model with no output by then has failed
 constexpr auto kRetryAfter = std::chrono::milliseconds(600);
@@ -225,6 +226,13 @@ json ClaudeSession::describe() const
     sortByStart(running);
     entry["subagents"] = std::move(running);
     entry["limited"] = limited_;
+    // A failed typed check that is retried by itself on a free screen is no
+    // dialog: the prompt is on its way (internally the session waits).
+    if (quietRetry_ && blocked_ && state_ == "waiting" && dialog_ == "screen") {
+        entry["state"] = "busy";
+        entry["dialog"] = nullptr;
+        entry["dialogInfo"] = nullptr;
+    }
     if (inFlight_) // typed, not confirmed yet
         entry["queued"] = entry.value("queued", 0) + 1;
     return entry;
@@ -269,6 +277,7 @@ void ClaudeSession::markSlash(const Prompt &prompt)
     slashModel_ = prompt.modelSwitch;
     slashShell_ = prompt.text[0] == '!';
     slashMark_ = localDone();
+    slashSince_ = Clock::now();
     slashText_ = prompt.text;
     slashCompact_ = prompt.text == "/compact" || prompt.text.rfind("/compact ", 0) == 0;
     compactMark_ = tail_.compactions();
@@ -296,7 +305,10 @@ void ClaudeSession::submit(const Prompt &prompt)
     typedAt_ = static_cast<long long>(std::time(nullptr));
     queuedInClaude_ = false;
     queuedUntil_.reset();
-    typedText_ = slash ? std::string() : (prompt.voice ? kMicMark : "") + prompt.text;
+    // What the box holds if the app interrupts it: a slash command comes back
+    // into the box like a prompt (a shell command never: the wrapper refuses
+    // while shell mode shows).
+    typedText_ = prompt.text[0] == '!' ? std::string() : (prompt.voice && !slash ? kMicMark : "") + prompt.text;
     wrapper_.send({{"type", "type"}, {"text", (prompt.voice && !slash ? kMicMark : "") + prompt.text}, {"verify", verify}});
     if (verify_)
         inFlight_ = prompt;
@@ -631,6 +643,7 @@ void ClaudeSession::onHook(const json &event)
     std::optional<Prompt> confirmed; // the prompt this hook confirms, when the daemon typed it
     if (name == "UserPromptSubmit" || name == "Stop" || name == "SessionStart") {
         blocked_ = false; // the prompt is Claude's again
+        quietRetry_ = false;
         retryAt_.reset();
         typedDeadline_.reset();
         if (name == "UserPromptSubmit") {
@@ -1004,6 +1017,8 @@ void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::st
     screenAt_.reset();
     promptFree_ = prompt;
     if (blocked_) {
+        if (!text.empty())
+            revealRetry(); // a real dialog stands: shown at once
         if (!text.empty() && member(dialogInfo_, "text") != json(text)) {
             dialogInfo_ = screenInfo(text);
             changed();
@@ -1103,9 +1118,12 @@ void ClaudeSession::onTyped(bool ok, const std::string &screen, const std::strin
         sameFails_ = screen == failedScreen_ ? sameFails_ + 1 : 1;
         failedScreen_ = screen;
         host_.log(id_ + ": typed check failed");
-        notDelivered(screen, true);
+        notDelivered(screen, true, screenText_.empty());
         typedPauseUntil_ = Clock::now() + kTypedRetryBase * (1 << std::min(sameFails_ - 1, 3));
         retryAt_ = *typedPauseUntil_;
+        // Hidden from the app only while the retry can still happen: a screen
+        // that never shows a free prompt again must not leave it busy forever.
+        quietUntil_ = *typedPauseUntil_ + kQuietRetryGrace;
         return;
     }
     if (inFlight_->text[0] == '/' || inFlight_->text[0] == '!') {
@@ -1177,7 +1195,7 @@ void ClaudeSession::lost(const Prompt &prompt, const std::string &why)
 
 // The prompt did not go in: in front of the queue again, and the session
 // waits on the screen until the prompt box is free.
-void ClaudeSession::notDelivered(const std::string &screen, bool retry)
+void ClaudeSession::notDelivered(const std::string &screen, bool retry, bool quiet)
 {
     // Its own prompt stands unsent in the box: say that, the lines above the
     // box are only the conversation and read as if it had gone.
@@ -1192,7 +1210,9 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry)
     typedDeadline_.reset();
     submitDeadline_.reset();
     turnOver();
-    const bool asked = dialog_ == "screen";
+    const bool asked = dialog_ == "screen" && !quietRetry_; // a hidden one was never shown
+    quietRetry_ = quiet;
+    quietGist_.clear();
     blocked_ = true;
     retryOnPrompt_ = retry;
     retryAt_.reset();
@@ -1206,7 +1226,11 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry)
         std::string first = stands.substr(0, stands.find('\n'));
         if (first.size() > 60)
             first.resize(utf8Boundary(first, 60));
-        attention("screen", stands.empty() ? screenGist(screen) : "The prompt stands in the box, not sent: " + first);
+        const std::string gist = stands.empty() ? screenGist(screen) : "The prompt stands in the box, not sent: " + first;
+        if (quiet)
+            quietGist_ = gist; // said when the retry turns into a dialog
+        else
+            attention("screen", gist);
     }
     changed();
 }
@@ -1214,6 +1238,7 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry)
 // The keys went to a screen the daemon is waiting on: look at it again in a moment.
 void ClaudeSession::retryIfBlocked()
 {
+    revealRetry(); // the owner is acting on it: show what it is
     if (blocked_) {
         typedPauseUntil_.reset(); // the owner acted
         retryOnPrompt_ = true;
@@ -1234,8 +1259,19 @@ bool ClaudeSession::typedPause() const
     return typedPauseUntil_ && Clock::now() < *typedPauseUntil_;
 }
 
+// A retried failure that was kept from the app becomes a dialog.
+void ClaudeSession::revealRetry()
+{
+    if (!quietRetry_)
+        return;
+    quietRetry_ = false;
+    attention("screen", quietGist_.empty() ? screenGist(screenText_) : quietGist_);
+    changed();
+}
+
 void ClaudeSession::unblock()
 {
+    quietRetry_ = false;
     blocked_ = false;
     typedPauseUntil_.reset();
     retryAt_.reset();
@@ -1298,6 +1334,8 @@ void ClaudeSession::onSubmitted(bool ok, const std::string &why, const std::stri
 {
     if (ok && !why.empty())
         host_.log(id_ + ": submitted (" + why + ")");
+    if (ok && slashPending_)
+        slashSince_ = Clock::now();
     if (ok || !submitCheck_)
         return;
     if (slashPending_) {
@@ -1373,6 +1411,8 @@ void ClaudeSession::tick(Clock::time_point now)
     }
     if (typedDeadline_ && now >= *typedDeadline_) // the wrapper never answered
         notDelivered("", true);
+    if (quietRetry_ && now >= quietUntil_)
+        revealRetry();
     if (retryAt_ && now >= *retryAt_) {
         retryAt_.reset();
         if (blocked_ && promptFree_ && screenText_.empty() && !typedPause())
@@ -1453,9 +1493,11 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
         next = std::min(next, *typedDeadline_);
     if (retryAt_)
         next = std::min(next, *retryAt_);
+    if (quietRetry_)
+        next = std::min(next, quietUntil_);
     if (idleScreenSince_) {
         if (slashPending_ && !slashModel_)
-            next = std::min(next, *idleScreenSince_ + screenQuiet(slashShell_ ? kShellQuiet : kSlashQuiet));
+            next = std::min(next, quietFrom() + screenQuiet(slashShell_ ? kShellQuiet : kSlashQuiet));
         if (limited_.is_object() && !member(limited_, "resetsAt").is_number())
             next = std::min(next, *idleScreenSince_ + screenQuiet(kLimitQuiet));
     }
@@ -1520,7 +1562,7 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
     // next paste would be glued to it: the wrapper empties the box when it
     // holds the text the daemon typed (never the owner's own draft). Before
     // anything is delivered. The prompt counts as cancelled, never typed again.
-    if (fromApp && clearIf_ && !typedText_.empty() && !slashPending_) {
+    if (fromApp && clearIf_ && !typedText_.empty()) {
         host_.log(id_ + ": the box may hold the interrupted prompt, asking the wrapper to empty it if so");
         wrapper_.send({{"type", "clear"}, {"if", typedText_}});
         draft_ = true; // until the wrapper says (its `draft`)
@@ -1607,6 +1649,13 @@ bool ClaudeSession::limitExpired() const
     return now - limitedSince_ > (week ? 7 * 24 * 3600 : 5 * 3600) + kLimitGrace.count();
 }
 
+// The quiet time of a slash command counts from the later of the free screen
+// and the command itself (the screen may have been idle long before it).
+Clock::time_point ClaudeSession::quietFrom() const
+{
+    return slashSince_ ? std::max(*idleScreenSince_, *slashSince_) : *idleScreenSince_;
+}
+
 // A slash or shell command that wrote no output and fired no hook: the
 // screen has shown a free prompt and no work for a while. A running
 // compaction or command shows its status line and never counts. (/model
@@ -1614,7 +1663,7 @@ bool ClaudeSession::limitExpired() const
 bool ClaudeSession::slashAbandoned(Clock::time_point now) const
 {
     return slashPending_ && !slashModel_ && state_ == "busy" && !inFlight_ && idleScreenSince_
-        && now - *idleScreenSince_ >= screenQuiet(slashShell_ ? kShellQuiet : kSlashQuiet);
+        && now - quietFrom() >= screenQuiet(slashShell_ ? kShellQuiet : kSlashQuiet);
 }
 
 bool ClaudeSession::limitAhead(const json &limited)

@@ -92,7 +92,8 @@ private:
     void modeDone(const std::string &state, const std::string &error = {});
     void delivered();
     void dropQueued(const std::string &text);
-    void notDelivered(const std::string &screen, bool retry);
+    void notDelivered(const std::string &screen, bool retry, bool quiet = false);
+    void revealRetry();
     void lost(const Prompt &prompt, const std::string &why);
     void unblock();
     void retryIfBlocked();
@@ -188,6 +189,9 @@ private:
     std::optional<Clock::time_point> typedDeadline_;
     bool snapshotPending_ = false;
     bool blocked_ = false;
+    bool quietRetry_ = false; // blocked by a failed typed check that is retried: the app sees busy, no dialog
+    std::string quietGist_;
+    Clock::time_point quietUntil_{};
     bool retryOnPrompt_ = false;
     std::optional<Clock::time_point> typedPauseUntil_; // no retry typing before this (failed typed check)
     std::string failedScreen_;
@@ -198,6 +202,8 @@ private:
     // work at all (the wrapper says so): what ends a slash or shell command
     // that wrote no output and fired no hook, and a limit with no reset time.
     std::optional<Clock::time_point> idleScreenSince_;
+    std::optional<Clock::time_point> slashSince_; // the pending slash command went in (or was submitted) then
+    Clock::time_point quietFrom() const;          // needs idleScreenSince_
     static constexpr std::chrono::seconds kSlashQuiet{10};
     static constexpr std::chrono::seconds kShellQuiet{20};
     static constexpr std::chrono::seconds kLimitQuiet{120};
