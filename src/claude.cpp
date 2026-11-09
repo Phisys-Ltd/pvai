@@ -20,6 +20,19 @@ namespace {
 
 // What Claude Code writes into the transcript when the owner interrupts a
 // turn with Esc; no hook fires for that.
+// How long the screen must show a free prompt and no work before a pending
+// slash command, shell command or limit without a reset time is given up.
+// PVAI_QUIET_DIV (a test knob) divides the times.
+std::chrono::milliseconds screenQuiet(std::chrono::seconds base)
+{
+    static const long divisor = [] {
+        const char *text = std::getenv("PVAI_QUIET_DIV");
+        const long n = text ? std::atol(text) : 1;
+        return n >= 1 ? n : 1L;
+    }();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(base) / divisor;
+}
+
 const char *kInterruptMark = "[Request interrupted by user";
 constexpr auto kSubmitTimeout = std::chrono::seconds(15);
 constexpr auto kTypedTimeout = std::chrono::seconds(5); // the wrapper checks for up to 2 s
@@ -178,7 +191,7 @@ ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration
                         // A model's quota: idle at once, the owner switches model.
                         state_ = "idle";
                     } else if (limitAhead(tail_.limited())) {
-                        limited_ = tail_.limited();
+                        setLimited(tail_.limited(), unixTime(tail_.limitedAt()));
                         state_ = "busy";
                     } else {
                         state_ = "idle";
@@ -962,8 +975,14 @@ static std::string promptInBox(const std::string &screen, const std::string &tex
 // A dialog no hook reports, read off the screen by the wrapper (empty: it
 // is gone). At a free prompt it counts at once; in a turn only after a
 // moment, since a permission dialog's hook may still be on its way.
-void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::string &mode, bool login)
+void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::string &mode, bool login, std::optional<bool> working)
 {
+    if (prompt && text.empty() && working == false) {
+        if (!idleScreenSince_)
+            idleScreenSince_ = Clock::now();
+    } else {
+        idleScreenSince_.reset();
+    }
     if (!mode.empty())
         noteMode(mode);
     // The footer under the prompt box says there is no login (the wrapper
@@ -1291,9 +1310,9 @@ void ClaudeSession::tick(Clock::time_point now)
     }
     if (limited_.is_object()) {
         // Gone on without a line we know, or the session ended some other way.
-        const json &at = member(limited_, "resetsAt");
-        if ((state_ != "busy" && state_ != "waiting")
-            || (at.is_number() && at.get<long long>() + kLimitGrace.count() < static_cast<long long>(std::time(nullptr)))) {
+        if ((state_ != "busy" && state_ != "waiting") || limitExpired()) {
+            if (state_ == "busy" || state_ == "waiting")
+                host_.log(id_ + ": the usage limit has no end in sight, given up");
             limited_ = nullptr;
             if (state_ == "busy" && !slashPending_) {
                 state_ = "idle";
@@ -1327,6 +1346,14 @@ void ClaudeSession::tick(Clock::time_point now)
     }
     if (modeDeadline_ && now >= *modeDeadline_)
         modeDone("failed", "no change on the screen");
+    if (slashAbandoned(now)) {
+        host_.log(id_ + ": " + slashText_.substr(0, 40) + " wrote no output and the screen shows no work: taken as done");
+        slashPending_ = false;
+        state_ = "idle";
+        turnOver();
+        deliver();
+        changed();
+    }
     if (modelAt_ && now >= *modelAt_) {
         // The /model shows no output and no dialog the daemon knows of (an
         // old wrapper cannot say): it has failed, and the session is free.
@@ -1392,6 +1419,12 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
         next = std::min(next, *typedDeadline_);
     if (retryAt_)
         next = std::min(next, *retryAt_);
+    if (idleScreenSince_) {
+        if (slashPending_ && !slashModel_)
+            next = std::min(next, *idleScreenSince_ + screenQuiet(slashShell_ ? kShellQuiet : kSlashQuiet));
+        if (limited_.is_object() && !member(limited_, "resetsAt").is_number())
+            next = std::min(next, *idleScreenSince_ + screenQuiet(kLimitQuiet));
+    }
     return next;
 }
 
@@ -1503,6 +1536,37 @@ static bool freshLine(const std::string &iso)
     return at - now < 600 && now - at < 600;
 }
 
+void ClaudeSession::setLimited(const json &limited, long long since)
+{
+    limited_ = limited;
+    limitedSince_ = since > 0 ? since : static_cast<long long>(std::time(nullptr));
+}
+
+// A limit with a reset time ends at it (and a grace); one without gives
+// itself up when the screen has shown a free prompt with no work for a
+// while, or at the longest a window of that kind lasts.
+bool ClaudeSession::limitExpired() const
+{
+    const json &at = member(limited_, "resetsAt");
+    const long long now = static_cast<long long>(std::time(nullptr));
+    if (at.is_number())
+        return at.get<long long>() + kLimitGrace.count() < now;
+    if (idleScreenSince_ && Clock::now() - *idleScreenSince_ >= screenQuiet(kLimitQuiet))
+        return true;
+    const bool week = str(limited_, "type").find("seven_day") != std::string::npos;
+    return now - limitedSince_ > (week ? 7 * 24 * 3600 : 5 * 3600) + kLimitGrace.count();
+}
+
+// A slash or shell command that wrote no output and fired no hook: the
+// screen has shown a free prompt and no work for a while. A running
+// compaction or command shows its status line and never counts. (/model
+// has its own timeout.)
+bool ClaudeSession::slashAbandoned(Clock::time_point now) const
+{
+    return slashPending_ && !slashModel_ && state_ == "busy" && !inFlight_ && idleScreenSince_
+        && now - *idleScreenSince_ >= screenQuiet(slashShell_ ? kShellQuiet : kSlashQuiet);
+}
+
 bool ClaudeSession::limitAhead(const json &limited)
 {
     const json &at = member(limited, "resetsAt");
@@ -1569,7 +1633,7 @@ void ClaudeSession::pollTranscript()
                 changed();
             }
         } else if (tail_.limited().is_object()) {
-            limited_ = tail_.limited();
+            setLimited(tail_.limited(), unixTime(tail_.limitedAt()));
             state_ = "busy";
             stopCheck_.reset();
             attention("limited", str(limited_, "text"));

@@ -130,7 +130,11 @@ daemon knows every live one on its host.
     sent as a prompt (`/compact`, `/context`) fires no hook: it ends when
     its output appears in the transcript. One that opens a picker
     (`/model`, `/usage`) stays `busy` until the picker is closed in the
-    terminal.
+    terminal. One that writes no output at all and fires no hook ends
+    when the wrapper has reported a free prompt box with no work on the
+    screen (`working: false` in its `screen` message) for 10 s (20 s for a
+    shell command typed with `!`); a running compaction or command shows
+    its status line and never counts.
     A background task or subagent that finishes while the session is
     `idle` hands Claude Code a task notification, and Claude Code may start
     a turn of its own without `UserPromptSubmit`: once Claude answers the
@@ -876,6 +880,10 @@ sentence) and a `start` refuses what it knows is not logged in:
   do not count). This is how an expired or revoked token is noticed:
   `claude auth status --json` says `loggedIn: true` for any
   `CLAUDE_CODE_OAUTH_TOKEN`, even a made-up one.
+  The `screen` message also carries `working` (added field):
+  `true` while a status line such as `✻ Compacting conversation… (3s)`
+  stands above a free prompt box. A wrapper that does not send it never
+  lets the daemon give up a silent slash command.
 - Codex: as above, from `codexErrorInfo` of a failed turn or a refused
   turn/start.
 - Kimi: Kimi's authentication-required error to a prompt, as before.
@@ -1018,6 +1026,9 @@ answer that is no API error, UserPromptSubmit, the session ending or
 restarting, or the owner's Esc. A Stop hook that comes while the reset is
 still ahead is ignored, since Claude Code continues anyway; a limit still
 set 3 minutes after `resetsAt` is given up and the session goes `idle`. A
+limit with no `resetsAt` (`null`) is given up when the wrapper has shown a
+free prompt box with no work on the screen for 2 minutes, and at the
+latest after 5 hours (`type` `seven_day`: 7 days) plus the same 3 minutes. A
 daemon that takes a session on again after a restart shows it `busy` and
 `limited` when the limit is still ahead.
 

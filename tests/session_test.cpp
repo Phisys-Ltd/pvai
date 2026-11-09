@@ -353,6 +353,7 @@ esac
               true);
     ::setenv("PVAI_KIMI", (bin + "/kimi").c_str(), 1);
     ::unsetenv(kEnvId);
+    ::setenv("PVAI_QUIET_DIV", "40", 1); // the screen-quiet times of the daemon: 10 s -> 0.25 s ...
     ::unsetenv(kEnvClaudeToken); // the daemon must not inherit a login from the machine running this test
     const int appPort = 20000 + static_cast<int>(::getpid() % 20000);
 
@@ -2888,6 +2889,52 @@ esac
         LineClient after;
         after.send(app());
         check(after.next("welcome").value("type", "") == "welcome", "and the daemon answers");
+    }
+
+    // A slash or shell command that writes no output and fires no hook ends
+    // when the screen shows a free prompt and no work for a while (the
+    // times are divided by PVAI_QUIET_DIV); work on the screen keeps it
+    // pending. A limit without a reset time ends the same way.
+    {
+        LineClient qw;
+        qw.send({{"type", "register"}, {"version", kVersion}, {"id", "wquiet"}, {"cwd", project}, {"label", "quiet"}, {"restart", true}, {"verify", true},
+                 {"clear", true}, {"submitCheck", true}});
+        const std::string quietTr = home + "/quiet-tr/quiet-1.jsonl";
+        writeFile(quietTr, userLine("start"));
+        hook("wquiet", {{"hook_event_name", "SessionStart"}, {"session_id", "quiet-1"}, {"source", "startup"}, {"transcript_path", quietTr}});
+        check(!waitSession(a, "wquiet", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "silent command: a session");
+        auto screen = [&](bool working) { qw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}, {"working", working}}); };
+        a.send({{"type", "prompt"}, {"ref", 150}, {"session", "wquiet"}, {"text", "/foo"}});
+        check(qw.next("type").value("text", "") == "/foo", "silent command: typed");
+        qw.send({{"type", "typed"}, {"ok", true}});
+        check(!waitSession(a, "wquiet", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "silent command: busy");
+        screen(true);
+        check(waitSession(a, "wquiet", [](const json &s) { return s.value("state", "") != "busy"; }, 1500).empty(),
+              "a screen that shows work keeps the command pending");
+        screen(false);
+        check(!waitSession(a, "wquiet", [](const json &s) { return s.value("state", "") == "idle"; }, 3000).empty(),
+              "a free prompt with no work ends a command that wrote nothing");
+        // A shell command likewise; a wrapper that does not say `working` never ends it.
+        a.send({{"type", "prompt"}, {"ref", 151}, {"session", "wquiet"}, {"text", "! true"}});
+        check(qw.next("type").value("text", "") == "! true", "silent shell command: typed");
+        qw.send({{"type", "typed"}, {"ok", true}});
+        qw.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}});
+        check(waitSession(a, "wquiet", [](const json &s) { return s.value("state", "") != "busy"; }, 1500).empty(),
+              "a screen message without `working` does not end it");
+        screen(false);
+        check(!waitSession(a, "wquiet", [](const json &s) { return s.value("state", "") == "idle"; }, 3000).empty(), "a silent shell command ends too");
+        // A limit without a reset time.
+        std::ofstream(quietTr, std::ios::app)
+            << json({{"type", "assistant"}, {"uuid", "lim1"}, {"isApiErrorMessage", true}, {"apiError", "usage_limit_reached"},
+                     {"message", {{"content", {{{"type", "text"}, {"text", "Limit"}}}}}}}).dump() << "\n";
+        check(!waitSession(a, "wquiet", [](const json &s) { return s.value("state", "") == "busy" && s.value("limited", json()).is_object(); }, 3000).empty(),
+              "a limit with no reset time holds the session busy");
+        screen(true);
+        check(waitSession(a, "wquiet", [](const json &s) { return !s.value("limited", json()).is_object(); }, 4000).empty(),
+              "work on the screen keeps the limit");
+        screen(false);
+        check(!waitSession(a, "wquiet", [](const json &s) { return s.value("state", "") == "idle" && !s.value("limited", json()).is_object(); }, 6000).empty(),
+              "a free prompt with no work gives the limit up");
     }
 
     // ---- Hooks: pvai run puts them in place, once.

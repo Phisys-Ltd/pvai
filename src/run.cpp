@@ -443,13 +443,15 @@ int runWrapper(const WrapperOptions &options)
     bool draftSent = false;   // what the daemon last heard as `draft`
     std::string modeShown;    // the permission mode the footer shows
     bool loginShown = false;  // the footer says "Not logged in" (kept while a dialog hides the box)
+    bool turnWorking = false; // a spinner line above the box says a turn, a compaction or a command works
     std::optional<Clock::time_point> screenCheckAt;
     // A dialog counts once the prompt box has stayed away a moment: it is
     // gone for a redraw, Ctrl+O or a picker page too.
     std::optional<Clock::time_point> dialogSince;
     auto sendScreen = [&] {
         daemon->send({{"type", "screen"}, {"dialog", screenShown.empty() ? json() : json(screenShown)}, {"prompt", promptShown},
-                      {"mode", modeShown.empty() ? json() : json(modeShown)}, {"login", loginShown}});
+                      {"mode", modeShown.empty() ? json() : json(modeShown)}, {"login", loginShown},
+                      {"working", turnWorking}});
     };
     auto promptFree = [&](std::string &box) {
         bool shell = false;
@@ -629,6 +631,7 @@ int runWrapper(const WrapperOptions &options)
         }
         screenShown.clear();
         promptShown = false;
+        turnWorking = false;
         shellShown = false;
         modeShown.clear();
         loginShown = false; // a relaunch (a restart): the new screen says
@@ -988,11 +991,13 @@ int runWrapper(const WrapperOptions &options)
                 reportDraft(false);
             }
             const bool login = prompt ? screenLoginShown(screen) : loginShown;
-            if (shown != screenShown || prompt != promptShown || mode != modeShown || login != loginShown) {
+            const bool working = prompt && turnWorkingShown(screen);
+            if (shown != screenShown || prompt != promptShown || mode != modeShown || login != loginShown || working != turnWorking) {
                 screenShown = std::move(shown);
                 promptShown = prompt;
                 modeShown = mode;
                 loginShown = login;
+                turnWorking = working;
                 if (daemon)
                     sendScreen();
             }

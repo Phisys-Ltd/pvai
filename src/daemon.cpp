@@ -847,7 +847,9 @@ private:
             else if (type == "screen")
                 session->onScreen(str(message, "dialog"),
                                   message.value("prompt", false),
-                                  str(message, "mode"), message.value("login", false));
+                                  str(message, "mode"), message.value("login", false),
+                                  message.contains("working") && message["working"].is_boolean() ? std::optional<bool>(message["working"].get<bool>())
+                                                                                              : std::nullopt);
             else if (type == "typed")
                 session->onTyped(message.value("ok", false), str(message, "screen"), str(message, "how"));
             else if (type == "submitted")

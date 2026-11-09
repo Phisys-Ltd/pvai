@@ -55,7 +55,10 @@ public:
     void onInput(bool escape, const std::string &key = {});
     void onDraft(bool dirty);
     void onDialog(const std::string &kind);
-    void onScreen(const std::string &text, bool prompt, const std::string &mode = {}, bool login = false);
+    // `working`: the screen shows work going on (a spinner line above the
+    // prompt box); empty from a wrapper that does not say.
+    void onScreen(const std::string &text, bool prompt, const std::string &mode = {}, bool login = false,
+                  std::optional<bool> working = std::nullopt);
     std::string setMode(const std::string &mode, const json &ref) override;
     std::string setModel(const std::string &model, const json &ref) override;
     void onExited(int status, const std::string &screen);
@@ -148,6 +151,8 @@ private:
     // protocol), and how much of the tail's limit and turn-end counts has
     // been reacted to.
     json limited_;
+    long long limitedSince_ = 0; // when limited_ was taken (unix seconds)
+    void setLimited(const json &limited, long long since);
     std::size_t hitMark_ = 0, clearMark_ = 0, endMark_ = 0, authMark_ = 0, replyMark_ = 0;
     bool loginSeen_ = false; // the footer shows "Not logged in" now
     // A turn ended in the transcript while busy: when to look whether the
@@ -184,6 +189,15 @@ private:
     int sameFails_ = 0;
     bool typedPause() const;
     bool promptFree_ = false;
+    // Since when the screen shows a free prompt box with no dialog and no
+    // work at all (the wrapper says so): what ends a slash or shell command
+    // that wrote no output and fired no hook, and a limit with no reset time.
+    std::optional<Clock::time_point> idleScreenSince_;
+    static constexpr std::chrono::seconds kSlashQuiet{10};
+    static constexpr std::chrono::seconds kShellQuiet{20};
+    static constexpr std::chrono::seconds kLimitQuiet{120};
+    bool limitExpired() const;
+    bool slashAbandoned(Clock::time_point now) const;
     bool sendUnchecked_ = false; // answer `send`: the next prompt without the check
     std::optional<Clock::time_point> retryAt_;
     // A mode change under way: Shift+Tab until the footer shows the mode,
