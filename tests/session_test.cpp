@@ -579,7 +579,7 @@ esac
                 {"params", {{"threadId", "t-new"}, {"item", {{"type", "agentMessage"}, {"id", "i2"}, {"text", "Answer.\n\xF0\x9F\x94\x8A Spoken."}}}}}});
     codex.send({{"method", "turn/completed"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u1"}, {"status", "completed"}}}}}});
     json say = a.next("say", [](const json &m) { return m.value("session", "") == "t-new"; });
-    check(say.value("text", "") == "Spoken.", "the turn's 🔊 line is said: " + say.dump());
+    check(say.value("text", "") == "Spoken." && say.value("voice", false), "the turn's 🔊 line is said, voice=true though the prompt was typed: " + say.dump());
 
     // A subagent thread of it: listed while active, gone when idle.
     codex.kidActive = true;
@@ -701,7 +701,7 @@ esac
     hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "one"}});
     hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "Done.\n\xF0\x9F\x94\x8A Fertig."}});
     say = a.next("say", [](const json &m) { return m.value("session", "") == "wterm"; });
-    check(say.value("text", "") == "Fertig." && !say.value("voice", true), "Stop says the 🔊 line");
+    check(say.value("text", "") == "Fertig." && say.value("voice", false), "a typed turn with a 🔊 line: it is said, voice=true");
     check(wrapper.next("type").value("text", "") == "\xF0\x9F\x8E\x99 two", "then the queued, spoken prompt goes in with 🎙");
     hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", "\xF0\x9F\x8E\x99 two"}});
     hook("wterm", {{"hook_event_name", "PermissionRequest"}, {"tool_name", "Bash"},
@@ -2156,15 +2156,17 @@ esac
         a.drain();
         return voice;
     };
-    auto said = [&](const std::string &prompt) {
+    json lastSay; // the `say` of the last saidAnswer
+    auto saidAnswer = [&](const std::string &prompt, const std::string &answer) {
         if (!prompt.empty())
             hook("wterm", {{"hook_event_name", "UserPromptSubmit"}, {"prompt", prompt}});
-        hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok " + std::to_string(++turn)}});
-        const json voice = a.next("say", [](const json &m) { return m.value("session", "") == "wterm"; }).value("voice", json());
+        hook("wterm", {{"hook_event_name", "Stop"}, {"last_assistant_message", answer}});
+        lastSay = a.next("say", [](const json &m) { return m.value("session", "") == "wterm"; });
         check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "Stop ends the turn");
         a.drain(); // later checks read the states that follow, not these
-        return voice;
+        return lastSay.value("voice", json());
     };
+    auto said = [&](const std::string &prompt) { return saidAnswer(prompt, "ok " + std::to_string(++turn)); };
     check(said("\xF0\x9F\x8E\x99 hör zu") == json(true), "a spoken turn is spoken");
     check(said("[Message p1 from M4/w1, released by the owner. Answer with: ...]\nhi") == json(true),
           "an agent message after it is spoken too");
@@ -2187,6 +2189,13 @@ esac
           "a finished subagent leaves the list");
     { const json v = said(""); check(v == json(true), "and so is the turn a task notification started: " + v.dump()); }
     check(said("typed") == json(false), "a typed prompt ends that");
+    check(lastSay.value("text", "") == "ok " + std::to_string(turn), "a typed turn without a 🔊 line: voice=false, the first sentence as text");
+    check(saidAnswer("typed again", "Done.\n\xF0\x9F\x94\x8A Fertig.") == json(true) && lastSay.value("text", "") == "Fertig.",
+          "a typed turn with a 🔊 line: voice=true, the line as text");
+    check(saidAnswer("\xF0\x9F\x8E\x99 spoken", "Done.\n\xF0\x9F\x94\x8A Fertig.") == json(true) && lastSay.value("text", "") == "Fertig.",
+          "a spoken turn with a 🔊 line: voice=true as before");
+    check(saidAnswer("typed once more", "Only an answer. Second sentence.") == json(false) && lastSay.value("text", "") == "Only an answer.",
+          "a typed turn without one: voice=false, the first sentence");
     check(saidUnseen() == json(false), "also for a turn whose Stop comes before the transcript shows it");
     check(said("[Message p2 from M4/w1, released by the owner. Answer with: ...]\nhi") == json(false),
           "and an agent message after a typed prompt is not spoken");

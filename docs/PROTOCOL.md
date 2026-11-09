@@ -491,7 +491,7 @@ Daemon to app:
 | `stopping` | `ref`, `session` | the session is told to end; it leaves `sessions` when it has |
 | `projects` | `dirs: [path]` | most recently used first |
 | `browse` | `path`, `dirs: [name]`, `ok` | sorted, hidden ones left out; `ok: false` when `path` cannot be read |
-| `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn counts as spoken (see "What gets spoken") |
+| `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn counts as spoken, or its answer has a 🔊 line (see "What gets spoken") |
 | `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the last lines above the prompt box, or the dialog's first lines). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models"); since 0.5.50 `kind: "limited"`: a Claude Code session hit its usage limit, `text` is Claude Code's message (see "Usage limit"); since 0.5.63 `kind: "stuck"`: sent when the wrapper reports that Claude Code did not act on the Return (`submitted` with `ok: false`, see `register`): for a slash or shell command the box was emptied and the session is idle again; for a prompt it was typed a second time and failed again, and it waits at the front of the queue behind the `screen` dialog; `text` is the first 40 characters |
 | `history` | `session`, `entries: [Entry]` | answer to `subscribe`, oldest first; sent again, to every subscriber, when the session moves to another transcript (`/clear`): the view starts over |
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
@@ -1192,6 +1192,13 @@ a second.
   empty for a voice turn (the app speaks its own "done, details in the
   terminal" phrase), the first sentence of the answer (up to 200 chars,
   markdown stripped) otherwise.
+- `voice` is `true` when the turn counts as spoken, and also whenever the
+  final answer has a `🔊 ` line, even for a turn the owner typed: the line
+  is written for the ear, so the app speaks it. `text` is that line, as
+  before. Without a `🔊 ` line (or with an empty one) nothing changes:
+  `voice` is whether the turn counts as spoken. This holds for every
+  assistant (Claude Code, Codex, Kimi), they all end a turn through the same
+  `say`.
 - The app speaks `say` with `voice: true`; `voice: false` only when the user
   turned on "speak every turn".
 - `attention` is spoken as the app's "<host>: Claude asks for permission"

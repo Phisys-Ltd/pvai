@@ -280,7 +280,10 @@ void Session::say(const std::string &answer)
                               : ", speak line " + std::to_string(words) + " words " + std::to_string(text.size()) + " bytes"));
     if (text.empty() && !voiceTurn_)
         text = firstSentence(answer);
-    host_.broadcast({{"type", "say"}, {"session", id_}, {"text", text}, {"voice", voiceTurn_}});
+    // A 🔊 line is written for the ear: it is spoken whether the turn counts
+    // as spoken or not. Without one, the turn decides as before.
+    const bool voice = voiceTurn_ || (!text.empty() && !speakLine(answer).empty());
+    host_.broadcast({{"type", "say"}, {"session", id_}, {"text", text}, {"voice", voice}});
     turnOver();
 }
 
