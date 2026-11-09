@@ -7,6 +7,7 @@
 #include "rpc_backend.h"
 #include "session.h"
 
+#include <deque>
 #include <map>
 #include <set>
 
@@ -50,6 +51,8 @@ protected:
 private:
     std::vector<json> entries(const json &item, long long ms);
     void reply(bool allow);
+    void show(const json &request);
+    void nextRequest();
     // A turn failed (turn/completed with an error, an `error` that is not a
     // retry, a rejected turn/start): a text entry, `say` and, for a login
     // problem, the "login" attention. `turn` may be empty (a rejection).
@@ -62,6 +65,7 @@ private:
     std::string turnId_;       // the running turn
     bool turnPending_ = false; // turn/start sent, turn/started not seen yet
     json request_;             // the approval the thread waits on: id, method, params
+    std::deque<json> queued_;  // approvals that came while one is shown, shown in turn
     std::map<std::string, std::string> outputs_; // command output by item id, while it runs
     std::map<std::string, std::string> files_;   // a file change's paths by item id, while it runs
     std::string failedTurn_;   // the turn failTurn reported last: its other report is no news

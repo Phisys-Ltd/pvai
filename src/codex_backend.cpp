@@ -12,6 +12,8 @@ namespace pvai {
 namespace {
 
 constexpr auto kRescan = std::chrono::seconds(15);
+// Approvals that may wait behind the one on screen.
+constexpr std::size_t kMaxQueuedRequests = 16;
 
 // The context of a thread the daemon did not see run: the last token count
 // in its rollout file (Codex's own format, read from the end), or null.
@@ -261,6 +263,7 @@ void CodexSession::finishTurn()
 {
     turnId_.clear();
     request_ = nullptr;
+    queued_.clear();
     outputs_.clear();
     files_.clear();
     answer_.clear();
@@ -290,12 +293,16 @@ void CodexSession::reply(bool allow)
     const json result = decision(str(request, "method"), request.value("params", json()), allow);
     if (result.is_null()) {
         backend_.respondError(request["id"], -32000, "declined by the owner");
+        // A refusal ends the turn: the approvals waiting behind it with it.
+        for (const auto &waiting : queued_)
+            backend_.respondError(waiting["id"], -32000, "declined by the owner");
+        queued_.clear();
         if (!turnId_.empty())
             backend_.call("turn/interrupt", {{"threadId", id_}, {"turnId", turnId_}});
     } else {
         backend_.respond(request["id"], result);
     }
-    resumeFromDialog();
+    nextRequest();
 }
 
 namespace {
@@ -607,10 +614,16 @@ void CodexSession::onNotification(const std::string &method, const json &params)
             usageChanged();
         }
     } else if (method == "serverRequest/resolved") {
-        if (!request_.is_null() && request_["id"] == params.value("requestId", json())) {
+        const json resolved = member(params, "requestId");
+        if (!request_.is_null() && request_["id"] == resolved) {
             request_ = nullptr;
-            resumeFromDialog();
+            nextRequest();
             changed();
+        } else {
+            // Answered elsewhere while it waited its turn here.
+            const auto it = std::find_if(queued_.begin(), queued_.end(), [&](const json &q) { return q["id"] == resolved; });
+            if (it != queued_.end())
+                queued_.erase(it);
         }
     }
 }
@@ -619,10 +632,33 @@ void CodexSession::onNotification(const std::string &method, const json &params)
 // counts) to approve something.
 void CodexSession::onRequest(const json &requestId, const std::string &method, const json &params)
 {
-    const std::string dialog = dialogOf(method);
-    if (dialog.empty())
+    if (dialogOf(method).empty()) {
+        // Not the owner's to answer: Codex must not wait for a reply that never comes.
+        backend_.respondError(requestId, -32601, "not supported by pvai");
         return;
-    request_ = {{"id", requestId}, {"method", method}, {"params", params}};
+    }
+    const json request = {{"id", requestId}, {"method", method}, {"params", params}};
+    // Codex may ask again before the owner answered: the first stays
+    // on screen, the others wait their turn (none is dropped: an approval
+    // left unanswered would hold its turn forever).
+    if (!request_.is_null()) {
+        if (queued_.size() < kMaxQueuedRequests)
+            queued_.push_back(request);
+        else
+            backend_.respondError(requestId, -32000, "too many open requests");
+        return;
+    }
+    show(request);
+    changed();
+}
+
+// Puts an approval on screen: the thread waits on it until it is answered.
+void CodexSession::show(const json &request)
+{
+    request_ = request;
+    const std::string method = str(request, "method");
+    const json params = member(request, "params");
+    const std::string dialog = dialogOf(method);
     state_ = "waiting";
     dialog_ = dialog;
     std::string text = str(params, "command");
@@ -638,7 +674,19 @@ void CodexSession::onRequest(const json &requestId, const std::string &method, c
         dialogInfo_ = dialogInfo("edit", it == files_.end() ? "" : it->second, str(params, "reason"));
     }
     attention(dialog, text);
-    changed();
+}
+
+// The approval on screen is over: the next waiting one comes up, else the
+// thread goes on.
+void CodexSession::nextRequest()
+{
+    if (queued_.empty()) {
+        resumeFromDialog();
+        return;
+    }
+    const json next = queued_.front();
+    queued_.pop_front();
+    show(next);
 }
 
 // ---- CodexBackend ----

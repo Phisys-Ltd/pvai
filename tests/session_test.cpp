@@ -773,6 +773,28 @@ esac
     check(!a.next("answered").empty(), "answered");
     check(!codex.received([](const json &m) { return m.value("id", json()) == 99 && m.value("result", json()).value("decision", "") == "accept"; }).is_null(),
           "allow is accept");
+    // Several approvals at once: shown one at a time, none lost; a request
+    // nobody here can answer gets an error reply at once.
+    codex.send({{"id", 97}, {"method", "item/commandExecution/requestApproval"}, {"params", {{"threadId", "t-new"}, {"command", "pwd"}}}});
+    check(a.next("attention").value("text", "") == "pwd", "a second approval round: the first is shown");
+    codex.send({{"id", 96}, {"method", "item/commandExecution/requestApproval"}, {"params", {{"threadId", "t-new"}, {"command", "whoami"}}}});
+    codex.send({{"id", 95}, {"method", "item/commandExecution/requestApproval"}, {"params", {{"threadId", "t-new"}, {"command", "date"}}}});
+    codex.send({{"id", 94}, {"method", "item/tool/call"}, {"params", {{"threadId", "t-new"}, {"tool", "x"}}}});
+    check(!codex.received([](const json &m) { return m.value("id", json()) == 94 && m.value("error", json()).value("code", 0) == -32601; }).is_null(),
+          "a request of an unknown method is answered with -32601");
+    check(codex.received([](const json &m) { return m.value("id", json()) == 96 && m.contains("result"); }, 400).is_null(),
+          "a waiting approval is not answered yet");
+    a.send({{"type", "answer"}, {"ref", 40}, {"session", "t-new"}, {"choice", "allow"}});
+    check(a.next("attention").value("text", "") == "whoami", "the next waiting one comes up when the first is answered");
+    check(!codex.received([](const json &m) { return m.value("id", json()) == 97 && m.value("result", json()).value("decision", "") == "accept"; }).is_null(),
+          "the first is answered accept");
+    codex.send({{"method", "serverRequest/resolved"}, {"params", {{"threadId", "t-new"}, {"requestId", 95}}}});
+    a.send({{"type", "answer"}, {"ref", 42}, {"session", "t-new"}, {"choice", "allow"}});
+    check(!codex.received([](const json &m) { return m.value("id", json()) == 96 && m.value("result", json()).value("decision", "") == "accept"; }).is_null(),
+          "the second is answered accept");
+    check(!waitSession(a, "t-new", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),
+          "one resolved elsewhere while it waited is gone: the session is busy again");
+    a.drain();
     codex.send({{"method", "item/started"},
                 {"params", {{"threadId", "t-new"}, {"item", {{"type", "fileChange"}, {"id", "f1"}, {"changes", {{{"path", "/tmp/a.txt"}}, {{"path", "/tmp/b.txt"}}}}}}}}});
     codex.send({{"id", 98}, {"method", "item/fileChange/requestApproval"},

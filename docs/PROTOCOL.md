@@ -706,7 +706,13 @@ for Claude Code; the differences:
 - `interrupt` interrupts the running turn (an open approval is refused
   first).
 - `answer`: `allow` accepts the approval (for a question: the first option
-  of each); `deny` refuses it and ends the turn.
+  of each); `deny` refuses it and ends the turn. Codex may ask for several
+  approvals at once: the first is the session's dialog, the others wait
+  behind it (at most 16) and come up one at a time as each is answered, a
+  new `attention` for each; one that the app server resolves meanwhile
+  (`serverRequest/resolved`) drops out. `deny` also refuses the waiting
+  ones, as it ends the turn. A server request of a kind pvai does not
+  handle is answered with the JSON-RPC error `-32601`.
 - `stop` on a thread this daemon started (`detached: true`) archives it,
   which unloads it from the app server; `codex resume` no longer lists it,
   but it is kept: `conversations` lists it and `start.resume` unarchives
