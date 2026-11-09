@@ -28,6 +28,9 @@ constexpr std::size_t kMaxPrompt = 32 * 1024;
 
 // The wrapper's environment for Claude Code and so for its hooks.
 constexpr const char *kEnvId = "PVAI_ID";
+// The id the daemon knows the calling session by: PVAI_ID (a `pvai run` session), else CODEX_THREAD_ID
+// (Codex sets it for the commands of a thread; the thread's id is its session id); empty for neither.
+std::string callerSessionId();
 constexpr const char *kEnvSocket = "PVAI_SOCK";
 
 std::string runtimeDir(); // created with mode 0700 when missing

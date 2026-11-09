@@ -481,7 +481,7 @@ Daemon to app:
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `answer`, `clearInput`, `mode`, `model` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `too-many` |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `answer`, `clearInput`, `mode`, `model` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`; to `prompt` also `self-message` (its `from` is the target session itself) |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `renamed` | `ref`, `session`, `label` | the session carries `label` (trimmed) now; the `sessions` list follows |
@@ -528,13 +528,18 @@ The flow:
    stdin) in its session. `TO` is `host/session`: `host` is the target
    daemon's short hostname (`welcome.host`; `PVAI_HOST` in the environment
    overrides the machine's name, the tests use it), `session` a session id or a
-   label. A bare `host` means "whichever session the owner picks".
+   label. A host alone is no target (before this change it meant
+   "whichever session the owner picks"; the app then showed it in the
+   sender's tab and *Send* typed it into the sender itself): `pvai propose`
+   refuses it at once ("the target needs HOST/SESSION"; `pvai peers` lists
+   them) and the daemon `rejected`s it with `no-session`.
    `--reply ID` names the proposal this one answers (the id in the first
    line of the message being answered).
 2. `pvai propose` hands it to its own daemon over loopback:
    `{"type": "propose", "ref", "to", "text", "from", "replyTo"}`, where `from` is
-   `PVAI_ID` from the environment (set by `pvai run`; empty in a Codex
-   thread, then only the host is known) and `replyTo` optional. A label
+   `PVAI_ID` from the environment (set by `pvai run`), else `CODEX_THREAD_ID`
+   (Codex sets it for the commands of a thread; the thread id is the session
+   id; empty in a Kimi session, then only the host is known) and `replyTo` optional. A label
    as `session` becomes the id when exactly one session of that host has
    it (this host's own sessions, or the app's `peers` for other hosts);
    when several have it the proposal is `rejected` with
@@ -544,8 +549,8 @@ The flow:
    connections whose `hello.client` is `pvai`, the CLI's own, do not count)
    and, since 0.5.69, optionally a `warning` (see "Peers"; the proposal is made and queued all the same)
    or `rejected` (`empty`, `too-long` over 32 KiB, `bad-target`,
-   `ambiguous-target`, `bad-reply` (`replyTo` is not a proposal id: `p`
-   and hex digits), `too-many`). `TO` is a bad target unless `host` is 1 to 64 letters,
+   `ambiguous-target`, `no-session` (`to` is a host alone), `bad-reply`
+   (`replyTo` is not a proposal id: `p` and hex digits), `too-many`). `TO` is a bad target unless `host` is 1 to 64 letters,
    digits, `-`, `.` or `_`, and `session`, when given, 1 to 128 bytes
    without control characters.
    The CLI prints that the message waits for the owner and returns at
@@ -560,7 +565,7 @@ The flow:
    app can show a message under the one it answers, and see which got no
    answer.
    `fromLabel` is the sender session's label, empty when the daemon does
-   not know `from` (a Codex thread). At most 16 open proposals per daemon
+   not know `from`. At most 16 open proposals per daemon
    (then `too-many`), 10 a minute per sender session (all senders without
    `from` share one budget), each kept for 24 hours. They live in memory only: a restart of
    the daemon drops them.
@@ -578,6 +583,12 @@ The flow:
    ```
    [Message p3f9a01c2 from M4/w8bb65867 (phi-claude-voice), answering p77aa0b1e, released by the owner. Answer with: pvai propose --reply p3f9a01c2 M4/w8bb65867 "..."]
    ```
+   A sender that has no session part in `from` (a bare host: the proposal
+   had no `from`) cannot be answered, so the line has no "Answer with":
+   `[Message p3f9a01c2 from M4, released by the owner. It cannot be answered: the sender is not a session.]`
+   (and a `prompt` whose `from` is this very host and target session is
+   `rejected` with `self-message`: nothing is ever typed into the session
+   that wrote it).
    Without `proposal` the id and `--reply` are left out, without
    `replyTo` the "answering" part (as before 0.5.19).
    Control characters in `from` and `fromLabel` are dropped, `from` is cut

@@ -1232,6 +1232,12 @@ private:
             return reject(peer, ref, id, "empty");
         if (text.size() > kMaxPrompt)
             return reject(peer, ref, id, "too-long");
+        // A message from a session to itself is no agent message: a proposal
+        // whose target the app could not place has landed in its sender.
+        if (const std::string from = oneLine(message.value("from", ""), 128); !from.empty()) {
+            if (from == hostName() + "/" + id || (!peersSelf_.empty() && from == peersSelf_ + "/" + id))
+                return reject(peer, ref, id, "self-message");
+        }
         const std::string header = fromLine(message);
         Prompt prompt{header + text, message.value("voice", false), ref};
         prompt.agent = !header.empty();
@@ -1251,6 +1257,13 @@ private:
         const std::string id = message.value("proposal", json()).is_string() ? message["proposal"].get<std::string>() : "";
         const std::string replyTo = message.value("replyTo", json()).is_string() ? message["replyTo"].get<std::string>() : "";
         const bool known = goodProposalId(id);
+        // A sender that is a host only (a thread without a session id) cannot
+        // be written to: a reply would have no session to go to.
+        const auto slash = from.find('/');
+        if (slash == std::string::npos || slash + 1 == from.size())
+            return "[Message " + (known ? id + " " : std::string()) + "from " + from + (label.empty() ? "" : " (" + label + ")")
+                + (goodProposalId(replyTo) ? ", answering " + replyTo : "")
+                + ", released by the owner. It cannot be answered: the sender is not a session.]\n";
         return "[Message " + (known ? id + " " : std::string()) + "from " + from + (label.empty() ? "" : " (" + label + ")")
             + (goodProposalId(replyTo) ? ", answering " + replyTo : "") + ", released by the owner. Answer with: pvai propose "
             + (known ? "--reply " + id + " " : std::string()) + from + " \"...\"]\n";
@@ -1338,6 +1351,10 @@ private:
             return reject("too-long");
         if (!goodTarget(to))
             return reject("bad-target");
+        // A host alone names no session: the owner's Send would put it into
+        // whichever tab the app has open, the sender's own among them.
+        if (to.find('/') == std::string::npos)
+            return reject("no-session");
         if (!replyTo.empty() && !goodProposalId(replyTo))
             return reject("bad-reply");
         to = resolveTarget(to);

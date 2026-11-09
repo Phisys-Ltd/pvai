@@ -218,6 +218,14 @@ std::vector<std::pair<std::string, std::string>> claudeTokenEnv()
     return {{kEnvClaudeToken, token}};
 }
 
+std::string callerSessionId()
+{
+    for (const char *name : {kEnvId, "CODEX_THREAD_ID"})
+        if (const char *value = std::getenv(name); value && *value)
+            return value;
+    return {};
+}
+
 bool isClaudeCommand(const std::string &command)
 {
     if (command.empty())

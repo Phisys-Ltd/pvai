@@ -57,7 +57,7 @@ int main(int argc, char **argv)
               "the proposal's fields: " + p.dump());
     }
 
-    r = run("propose M4", "PVAI_ID=wsender", "from stdin\nsecond line");
+    r = run("propose M4/w1", "PVAI_ID=wsender", "from stdin\nsecond line");
     check(r.status == 0 && r.out.find("1 app connected") != std::string::npos, "propose from stdin counts the app: " + r.out);
     list = app.next("proposals");
     check(count(list) == 2 && list["proposals"][1].value("text", "") == "from stdin\nsecond line"
@@ -72,7 +72,20 @@ int main(int argc, char **argv)
     check(r.status == 1 && r.out.find("bad-target") != std::string::npos, "bad target: " + r.out);
     r = run("propose taifun/ text");
     check(r.status == 1 && r.out.find("bad-target") != std::string::npos, "empty session: " + r.out);
-    r = run("propose taifun \"$(head -c 40000 /dev/zero | tr '\\0' x)\"");
+    // A host without a session is no target: it would land in whichever tab the app has open, the sender's own
+    // among them. Refused before the daemon is asked, and by the daemon too.
+    r = run("propose M4 text", "PVAI_ID=wsender");
+    check(r.status == 1 && r.out.find("needs HOST/SESSION") != std::string::npos && r.out.find("pvai peers") != std::string::npos,
+          "a bare host is refused with a pointer to pvai peers: " + r.out);
+    r = run("propose --reply p0a1b2c3d M4 text", "PVAI_ID=wsender");
+    check(r.status == 1 && r.out.find("needs HOST/SESSION") != std::string::npos, "also as a reply: " + r.out);
+    {
+        LineClient raw;
+        raw.send({{"type", "hello"}, {"client", "pvai"}, {"version", "0"}});
+        raw.send({{"type", "propose"}, {"ref", "x"}, {"to", "M4"}, {"text", "t"}, {"from", "wsender"}});
+        check(raw.next("rejected").value("reason", "") == "no-session", "the daemon refuses a bare host itself: no-session");
+    }
+    r = run("propose taifun/w1 \"$(head -c 40000 /dev/zero | tr '\\0' x)\"");
     check(r.status == 1 && r.out.find("too-long") != std::string::npos, "too long: " + r.out);
 
     // A reply names the proposal it answers; a label is resolved to the one
@@ -115,15 +128,15 @@ int main(int argc, char **argv)
     // Ten a minute per session, sixteen open in all.
     int ok = 0;
     for (int i = 0; i < 12; ++i)
-        if (run("propose taifun text" + std::to_string(i), "PVAI_ID=wbusy").status == 0)
+        if (run("propose taifun/w1 text" + std::to_string(i), "PVAI_ID=wbusy").status == 0)
             ++ok;
     check(ok == 10, "ten a minute per session (" + std::to_string(ok) + ")");
     ok = 0;
     for (int i = 0; i < 8; ++i)
-        if (run("propose taifun text", "PVAI_ID=wother" + std::to_string(i)).status == 0)
+        if (run("propose taifun/w1 text", "PVAI_ID=wother" + std::to_string(i)).status == 0)
             ++ok;
     check(ok == 5, "sixteen open in all (" + std::to_string(ok) + " more)");
-    r = run("propose taifun text", "PVAI_ID=wlast");
+    r = run("propose taifun/w1 text", "PVAI_ID=wlast");
     check(r.out.find("too-many") != std::string::npos, "too-many when full: " + r.out);
 
     // Peers: before any list only this host; then the app's list, cleaned.
@@ -154,6 +167,21 @@ int main(int argc, char **argv)
               == "[Message from M4/w8bb65867 (phi-claude-voice), released by the owner. Answer with: pvai propose "
                  "M4/w8bb65867 \"...\"]\nplease check",
           "the released prompt starts with the sender line: " + typed.dump());
+
+    // A sender without a session part (a bare host) cannot be answered: no "Answer with" line, and the
+    // session is not offered as a target.
+    LineClient headerWrapper;
+    headerWrapper.send({{"type", "register"}, {"id", "wheader"}, {"label", "header"}, {"cwd", "/x"}, {"running", true}});
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    app.send({{"type", "prompt"}, {"ref", 90}, {"session", "wheader"}, {"text", "no session"}, {"from", "M4"}, {"proposal", "p1234abce"}});
+    typed = headerWrapper.next("type");
+    check(typed.value("text", "")
+              == "[Message p1234abce from M4, released by the owner. It cannot be answered: the sender is not a session.]\nno session",
+          "a sender with no session part: no Answer with line: " + typed.dump());
+    // A message from this very session to itself is refused whatever the app thinks the target is.
+    app.send({{"type", "prompt"}, {"ref", 91}, {"session", "wheader"}, {"text", "to myself"}, {"from", hostName() + "/wheader"}});
+    check(app.next("rejected", [](const json &m) { return m.value("ref", 0) == 91; }).value("reason", "") == "self-message",
+          "a message from a session to itself is refused: self-message");
 
     // A plain prompt has no such line.
     LineClient hook;

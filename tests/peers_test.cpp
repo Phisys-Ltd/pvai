@@ -97,8 +97,8 @@ int main(int argc, char **argv)
               && r.out.find("warning: mac is offline (last seen 2 h ago); the message waits until the owner releases it and mac is back")
                      != std::string::npos,
           "host-offline: " + r.out);
-    r = run("propose mac text");
-    check(r.status == 0 && warningOf(r.out) == "host-offline", "host-offline for a bare host: " + r.out);
+    r = run("propose mac/wb text");
+    check(r.status == 0 && warningOf(r.out) == "host-offline", "host-offline for another session of the host: " + r.out);
     r = run("propose gone/x text");
     check(r.status == 0 && warningOf(r.out) == "host-offline" && r.out.find("last seen") == std::string::npos,
           "host-offline without seenAt: " + r.out);
@@ -113,7 +113,7 @@ int main(int argc, char **argv)
     r = run("propose M4/Projekte text");
     check(r.status == 0 && warningOf(r.out).empty(), "no warning for a known label: " + r.out);
     r = run("propose M4 text");
-    check(r.status == 0 && warningOf(r.out).empty(), "no warning for a bare online host: " + r.out);
+    check(r.status == 1 && r.out.find("needs HOST/SESSION") != std::string::npos, "a bare host is no target: " + r.out);
     // Ten proposals a minute per sender: the rest from a second one.
     r = run("propose whole/w9 text", "PVAI_ID=wsecond");
     check(r.status == 0 && warningOf(r.out).empty(), "no warning for a session of a host listed as a whole: " + r.out);

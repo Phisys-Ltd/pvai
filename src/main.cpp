@@ -62,7 +62,7 @@ const char *kUsage =
     "       pvai clear-input SESSION                   empty a session's prompt box (a draft, a shell command)\n"
     "       pvai stop SESSION                          end a session started with start\n"
     "       pvai send [--voice] SESSION TEXT           type TEXT into a session (for tests)\n"
-    "       pvai propose [--reply ID] HOST[/SESSION] [TEXT]\n"
+    "       pvai propose [--reply ID] HOST/SESSION [TEXT]\n"
     "                                                  suggest a message to another session; the owner releases it\n"
     "       pvai peers                                 list the sessions propose can reach, also on other hosts\n"
     "       pvai install claude|codex|kimi             install an assistant for this user (as the app can)\n"
@@ -369,10 +369,16 @@ static std::string agoText(long long seconds)
 // An agent message for the owner to release in the app; never waits for it.
 int runPropose(const std::string &to, std::string text, bool fromStdin, const std::string &replyTo)
 {
+    // A host alone is no target: the message needs a session to land in.
+    if (to.find('/') == std::string::npos) {
+        std::fprintf(stderr,
+                     "pvai: not proposed: the target needs HOST/SESSION, not a host alone (\"%s\"); list the sessions with `pvai peers`\n",
+                     to.c_str());
+        return 1;
+    }
     if (fromStdin)
         text.assign(std::istreambuf_iterator<char>(std::cin), {});
-    const char *from = std::getenv(kEnvId);
-    json propose = {{"type", "propose"}, {"ref", "cli"}, {"to", to}, {"text", text}, {"from", from ? from : ""}};
+    json propose = {{"type", "propose"}, {"ref", "cli"}, {"to", to}, {"text", text}, {"from", callerSessionId()}};
     if (!replyTo.empty())
         propose["replyTo"] = replyTo;
     int status = 1;
@@ -403,7 +409,9 @@ int runPropose(const std::string &to, std::string text, bool fromStdin, const st
         if (type == "rejected") {
             const std::string reason = message.value("reason", "");
             std::fprintf(stderr, "pvai: not proposed: %s%s\n", reason.c_str(),
-                         reason == "ambiguous-target" ? " (several sessions have that label: use the id, see pvai peers)" : "");
+                         reason == "ambiguous-target" ? " (several sessions have that label: use the id, see pvai peers)"
+                         : reason == "no-session"     ? " (the target needs HOST/SESSION, not a host alone; see pvai peers)"
+                                                      : "");
             return true;
         }
         return false;
@@ -538,14 +546,14 @@ int runSetup(const std::string &verb, const std::string &assistant)
 
 int runPeers()
 {
-    const char *me = std::getenv(kEnvId);
+    const std::string me = callerSessionId();
     auto line = [&](const std::string &host, const json &s) {
         const std::string id = s.value("session", "");
         std::string text = "  " + host + "/" + id;
         for (const char *key : {"assistant", "state", "label", "cwd"})
             if (const std::string value = s.value(key, ""); !value.empty())
                 text += std::string("  ") + (std::string(key) == "label" ? "\"" + value + "\"" : value);
-        if (me && id == me)
+        if (!me.empty() && id == me)
             text += "  (this session)";
         if (s.value("offline", false)) {
             text += "  (offline";
