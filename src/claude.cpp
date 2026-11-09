@@ -18,8 +18,6 @@ namespace pvai {
 
 namespace {
 
-// What Claude Code writes into the transcript when the owner interrupts a
-// turn with Esc; no hook fires for that.
 // How long the screen must show a free prompt and no work before a pending
 // slash command, shell command or limit without a reset time is given up.
 // PVAI_QUIET_DIV (a test knob) divides the times.
@@ -33,6 +31,8 @@ std::chrono::milliseconds screenQuiet(std::chrono::seconds base)
     return std::chrono::duration_cast<std::chrono::milliseconds>(base) / divisor;
 }
 
+// What Claude Code writes into the transcript when the owner interrupts a
+// turn with Esc; no hook fires for that.
 const char *kInterruptMark = "[Request interrupted by user";
 constexpr auto kSubmitTimeout = std::chrono::seconds(15);
 // The wrapper may hold a prompt for up to 3 s while Claude Code draws, then types
