@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <ctime>
 
 namespace pvai {
@@ -425,6 +426,20 @@ std::string basename(const std::string &path)
 {
     const auto slash = path.find_last_of('/');
     return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+std::string nowIso()
+{
+    return isoTime(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+void BufferedSession::failure(const std::string &assistant, const std::string &message, bool login)
+{
+    const std::string shown = login ? assistant + " is not logged in." : assistant + ": " + (message.empty() ? std::string("the turn failed") : message);
+    pushEntries({{{"kind", "text"}, {"text", cut(shown, kMaxText)}, {"id", "e" + randomHex(6)}, {"time", nowIso()}}});
+    if (login)
+        loginAttention(shown);
+    say(shown, true);
 }
 
 std::string isoTime(long long ms)

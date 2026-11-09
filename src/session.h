@@ -234,6 +234,10 @@ public:
 protected:
     // Buffers the entries and sends them to the subscribers (unless quiet()).
     void pushEntries(std::vector<json> fresh);
+    // A turn that failed: a text entry "<assistant>: <message>" ("the turn
+    // failed" for an empty one; "<assistant> is not logged in." for a login
+    // problem, which also sends the login attention) and `say` of it.
+    void failure(const std::string &assistant, const std::string &message, bool login);
     // Drops the oldest entries beyond what `history` keeps.
     void trimEntries();
     virtual bool quiet() const { return false; }
@@ -329,6 +333,8 @@ std::string speakLine(const std::string &answer);
 std::string firstSentence(const std::string &answer);
 std::string basename(const std::string &path);
 std::string isoTime(long long ms);
+// The current time as isoTime gives it.
+std::string nowIso();
 // The context bar: `used` tokens against the model's window `size`; the
 // percent is null unless both are numbers and the window is not empty.
 json contextOf(const json &used, const json &size);

@@ -506,8 +506,25 @@ esac
         const json again = kimi.call("session/prompt");
         check(!again.is_null(), "a second Kimi prompt");
         kimi.send({{"jsonrpc", "2.0"}, {"id", again["id"]}, {"error", {{"code", nullptr}, {"message", nullptr}}}});
-        check(!a.next("say", [](const json &m) { return m.value("session", "") == "k-1"; }).empty(), "null code and message: the failure is said");
+        const json failedSay = a.next("say", [](const json &m) { return m.value("session", "") == "k-1"; });
+        check(failedSay.value("text", "") == "Kimi Code: the turn failed", "null code and message: the failure is said as for Codex: " + failedSay.dump());
         check(!waitSession(a, "k-1", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "and the session is idle again");
+        // A cancelled turn: the interrupted entry's id is stable (named after the prompt's).
+        a.send({{"type", "prompt"}, {"ref", 49}, {"session", "k-1"}, {"text", "Abbrechen"}});
+        kimi.respond(kimi.call("session/prompt"), {{"stopReason", "cancelled"}});
+        check(!waitSession(a, "k-1", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "kimi: idle after a cancelled turn");
+        for (int i = 0; i < 2; ++i) { // twice: the same ids both times
+            a.send({{"type", "subscribe"}, {"session", "k-1"}});
+            const json again2 = a.next("history", [](const json &m) { return m.value("session", "") == "k-1"; });
+            std::string promptId, interruptedId;
+            for (const auto &e : again2.value("entries", json::array())) {
+                if (e.value("kind", "") == "prompt" && e.value("text", "") == "Abbrechen")
+                    promptId = e.value("id", "");
+                if (e.value("kind", "") == "interrupted")
+                    interruptedId = e.value("id", "");
+            }
+            check(!promptId.empty() && interruptedId == promptId + ":interrupted", "kimi: the interrupted entry's id is the prompt's: " + interruptedId);
+        }
         a.drain();
 
         // Earlier sessions, and one played back.

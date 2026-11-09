@@ -143,11 +143,6 @@ json decision(const std::string &method, const json &params, bool allow)
     return {{"answers", answers}};
 }
 
-std::string nowIso()
-{
-    return isoTime(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-}
-
 // A login problem in a failure Codex reports: its codexErrorInfo (`unauthorized`,
 // or a connection variant such as {"httpConnectionFailed": {"httpStatusCode":
 // 401}}), else a "401 Unauthorized" in the failure's own message. Anything else
@@ -254,11 +249,7 @@ void CodexSession::submit(const Prompt &prompt)
 void CodexSession::failTurn(const std::string &turn, const std::string &message, bool login)
 {
     failedTurn_ = turn;
-    const std::string shown = login ? "Codex is not logged in." : "Codex: " + (message.empty() ? std::string("the turn failed") : message);
-    pushEntries({{{"kind", "text"}, {"text", cut(shown, kMaxText)}, {"id", "e" + randomHex(6)}, {"time", nowIso()}}});
-    if (login)
-        loginAttention(shown);
-    say(shown, true);
+    failure("Codex", message, login);
 }
 
 void CodexSession::finishTurn()
@@ -561,8 +552,7 @@ void CodexSession::onNotification(const std::string &method, const json &params)
         endedTurn_ = done;
         const json error = member(turn, "error");
         if (str(turn, "status") == "interrupted") {
-            const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
-            pushEntries({{{"kind", "interrupted"}, {"id", str(turn, "id") + ":interrupted"}, {"time", isoTime(now.count())}}});
+            pushEntries({{{"kind", "interrupted"}, {"id", str(turn, "id") + ":interrupted"}, {"time", nowIso()}}});
             turnOver();
         } else if (error.is_object() || str(turn, "status") == "failed") {
             const std::string message = str(error, "message");

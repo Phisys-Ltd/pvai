@@ -85,6 +85,7 @@ private:
     std::map<std::string, std::string> tools_; // toolCallId -> tool name, until it ends
     json request_;     // the permission request the session waits on: id, params
     bool turnRunning_ = false;
+    std::string promptId_; // the entry id of the turn's prompt
 };
 
 class KimiBackend : public RpcBackend {

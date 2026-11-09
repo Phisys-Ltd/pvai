@@ -26,12 +26,6 @@ std::string kimiBinary()
     return findBinary("kimi");
 }
 
-std::string nowIso()
-{
-    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
-    return isoTime(now.count());
-}
-
 // ACP's updatedAt: an ISO 8601 string (or, to be safe, Unix seconds or ms).
 long long unixTimeOf(const json &value)
 {
@@ -147,7 +141,8 @@ void KimiSession::submit(const Prompt &prompt)
                           {"resource", {{"uri", "pvai://voice-context"}, {"mimeType", "text/plain"}, {"text", kVoiceContext}}}});
         voiceSent_ = true;
     }
-    pushEntries({{{"kind", "prompt"}, {"text", cut(text, kMaxText)}, {"id", "p" + randomHex(6)}, {"time", nowIso()}}});
+    promptId_ = "p" + randomHex(6);
+    pushEntries({{{"kind", "prompt"}, {"text", cut(text, kMaxText)}, {"id", promptId_}, {"time", nowIso()}}});
     Host &host = host_;
     const std::string id = id_;
     backend_.call("session/prompt", {{"sessionId", id_}, {"prompt", blocks}}, [&host, id](const json &result, const json &error) {
@@ -166,14 +161,10 @@ void KimiSession::turnEnded(const json &result, const json &error)
         reply({});
     backend_.noteAuth(error);
     if (!error.is_null()) {
-        const bool login = error.value("code", 0) == kAuthRequired;
-        const std::string message = login ? "Kimi Code is not logged in." : "Kimi Code: " + str(error, "message");
-        pushEntries({{{"kind", "text"}, {"text", message}, {"id", "e" + randomHex(6)}, {"time", nowIso()}}});
-        if (login)
-            loginAttention(message);
-        say(message, true);
+        failure("Kimi Code", str(error, "message"), integer(error, "code") == kAuthRequired);
     } else if (str(result, "stopReason") == "cancelled") {
-        pushEntries({{{"kind", "interrupted"}, {"id", "i" + randomHex(6)}, {"time", nowIso()}}});
+        // Stable: the turn's prompt entry names it (ACP has no turn id).
+        pushEntries({{{"kind", "interrupted"}, {"id", promptId_ + ":interrupted"}, {"time", nowIso()}}});
         turnOver();
     } else {
         rearmLogin(); // a turn worked: the next login problem is news again
