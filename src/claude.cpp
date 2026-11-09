@@ -35,7 +35,10 @@ std::chrono::milliseconds screenQuiet(std::chrono::seconds base)
 
 const char *kInterruptMark = "[Request interrupted by user";
 constexpr auto kSubmitTimeout = std::chrono::seconds(15);
-constexpr auto kTypedTimeout = std::chrono::seconds(5); // the wrapper checks for up to 2 s
+// The wrapper may hold a prompt for up to 3 s while Claude Code draws, then types
+// and checks for up to 2 s: an answer within 5 s is normal, so wait well past it
+// (a late `typed` after the daemon gave up would type the prompt twice).
+constexpr auto kTypedTimeout = std::chrono::seconds(8);
 constexpr int kTypedTries = 3; // typed checks that may fail before the prompt waits for the owner
 constexpr auto kModelTimeout = std::chrono::seconds(30); // a /model with no output by then has failed
 constexpr auto kRetryAfter = std::chrono::milliseconds(600);
