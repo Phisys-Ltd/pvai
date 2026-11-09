@@ -303,6 +303,7 @@ auth) if [ "$2" = status ]; then
   elif [ "$2" = logout ]; then
     if [ -e "$d/logout.fail" ]; then echo 'logout failed'; exit 1; fi
     sleep 1; rm -f "$d/claude.in"; echo 'Logged out'
+  elif [ -e "$d/login.linkonly" ]; then echo 'If the browser did not open, visit: https://claude.com/cai/oauth/authorize?code=true&state=linkonly'; sleep 2; exit 1
   else echo 'Opening browser to sign in'; echo 'If the browser did not open, visit: https://claude.com/cai/oauth/authorize?code=true&state=s1'
     printf 'Paste code here if prompted > '; read code; [ "$code" = good#s1 ] || { echo 'Invalid code'; exit 1; }
     touch "$d/claude.in"; echo 'Login successful'; fi;;
@@ -1770,12 +1771,19 @@ esac
             return !get("sessions", [&](const json &m) { return sessionIn(m, id).empty(); }, 8000).empty();
         };
         // `pvai run` as the owner starts it in a terminal, with an inherited login token; what claude saw.
-        auto wrapperSaw = [&](const std::string &id, const std::string &inheritedToken) {
+        // `kind`: "claude" a program named claude, "other" a plain `sh`, "binary" a program with
+        // another name that PVAI_CLAUDE names (the daemon's way of running it).
+        writeFile(home + "/alt/claude", "#!/bin/sh\necho \"${CLAUDE_CODE_OAUTH_TOKEN-unset}\" > \"$1\"; exec sleep 20\n", true);
+        writeFile(home + "/alt/agent", "#!/bin/sh\necho \"${CLAUDE_CODE_OAUTH_TOKEN-unset}\" > \"$1\"; exec sleep 20\n", true);
+        auto wrapperSaw = [&](const std::string &id, const std::string &inheritedToken, const std::string &kind = "claude") {
             const std::string out = home + "/" + id + ".env";
             fs::remove(out);
-            (void)std::system(("cd '" + project + "' && " + (inheritedToken.empty() ? "" : "CLAUDE_CODE_OAUTH_TOKEN='" + inheritedToken + "' ") + g_pvai
-                               + " run --detached --id " + id + " -- sh -c 'echo \"${CLAUDE_CODE_OAUTH_TOKEN-unset}\" > " + out
-                               + "; exec sleep 20' >/dev/null 2>&1 &")
+            const std::string program = kind == "claude" ? "'" + home + "/alt/claude' '" + out + "'"
+                                        : kind == "binary" ? "'" + home + "/alt/agent' '" + out + "'"
+                                                           : "sh -c 'echo \"${CLAUDE_CODE_OAUTH_TOKEN-unset}\" > " + out + "; exec sleep 20'";
+            (void)std::system(("cd '" + project + "' && " + (kind == "binary" ? "PVAI_CLAUDE='" + home + "/alt/agent' " : std::string())
+                               + (inheritedToken.empty() ? "" : "CLAUDE_CODE_OAUTH_TOKEN='" + inheritedToken + "' ") + g_pvai + " run --detached --id " + id
+                               + " -- " + program + " >/dev/null 2>&1 &")
                                   .c_str());
             const auto seenLines = waitLines(out, 1);
             (void)gone(id);
@@ -1854,6 +1862,8 @@ esac
         check(env.size() >= 2 && env[1] == tokNew, "the wrapper's relaunch reads the file again");
         check(gone(tokSession), "the session ends");
         check(wrapperSaw("wtok1", "") == tokNew, "pvai run in a terminal: claude gets the token (marker and file exist)");
+        check(wrapperSaw("wtok1b", "", "binary") == tokNew, "pvai run: the program PVAI_CLAUDE names gets the token whatever its name");
+        check(wrapperSaw("wtok1c", "", "other") == "unset", "pvai run -- another command: no token, though marker and file exist");
         // A: an inherited token is never replaced.
         check(wrapperSaw("wtok2", inherited) == inherited, "pvai run: an inherited CLAUDE_CODE_OAUTH_TOKEN is left alone, the file does not override it");
         // C: no marker, no token.
@@ -1861,6 +1871,15 @@ esac
         check(wrapperSaw("wtok3", "") == "unset", "pvai run without the marker: no token, though the file exists");
         writeFile(markerFile, "");
         fs::permissions(markerFile, fs::perms::owner_read | fs::perms::owner_write);
+
+        // A plain account login that prints its link and then waits with no more output reports the link anyway.
+        writeFile(bin + "/login.linkonly", "");
+        t.send({{"type", "login"}, {"ref", 2130}, {"assistant", "claude"}});
+        const json linkOnly = get("login", [](const json &m) { return m.value("ref", 0) == 2130 && !m.value("url", json()).is_null(); });
+        check(linkOnly.value("url", "") == "https://claude.com/cai/oauth/authorize?code=true&state=linkonly",
+              "account login that prints its link and then waits: the link is reported");
+        get("login", [](const json &m) { return m.value("ref", 0) == 2130 && m.value("state", "") == "failed"; }, 8000);
+        fs::remove(bin + "/login.linkonly");
 
         // The account logs in (a Claude login ends with a status without the token): the fallback goes inactive.
         t.send({{"type", "login"}, {"ref", 214}, {"assistant", "claude"}});

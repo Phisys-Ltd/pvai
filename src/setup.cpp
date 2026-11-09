@@ -443,8 +443,11 @@ void Setup::loginOutput(const std::string &assistant, Task &task)
     static const std::regex code("\\b[A-Z0-9]{4}-[A-Z0-9]{4,5}\\b");
     bool news = false;
     std::smatch m;
-    if (task.url.empty() && assistant == "claude") {
-        // A link the terminal wrapped is put together, and taken when whole.
+    if (task.url.empty() && assistant == "claude" && task.token) {
+        // `setup-token` runs in a wide terminal; a link it wrapped anyway is
+        // put together, and taken when whole. The account login prints its
+        // link and then waits with no more output, so it cannot be waited
+        // on for "closed": it takes the plain match below.
         bool closed = false;
         const std::string link = findLink(task.output, closed);
         if (closed && !link.empty()) {

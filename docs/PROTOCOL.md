@@ -1043,8 +1043,10 @@ requests below.
   at every launch of claude (a `restart`'s relaunch too) it adds the token
   when the marker exists, the file exists and its own environment has no
   `CLAUDE_CODE_OAUTH_TOKEN`. The daemon's status run with the token gets it
-  in its environment likewise. `pvai run -- COMMAND` with another command is
-  treated alike.
+  in its environment likewise. Only Claude Code gets it: the wrapper adds it
+  when the basename of the command is `claude` or the command is the
+  program `PVAI_CLAUDE` / the search finds; `pvai run -- COMMAND` with
+  another command never gets the token.
 - Precedence: a `CLAUDE_CODE_OAUTH_TOKEN` that is already in a process's
   environment (the daemon's or the wrapper's shell) is left alone and the
   file is never applied over it. Without it the file is a fallback as

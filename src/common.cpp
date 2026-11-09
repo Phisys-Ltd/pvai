@@ -218,6 +218,17 @@ std::vector<std::pair<std::string, std::string>> claudeTokenEnv()
     return {{kEnvClaudeToken, token}};
 }
 
+bool isClaudeCommand(const std::string &command)
+{
+    if (command.empty())
+        return false;
+    const auto slash = command.rfind('/');
+    if (command.substr(slash == std::string::npos ? 0 : slash + 1) == "claude")
+        return true;
+    const std::string binary = claudeBinary();
+    return !binary.empty() && binary == command;
+}
+
 std::string selfExe()
 {
     char buffer[PATH_MAX];

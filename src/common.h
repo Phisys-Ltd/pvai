@@ -74,6 +74,10 @@ bool inheritedClaudeToken();
 // stored token when the marker and the file exist and the environment has
 // no token of its own, else nothing.
 std::vector<std::pair<std::string, std::string>> claudeTokenEnv();
+
+// True when `command` (argv[0] of a `pvai run`) is Claude Code: its basename
+// is `claude`, or it is claudeBinary(). Only that gets the stored token.
+bool isClaudeCommand(const std::string &command);
 // The convention for spoken turns, given to every session as context:
 // Claude Code gets it from the SessionStart hook, Codex as developer
 // instructions.

@@ -398,8 +398,8 @@ int runWrapper(const WrapperOptions &options)
         // daemon's marker says the account login is missing, the file exists
         // and the environment has no token of its own. Checked at every
         // start, a restart's too, here and not in the child; the daemon is
-        // not asked.
-        const auto tokenEnv = claudeTokenEnv();
+        // not asked. Only Claude Code gets it, never another command.
+        const auto tokenEnv = isClaudeCommand(command[0]) ? claudeTokenEnv() : std::vector<std::pair<std::string, std::string>>{};
         g_child = ::forkpty(&master, nullptr, tty ? &g_savedTermios : nullptr, &size);
         if (g_child < 0) {
             std::perror("pvai: forkpty");
