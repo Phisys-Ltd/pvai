@@ -1,3 +1,15 @@
+pvai (0.5.76-1) trixie; urgency=medium
+
+  * Bad transcript or hook data no longer ends the daemon.
+  * Codex approvals queue, and unknown requests get an answer.
+  * An Esc from the app clears the prompt Claude Code put back in the box.
+  * A silent slash or shell command and a limit without a reset time end
+    by the screen.
+  * No blocking waits on the daemon's loop.
+  * One list of machine prompts.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 09 Nov 2026 14:00:00 +0100
+
 pvai (0.5.75-1) trixie; urgency=medium
 
   * Claude token login as a fallback: set-token, login method token,
