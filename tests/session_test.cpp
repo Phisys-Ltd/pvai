@@ -501,6 +501,15 @@ esac
             kinds += e.value("kind", "") + ",";
         check(kinds == "prompt,tool,result,text,", "the history: prompt, tool, result, text: " + hist.dump());
 
+        // An error with a null code and message still ends the turn.
+        a.send({{"type", "prompt"}, {"ref", 48}, {"session", "k-1"}, {"text", "Nochmal"}});
+        const json again = kimi.call("session/prompt");
+        check(!again.is_null(), "a second Kimi prompt");
+        kimi.send({{"jsonrpc", "2.0"}, {"id", again["id"]}, {"error", {{"code", nullptr}, {"message", nullptr}}}});
+        check(!a.next("say", [](const json &m) { return m.value("session", "") == "k-1"; }).empty(), "null code and message: the failure is said");
+        check(!waitSession(a, "k-1", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "and the session is idle again");
+        a.drain();
+
         // Earlier sessions, and one played back.
         a.send({{"type", "conversations"}, {"assistant", "kimi"}, {"cwd", project}});
         call = kimi.call("session/list");

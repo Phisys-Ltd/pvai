@@ -49,7 +49,7 @@ std::string textOf(const json &content)
         if (str(content, "type") == "text")
             return str(content, "text");
         if (str(content, "type") == "content")
-            return textOf(content.value("content", json()));
+            return textOf(member(content, "content"));
         if (str(content, "type") == "diff")
             return str(content, "path");
         return {};
@@ -79,7 +79,7 @@ std::string toolName(const json &call)
 // What a tool call does, in one line: the command, else its title.
 std::string toolText(const json &call)
 {
-    if (auto text = firstString(call.value("rawInput", json()), {"command", "cmd", "path", "file_path", "url", "pattern", "query"}))
+    if (auto text = firstString(member(call, "rawInput"), {"command", "cmd", "path", "file_path", "url", "pattern", "query"}))
         return *text;
     return str(call, "title");
 }
@@ -87,7 +87,7 @@ std::string toolText(const json &call)
 // The first option of a permission request with one of these kinds.
 std::string optionOf(const json &params, std::initializer_list<const char *> kinds)
 {
-    const json options = params.value("options", json());
+    const json options = member(params, "options");
     if (!options.is_array())
         return {};
     for (const char *kind : kinds)
@@ -101,7 +101,7 @@ std::string optionOf(const json &params, std::initializer_list<const char *> kin
 // tool's approval.
 bool isQuestion(const json &params)
 {
-    const json options = params.value("options", json());
+    const json options = member(params, "options");
     if (!options.is_array())
         return false;
     for (const auto &option : options)
@@ -189,7 +189,7 @@ std::string KimiSession::answer(const std::string &choice)
 {
     if (request_.is_null())
         return "no-dialog";
-    const json params = request_.value("params", json());
+    const json params = member(request_, "params");
     std::string option;
     if (choice == "allow")
         option = optionOf(params, {"allow_once", "allow_always"});
@@ -199,7 +199,7 @@ std::string KimiSession::answer(const std::string &choice)
         option = optionOf(params, {"allow_always"});
     else if (choice.rfind("option:", 0) == 0) {
         const std::string wanted = choice.substr(7);
-        const json options = params.value("options", json());
+        const json options = member(params, "options");
         if (options.is_array())
             for (const auto &o : options)
                 if (str(o, "optionId") == wanted)
@@ -268,7 +268,7 @@ void KimiSession::onUpdate(const json &update)
             chunkKind_ = as;
             chunkTime_ = nowIso();
         }
-        chunk_ += textOf(update.value("content", json()));
+        chunk_ += textOf(member(update, "content"));
     } else if (kind == "tool_call") {
         flushText();
         const std::string id = str(update, "toolCallId"), name = toolName(update);
@@ -281,7 +281,7 @@ void KimiSession::onUpdate(const json &update)
         pushEntries({std::move(entry)});
         const std::string status = str(update, "status");
         if (status == "completed" || status == "failed")
-            onUpdate({{"sessionUpdate", "tool_call_update"}, {"toolCallId", id}, {"status", status}, {"content", update.value("content", json())}});
+            onUpdate({{"sessionUpdate", "tool_call_update"}, {"toolCallId", id}, {"status", status}, {"content", member(update, "content")}});
     } else if (kind == "tool_call_update") {
         const std::string status = str(update, "status"), id = str(update, "toolCallId");
         if (status != "completed" && status != "failed")
@@ -290,14 +290,14 @@ void KimiSession::onUpdate(const json &update)
         const std::string name = it == tools_.end() ? "tool" : it->second;
         if (it != tools_.end())
             tools_.erase(it);
-        std::string text = textOf(update.value("content", json()));
+        std::string text = textOf(member(update, "content"));
         if (text.empty() && update.contains("rawOutput") && !update["rawOutput"].is_null())
             text = update["rawOutput"].is_string() ? update["rawOutput"].get<std::string>() : update["rawOutput"].dump();
         if (!text.empty() || status == "failed")
             pushEntries({{{"kind", "result"}, {"tool", name}, {"text", cut(text, kMaxResult)}, {"error", status == "failed"},
                           {"id", id + ":result"}, {"time", nowIso()}}});
     } else if (kind == "usage_update") {
-        const json used = update.value("used", json()), size = update.value("size", json());
+        const json used = member(update, "used"), size = member(update, "size");
         const json context = contextOf(used, size);
         if (context != usage_["context"]) {
             usage_["context"] = context;
@@ -323,7 +323,7 @@ void KimiSession::onPermission(const json &requestId, const json &params)
     if (!request_.is_null()) // a second one replaces it; Kimi asks one at a time
         reply({});
     request_ = {{"id", requestId}, {"params", params}};
-    const json call = params.value("toolCall", json::object());
+    const json call = member(params, "toolCall");
     const bool question = isQuestion(params);
     json options = json::array();
     if (params.contains("options") && params["options"].is_array())
@@ -333,8 +333,8 @@ void KimiSession::onPermission(const json &requestId, const json &params)
     dialog_ = question ? "question" : "permission";
     std::string text = question ? str(call, "title") : toolText(call);
     if (text.empty())
-        text = textOf(call.value("content", json()));
-    dialogInfo_ = dialogInfo(question ? "" : toolName(call), text, question ? textOf(call.value("content", json())) : str(call, "title"));
+        text = textOf(member(call, "content"));
+    dialogInfo_ = dialogInfo(question ? "" : toolName(call), text, question ? textOf(member(call, "content")) : str(call, "title"));
     dialogInfo_["options"] = options;
     attention(dialog_, question ? text : toolName(call) + ": " + text);
     changed();
@@ -385,16 +385,16 @@ std::string KimiSession::setModel(const std::string &model, const json &ref)
 
 void KimiSession::setConfig(const json &result)
 {
-    if (const json modes = result.value("modes", json()); modes.is_object() && !str(modes, "currentModeId").empty())
+    if (const json modes = member(result, "modes"); modes.is_object() && !str(modes, "currentModeId").empty())
         mode_ = str(modes, "currentModeId");
-    const json options = result.value("configOptions", json());
+    const json options = member(result, "configOptions");
     if (!options.is_array())
         return;
     for (const auto &option : options) {
         if (str(option, "id") != "model")
             continue;
         std::string model = str(option, "currentValue");
-        const json values = option.value("options", json());
+        const json values = member(option, "options");
         if (values.is_array())
             for (const auto &v : values)
                 if (str(v, "value") == model && !str(v, "name").empty())
@@ -509,7 +509,7 @@ void KimiBackend::update(std::function<void(const UpdateResult &)> done)
 
 void KimiBackend::noteAuth(const json &error)
 {
-    const json now = error.is_null() ? json(true) : error.value("code", 0) == kAuthRequired ? json(false) : loggedIn_;
+    const json now = error.is_null() ? json(true) : integer(error, "code") == kAuthRequired ? json(false) : loggedIn_;
     if (now != loggedIn_) {
         loggedIn_ = now;
         host_.log(std::string("kimi: ") + (now == json(true) ? "logged in" : "not logged in"));
@@ -542,7 +542,7 @@ void KimiBackend::initializeFailed(const json &error)
 
 void KimiBackend::initialized(const json &result)
 {
-    agentVersion_ = str(result.value("agentInfo", json()), "version");
+    agentVersion_ = str(member(result, "agentInfo"), "version");
     for (KimiSession *session : sessionsOf<KimiSession>())
         session->setVersion(agentVersion_);
 }
@@ -581,7 +581,7 @@ void KimiBackend::service()
             } else if (method == "session/update") {
                 const json &params = object("params");
                 if (auto *session = dynamic_cast<KimiSession *>(host_.session(str(params, "sessionId"))))
-                    session->onUpdate(params.value("update", json::object()));
+                    session->onUpdate(member(params, "update"));
             }
         } catch (const json::exception &e) {
             host_.log(std::string("kimi: ") + method + ": " + e.what());
@@ -621,7 +621,7 @@ KimiSession *KimiBackend::addSession(const std::string &id, const std::string &c
 // The modes a session can be in, as Kimi lists them (session/new, load).
 void KimiBackend::setModes(const json &result)
 {
-    const json modes = result.value("modes", json());
+    const json modes = member(result, "modes");
     if (!modes.is_object() || !modes.contains("availableModes") || !modes["availableModes"].is_array())
         return;
     json list = json::array();
@@ -642,7 +642,7 @@ void KimiBackend::setModes(const json &result)
 // The models `start` can ask for: the values of the `model` option.
 void KimiBackend::setModels(const json &result)
 {
-    const json options = result.value("configOptions", json());
+    const json options = member(result, "configOptions");
     if (!options.is_array())
         return;
     for (const auto &option : options) {
@@ -671,7 +671,7 @@ void KimiBackend::conversations(const std::string &cwd, std::function<void(std::
                 title = conversationTitle(std::move(title));
                 if (title.empty())
                     continue;
-                out.push_back({id, title, unixTimeOf(s.value("updatedAt", json()))});
+                out.push_back({id, title, unixTimeOf(member(s, "updatedAt"))});
             }
         trimConversations(out);
         done(std::move(out));
@@ -688,7 +688,7 @@ void KimiBackend::start(const StartRequest &request, Started done)
     const std::string label = request.label, cwd = request.cwd;
     auto failed = [this, done](const json &error, const char *reason) {
         noteAuth(error);
-        done({}, error.value("code", 0) == kAuthRequired ? "not-logged-in" : reason);
+        done({}, integer(error, "code") == kAuthRequired ? "not-logged-in" : reason);
     };
     auto withModel = [this, model](KimiSession *session) {
         if (model.empty())

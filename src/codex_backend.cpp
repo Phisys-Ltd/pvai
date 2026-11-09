@@ -50,10 +50,10 @@ json rolloutContext(const std::string &path)
     const json event = json::parse(found, nullptr, false);
     if (!event.is_object())
         return nullptr;
-    const json info = event.value("payload", json()).value("info", json());
+    const json info = member(member(event, "payload"), "info");
     if (!info.is_object())
         return nullptr;
-    return contextOf(info.value("last_token_usage", json()).value("total_tokens", 0LL), info.value("model_context_window", json()));
+    return contextOf(integer(member(info, "last_token_usage"), "total_tokens"), member(info, "model_context_window"));
 }
 
 // A thread's status as a session state and dialog.
@@ -107,7 +107,7 @@ json infoOf(const std::string &method, const json &params)
         return dialogInfo("edit", paths, reason);
     }
     if (method == "item/permissions/requestApproval")
-        return dialogInfo("permissions", params.value("permissions", json()).dump(), reason);
+        return dialogInfo("permissions", member(params, "permissions").dump(), reason);
     if (method == "item/tool/requestUserInput") {
         return dialogInfo("", questionOf(params), "");
     }
@@ -126,13 +126,15 @@ json decision(const std::string &method, const json &params, bool allow)
         return {{"action", allow ? "accept" : "cancel"}};
     if (!allow)
         return nullptr;
-    if (method == "item/permissions/requestApproval")
-        return {{"permissions", params.value("permissions", json::object())}, {"scope", "turn"}};
+    if (method == "item/permissions/requestApproval") {
+        json granted = member(params, "permissions");
+        return {{"permissions", granted.is_object() ? std::move(granted) : json::object()}, {"scope", "turn"}};
+    }
     // A question: the first option of each.
     json answers = json::object();
     if (params.contains("questions") && params["questions"].is_array())
         for (const auto &question : params["questions"]) {
-            const json options = question.value("options", json());
+            const json options = member(question, "options");
             json picked = json::array();
             if (options.is_array() && !options.empty())
                 picked.push_back(str(options[0], "label"));
@@ -183,8 +185,8 @@ CodexSession::CodexSession(Host &host, CodexBackend &backend, const json &thread
     , backend_(backend)
     , detached_(detached)
 {
-    std::tie(state_, dialog_) = stateOf(thread.value("status", json()));
-    usage_ = {{"model", thread.value("model", json())},
+    std::tie(state_, dialog_) = stateOf(member(thread, "status"));
+    usage_ = {{"model", member(thread, "model")},
               {"context", nullptr},
               {"fiveHour", backend.limits()["fiveHour"]},
               {"sevenDay", backend.limits()["sevenDay"]},
@@ -237,8 +239,8 @@ void CodexSession::submit(const Prompt &prompt)
                       // history with the reason, so that it is not lost silently.
                       self->turnPending_ = false;
                       const std::string message = str(error, "message");
-                      const json data = error.value("data", json());
-                      const json info = data.is_object() ? data.value("codexErrorInfo", json()) : json();
+                      const json data = member(error, "data");
+                      const json info = data.is_object() ? member(data, "codexErrorInfo") : json();
                       self->host_.log(id + ": codex rejected the turn: " + (message.empty() ? error.dump() : message));
                       self->pushEntries({{{"kind", "prompt"}, {"text", cut(text, kMaxText)}, {"id", "p" + randomHex(6)}, {"time", nowIso()}}});
                       self->failTurn("", message, authFailure(info, message));
@@ -290,7 +292,7 @@ void CodexSession::reply(bool allow)
 {
     const json request = request_;
     request_ = nullptr;
-    const json result = decision(str(request, "method"), request.value("params", json()), allow);
+    const json result = decision(str(request, "method"), member(request, "params"), allow);
     if (result.is_null()) {
         backend_.respondError(request["id"], -32000, "declined by the owner");
         // A refusal ends the turn: the approvals waiting behind it with it.
@@ -477,7 +479,7 @@ std::vector<json> CodexSession::entries(const json &item, long long ms)
                 output = it->second;
             outputs_.erase(it);
         }
-        const json code = item.value("exitCode", json());
+        const json code = member(item, "exitCode");
         const std::string status = str(item, "status");
         result("shell", output, (code.is_number() && code.get<long long>() != 0) || status == "failed" || status == "declined");
     } else if (type == "fileChange") {
@@ -491,8 +493,8 @@ std::vector<json> CodexSession::entries(const json &item, long long ms)
             result("edit", status, true);
     } else if (type == "mcpToolCall" || type == "dynamicToolCall") {
         const std::string name = type == "mcpToolCall" ? str(item, "server") + "." + str(item, "tool") : str(item, "tool");
-        tool(name, item.value("arguments", json()).dump());
-        const json error = item.value("error", json());
+        tool(name, member(item, "arguments").dump());
+        const json error = member(item, "error");
         if (error.is_object())
             result(name, str(error, "message"), true);
         else if (item.contains("result") && !item["result"].is_null())
@@ -510,7 +512,7 @@ void CodexSession::onNotification(const std::string &method, const json &params)
     if (method == "thread/closed" || method == "thread/archived" || method == "thread/deleted") {
         end();
     } else if (method == "thread/status/changed") {
-        const json status = params.value("status", json());
+        const json status = member(params, "status");
         if (str(status, "type") == "notLoaded") {
             end();
             return;
@@ -536,10 +538,10 @@ void CodexSession::onNotification(const std::string &method, const json &params)
         // capacity problem): the app hears it.
         noteModel(str(params, "toModel"), str(params, "reason").empty() ? "rerouted" : str(params, "reason"));
     } else if (method == "thread/settings/updated") {
-        const json settings = params.value("threadSettings", json());
-        setSettings(settings.value("approvalPolicy", json()), settings.value("sandboxPolicy", json()), settings.value("model", json()));
+        const json settings = member(params, "threadSettings");
+        setSettings(member(settings, "approvalPolicy"), member(settings, "sandboxPolicy"), member(settings, "model"));
     } else if (method == "turn/started") {
-        turnId_ = str(params.value("turn", json()), "id");
+        turnId_ = str(member(params, "turn"), "id");
         turnPending_ = false;
         answer_.clear();
         if (state_ == "idle") {
@@ -547,7 +549,7 @@ void CodexSession::onNotification(const std::string &method, const json &params)
             changed();
         }
     } else if (method == "turn/completed") {
-        const json turn = params.value("turn", json());
+        const json turn = member(params, "turn");
         const std::string done = str(turn, "id");
         // An `error` already ended and reported this turn (Codex may send no
         // turn/completed for it at all, or one after): nothing more to say,
@@ -557,14 +559,14 @@ void CodexSession::onNotification(const std::string &method, const json &params)
             return;
         }
         endedTurn_ = done;
-        const json error = turn.value("error", json());
+        const json error = member(turn, "error");
         if (str(turn, "status") == "interrupted") {
             const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
             pushEntries({{{"kind", "interrupted"}, {"id", str(turn, "id") + ":interrupted"}, {"time", isoTime(now.count())}}});
             turnOver();
         } else if (error.is_object() || str(turn, "status") == "failed") {
             const std::string message = str(error, "message");
-            failTurn(done, message, authFailure(error.value("codexErrorInfo", json()), message));
+            failTurn(done, message, authFailure(member(error, "codexErrorInfo"), message));
         } else {
             rearmLogin(); // a turn worked: the next login problem is news again
             say(answer_);
@@ -574,28 +576,28 @@ void CodexSession::onNotification(const std::string &method, const json &params)
         // A failure of the turn. `willRetry` ones ("Reconnecting... 2/5") are
         // not the end. The last one may be all there is: Codex has sent no
         // turn/completed after it (checked against codex 0.166 with no login).
-        if (params.value("willRetry", false))
+        if (flag(params, "willRetry"))
             return;
-        const json error = params.value("error", json());
+        const json error = member(params, "error");
         const std::string turn = str(params, "turnId");
         if (!turn.empty() && (turn == failedTurn_ || turn == endedTurn_ || (!turnId_.empty() && turn != turnId_)))
             return; // reported already, or another turn's
         const std::string message = str(error, "message");
-        failTurn(turn, message, authFailure(error.value("codexErrorInfo", json()), message));
+        failTurn(turn, message, authFailure(member(error, "codexErrorInfo"), message));
         endedTurn_ = turn;
         finishTurn();
     } else if (method == "item/completed") {
-        const json item = params.value("item", json());
+        const json item = member(params, "item");
         const std::string type = str(item, "type");
         if (type == "agentMessage")
             answer_ = str(item, "text");
         else if (type == "userMessage")
             for (const auto &e : entries(item, 0))
                 promptVoice(str(e, "text"));
-        pushEntries(entries(item, params.value("completedAtMs", 0LL)));
+        pushEntries(entries(item, integer(params, "completedAtMs")));
     } else if (method == "item/started") {
         // A file change's approval names only the item: its paths are here.
-        const json item = params.value("item", json());
+        const json item = member(params, "item");
         if (str(item, "type") == "fileChange" && item.contains("changes") && item["changes"].is_array()) {
             std::string paths;
             for (const auto &change : item["changes"])
@@ -607,8 +609,8 @@ void CodexSession::onNotification(const std::string &method, const json &params)
         if (output.size() < kMaxResult + 16)
             output += str(params, "delta");
     } else if (method == "thread/tokenUsage/updated") {
-        const json usage = params.value("tokenUsage", json());
-        const json context = contextOf(usage.value("last", json()).value("totalTokens", 0LL), usage.value("modelContextWindow", json()));
+        const json usage = member(params, "tokenUsage");
+        const json context = contextOf(integer(member(usage, "last"), "totalTokens"), member(usage, "modelContextWindow"));
         if (context != usage_["context"]) {
             usage_["context"] = context;
             usageChanged();
@@ -729,7 +731,7 @@ void CodexBackend::readAccount(std::function<void(bool changed)> done)
     auto apply = [this, done](const json &account) {
         serverAccount_ = account.is_object();
         json name;
-        if (account.is_object() && str(account, "type") == "chatgpt" && account.value("email", json()).is_string()
+        if (account.is_object() && str(account, "type") == "chatgpt" && member(account, "email").is_string()
             && loggedIn_ != json(false))
             name = account["email"];
         const bool changed = name != accountName_;
@@ -739,7 +741,7 @@ void CodexBackend::readAccount(std::function<void(bool changed)> done)
     if (!ready_)
         return apply(json());
     call("account/read", json::object(), [apply](const json &result, const json &error) {
-        apply(error.is_null() ? result.value("account", json()) : json());
+        apply(error.is_null() ? member(result, "account") : json());
     });
 }
 
@@ -812,12 +814,12 @@ void CodexBackend::initialized(const json &result)
     for (CodexSession *session : sessionsOf<CodexSession>())
         session->setVersion(serverVersion_);
     call("account/rateLimits/read", json::object(),
-         [this](const json &result, const json &) { setLimits(result.value("rateLimits", json())); });
+         [this](const json &result, const json &) { setLimits(member(result, "rateLimits")); });
     call("model/list", json::object(), [this](const json &result, const json &) {
         json models = json::array();
         if (result.contains("data") && result["data"].is_array())
             for (const auto &model : result["data"])
-                if (!model.value("hidden", false) && !str(model, "model").empty())
+                if (!flag(model, "hidden") && !str(model, "model").empty())
                     models.push_back(str(model, "model"));
         const bool changed = models != models_;
         models_ = models;
@@ -871,15 +873,15 @@ void CodexBackend::service()
             } else {
                 const json &params = object("params");
                 if (method == "account/rateLimits/updated") {
-                    setLimits(params.value("rateLimits", json()));
+                    setLimits(member(params, "rateLimits"));
                 } else if (method == "account/updated") {
                     refreshLogin([this](bool changed) {
                         if (changed)
                             host_.assistantsChanged();
                     });
                 } else if (method == "thread/started") {
-                    const json thread = params.value("thread", json());
-                    if (thread.value("parentThreadId", json()).is_null())
+                    const json thread = member(params, "thread");
+                    if (member(thread, "parentThreadId").is_null())
                         adopt(str(thread, "id"));
                     else
                         noteSubagent(thread);
@@ -924,8 +926,8 @@ namespace {
 
 bool activeStatus(const json &holder)
 {
-    const json status = holder.value("status", json());
-    return status.is_object() && status.value("type", "") == "active";
+    const json status = member(holder, "status");
+    return status.is_object() && str(status, "type") == "active";
 }
 
 } // namespace
@@ -940,7 +942,7 @@ void CodexBackend::noteSubagent(const json &thread)
     if (id.empty() || parent.empty())
         return;
     std::string type = str(thread, "agentRole");
-    const json source = thread.value("source", json());
+    const json source = member(thread, "source");
     if (type.empty() && source.is_object() && source.contains("subAgent") && source["subAgent"].is_string())
         type = source["subAgent"].get<std::string>();
     std::string description = shortTitle(str(thread, "preview"));
@@ -952,7 +954,7 @@ void CodexBackend::noteSubagent(const json &thread)
                     {"description", description},
                     {"name", str(thread, "agentNickname")},
                     {"background", true},
-                    {"startedAt", thread.value("createdAt", 0LL)}},
+                    {"startedAt", integer(thread, "createdAt")}},
                    activeStatus(thread)};
     auto known = subagents_.find(id);
     const bool news = known == subagents_.end() || known->second.active != agent.active || known->second.entry != agent.entry;
@@ -1044,9 +1046,9 @@ void CodexBackend::adopt(const std::string &id)
         adopting_.erase(id);
         if (!result.contains("thread"))
             return;
-        if (result["thread"].value("parentThreadId", json()).is_null()) {
+        if (member(result["thread"], "parentThreadId").is_null()) {
             if (CodexSession *session = addSession(result["thread"], false))
-                session->setSettings(result.value("approvalPolicy", json()), result.value("sandbox", json()), result.value("model", json()));
+                session->setSettings(member(result, "approvalPolicy"), member(result, "sandbox"), member(result, "model"));
         } else
             noteSubagent(result["thread"]);
     });
@@ -1056,7 +1058,7 @@ CodexSession *CodexBackend::addSession(const json &thread, bool detached)
 {
     const std::string id = str(thread, "id");
     // Subagents' threads are part of their parent's turn.
-    if (id.empty() || !thread.value("parentThreadId", json()).is_null())
+    if (id.empty() || !member(thread, "parentThreadId").is_null())
         return nullptr;
     if (auto *existing = dynamic_cast<CodexSession *>(host_.session(id))) {
         if (detached)
@@ -1092,10 +1094,10 @@ void CodexBackend::setLimits(const json &limits)
     if (!limits.is_object())
         return;
     auto window = [&](const char *key) -> json {
-        const json w = limits.value(key, json());
+        const json w = member(limits, key);
         if (!w.is_object())
             return nullptr;
-        return {{"percent", w.value("usedPercent", json())}, {"resetsAt", w.value("resetsAt", json())}};
+        return {{"percent", member(w, "usedPercent")}, {"resetsAt", member(w, "resetsAt")}};
     };
     const json fresh = {{"fiveHour", window("primary")}, {"sevenDay", window("secondary")}};
     if (fresh == limits_)
@@ -1126,8 +1128,8 @@ void CodexBackend::conversations(const std::string &cwd, std::function<void(std:
             for (const json *list : std::initializer_list<const json *>{&open, &archived})
                 for (const auto &thread : *list) {
                     const std::string id = str(thread, "id");
-                    if (id.empty() || host_.session(id) || !thread.value("parentThreadId", json()).is_null()
-                        || thread.value("ephemeral", false))
+                    if (id.empty() || host_.session(id) || !member(thread, "parentThreadId").is_null()
+                        || flag(thread, "ephemeral"))
                         continue;
                     std::string title = str(thread, "name");
                     if (title.empty())
@@ -1135,7 +1137,7 @@ void CodexBackend::conversations(const std::string &cwd, std::function<void(std:
                     title = conversationTitle(std::move(title));
                     if (title.empty())
                         continue;
-                    out.push_back({id, title, thread.value("updatedAt", 0LL)});
+                    out.push_back({id, title, integer(thread, "updatedAt")});
                 }
             trimConversations(out);
             done(std::move(out));
@@ -1163,15 +1165,15 @@ void CodexBackend::start(const StartRequest &request, Started done)
             if (!error.is_null()) {
                 // No session exists to show it in: the daemon's log and the `rejected` reason carry it.
                 const std::string message = str(error, "message");
-                const json data = error.value("data", json());
+                const json data = member(error, "data");
                 host_.log("codex: " + std::string(failure) + ": " + (message.empty() ? error.dump() : message));
-                if (authFailure(data.is_object() ? data.value("codexErrorInfo", json()) : json(), message))
+                if (authFailure(data.is_object() ? member(data, "codexErrorInfo") : json(), message))
                     return done({}, "not-logged-in");
             }
             return done({}, failure);
         }
         session->setLabel(label);
-        session->setSettings(result.value("approvalPolicy", json()), result.value("sandbox", json()), result.value("model", json()));
+        session->setSettings(member(result, "approvalPolicy"), member(result, "sandbox"), member(result, "model"));
         done(session->id(), {});
     };
     if (request.resume.empty()) {
