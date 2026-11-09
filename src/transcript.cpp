@@ -324,6 +324,8 @@ void TranscriptTail::resetState()
     limited_ = nullptr;
     limitedAt_.clear();
     limitHits_ = limitClears_ = turnEndCount_ = 0;
+    authFailures_ = replies_ = 0;
+    authFailedAt_.clear();
     turnRunning_ = turnEnds_ = windowed_ = false;
     noteAt_ = 0;
     queued_.clear();
@@ -461,6 +463,17 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
         return;
     }
     if (type == "assistant" && !line.value("isSidechain", false)) {
+        if (line.value("isApiErrorMessage", false)) {
+            const json status = line.value("apiErrorStatus", json());
+            const std::string error = str(line, "error"), apiError = str(line, "apiError");
+            if (error == "authentication_failed" || apiError == "authentication_failed" || apiError == "authentication_error"
+                || (status.is_number() && status == 401)) {
+                ++authFailures_;
+                authFailedAt_ = line.value("timestamp", "");
+            }
+        } else if (!line.value("isMeta", false)) {
+            ++replies_;
+        }
         // A model's own quota (Fable's, model_requires_usage_credits) has no
         // quotaLimits: its reset is in apiErrorParams.rate_limit_info.
         const std::string apiError = line.value("apiError", "");

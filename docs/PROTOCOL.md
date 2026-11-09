@@ -481,7 +481,7 @@ Daemon to app:
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (Kimi: no login on the host), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `answer`, `clearInput`, `mode`, `model` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`; to `prompt` also `self-message` (its `from` is the target session itself) |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (no login on the host, see "Login problems"), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `answer`, `clearInput`, `mode`, `model` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`; to `prompt` also `self-message` (its `from` is the target session itself) |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `renamed` | `ref`, `session`, `label` | the session carries `label` (trimmed) now; the `sessions` list follows |
@@ -492,7 +492,7 @@ Daemon to app:
 | `projects` | `dirs: [path]` | most recently used first |
 | `browse` | `path`, `dirs: [name]`, `ok` | sorted, hidden ones left out; `ok: false` when `path` cannot be read |
 | `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn counts as spoken, or its answer has a 🔊 line (see "What gets spoken") |
-| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the last lines above the prompt box, or the dialog's first lines). Also `kind: "login"` (Kimi lost its login, see "Kimi sessions") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models"); since 0.5.50 `kind: "limited"`: a Claude Code session hit its usage limit, `text` is Claude Code's message (see "Usage limit"); since 0.5.63 `kind: "stuck"`: sent when the wrapper reports that Claude Code did not act on the Return (`submitted` with `ok: false`, see `register`): for a slash or shell command the box was emptied and the session is idle again; for a prompt it was typed a second time and failed again, and it waits at the front of the queue behind the `screen` dialog; `text` is the first 40 characters |
+| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the last lines above the prompt box, or the dialog's first lines). Also `kind: "login"` (the assistant's login is gone or no longer works, for Claude Code, Codex and Kimi; see "Login problems"; `text` is a fixed sentence such as "Codex is not logged in.") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models"); since 0.5.50 `kind: "limited"`: a Claude Code session hit its usage limit, `text` is Claude Code's message (see "Usage limit"); since 0.5.63 `kind: "stuck"`: sent when the wrapper reports that Claude Code did not act on the Return (`submitted` with `ok: false`, see `register`): for a slash or shell command the box was emptied and the session is idle again; for a prompt it was typed a second time and failed again, and it waits at the front of the queue behind the `screen` dialog; `text` is the first 40 characters |
 | `history` | `session`, `entries: [Entry]` | answer to `subscribe`, oldest first; sent again, to every subscriber, when the session moves to another transcript (`/clear`): the view starts over |
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
 | `conversations` | `assistant`, `cwd`, `conversations: [Conversation]` | answer to `conversations` |
@@ -683,6 +683,26 @@ for Claude Code; the differences:
   `false`.
 - `prompt` starts a turn; while one runs, prompts are queued as for Claude.
   Slash commands are Claude Code's: Codex gets them as plain text.
+- A failed turn is never silent: a turn/completed with an error (or status
+  `failed`), an `error` notification that is not a retry (`willRetry:
+  false`; the retries, "Reconnecting... 2/5", are skipped), and a
+  turn/start that the app server refuses all end the turn the same way:
+  a `text` entry `Codex: <the message>` in the history (for a refused
+  turn/start also the `prompt` entry, which never became a turn), `say`
+  with the same text, the session idle again with the next queued prompt
+  going on. When `error` and turn/completed report the same turn it is one
+  entry and one `say`. Codex sends no turn/completed after a final `error`
+  of some failures (checked with codex 0.166 and no login: retries, then
+  one `error` with `willRetry: false` and the thread's status
+  `systemError`), so the `error` ends the turn. A refused `thread/start`
+  (no session exists to show it in) is `rejected` with `bad-start` and in the
+  daemon's log. A model the account may not use ("The 'gpt-6.1-sol' model
+  is not supported when using Codex with a ChatGPT account.") is such an
+  ordinary error, not a login problem. A login problem is told apart by
+  `codexErrorInfo` (`unauthorized`, or a variant with `httpStatusCode: 401`
+  such as `httpConnectionFailed`), else "401 Unauthorized" in the message;
+  its entry and `say` read `Codex is not logged in.` and it also sends the
+  `login` attention (see "Login problems").
 - `interrupt` interrupts the running turn (an open approval is refused
   first).
 - `answer`: `allow` accepts the approval (for a question: the first option
@@ -758,7 +778,7 @@ has open are Kimi's own and are not shown (Kimi locks them).
   The turn ends with Kimi's answer to it: `say` with the 🔊 line as usual;
   a cancelled turn is an `interrupted` entry. A prompt that fails because
   the login is gone gets a text entry saying so, `attention` with `kind:
-  "login"`, and `say`.
+  "login"` (once per incident, see "Login problems") and `say`.
 - Dialogs: Kimi's `session/request_permission`. A tool's approval is
   `permission` (`dialogInfo.tool` `shell`, `edit`, `read`, `search`,
   `fetch`, ... from the tool's kind, `text` the command or path, `message`
@@ -803,8 +823,64 @@ not (before, Codex and Kimi only when installed); see "Install and login". `star
 that is not is `rejected` with `not-installed`. `loggedIn` (Kimi since 0.5.16,
 all since 0.5.24):
 `true` or `false` once the assistant said, `null` before; `false` means
-the owner has to log in (`login`, see "Install and login"; for Kimi
-`start` is then `rejected` with `not-logged-in`).
+the owner has to log in (`login`, see "Install and login"; `start` is then
+`rejected` with `not-logged-in`, see "Login problems").
+
+`account` (every entry; string or `null`; always sent): the account's name,
+read again like `loggedIn` (after the versions, every install, login and
+logout, and when Codex says `account/updated`). Only a name, never a
+token. Claude Code: the `email` of `claude auth status --json`; `null`
+while a token is in effect (the stored fallback token or a
+`CLAUDE_CODE_OAUTH_TOKEN` in the environment) since the status has none
+then. Codex: `account/read` of its app server, the `email` of a ChatGPT
+login; `null` for an API key (it has no name), without a login, or while the
+app server does not answer. Kimi: always `null` (ACP says none). The Codex
+app server keeps the account in memory: it picks up a login when it had no
+account (checked: `codex login --with-api-key` against a running server,
+`account/read` changed from none to the key), but not a logout (the same
+server still reported the account after `codex logout` deleted
+`auth.json`), and another account replacing a known one is assumed not seen
+either. So after a Codex login over a known account and after every
+Codex logout the daemon restarts the shared app server (`codex app-server
+daemon restart`) as soon as no Codex session is busy or waiting and no
+`pvai codex` TUI runs; the Codex sessions end with it (their
+conversations stay: `conversations`, `start.resume`), and `account` and
+`models` are those of the new account once it is back (an `assistants`
+message follows).
+
+### Login problems
+
+Since the daemon cannot see a dead login in `loggedIn` alone, every
+assistant also reports it as an `attention` of kind `login` (`text` a fixed
+sentence) and a `start` refuses what it knows is not logged in:
+
+- `attention` `login` once per incident per session: not again until a turn
+  worked (Claude Code: an assistant reply in the transcript, Codex and Kimi:
+  a turn that ended without error), the footer stopped saying so, or a login
+  (also a `set-token`) went through on this host.
+- Claude Code: from the transcript, an assistant line with
+  `isApiErrorMessage: true` and `error: "authentication_failed"` (or
+  `apiError` `authentication_failed`/`authentication_error`, or
+  `apiErrorStatus: 401`) written in the last ten minutes; only these fields
+  count, never what the text says, so an answer that quotes "Please run
+  /login" is none. From the screen: the footer, the rows under the prompt
+  box's bottom rule, says `Not logged in · Run /login`; the wrapper reports
+  it as `login: true` in its `screen` message (added field; the
+  conversation above the box is never read, so the same words in an answer
+  do not count). This is how an expired or revoked token is noticed:
+  `claude auth status --json` says `loggedIn: true` for any
+  `CLAUDE_CODE_OAUTH_TOKEN`, even a made-up one.
+- Codex: as above, from `codexErrorInfo` of a failed turn or a refused
+  turn/start.
+- Kimi: Kimi's authentication-required error to a prompt, as before.
+- `start` is `rejected` with `not-logged-in` when the daemon's cached
+  `loggedIn` for that assistant is `false`: Codex from `codex login status`,
+  Claude Code from the cached `claude auth status` decision, only while no
+  token takes over (the stored fallback is not active, there is no stored
+  token file and no `CLAUDE_CODE_OAUTH_TOKEN` in the daemon's environment);
+  no status run happens before a start (on a Mac with a damaged Keychain
+  that call prompts). With `loggedIn` `null` it starts as before. Kimi
+  answers it when Kimi itself says so on `session/new`.
 
 ## Ended conversations
 
@@ -987,7 +1063,7 @@ one task per assistant at a time.
   as they are. For Claude Code the stored fallback token is deleted too,
   even when `claude auth logout` fails (see "Claude token login").
 - `loggedIn` in `welcome.assistants` for all three: Claude Code from
-  `claude auth status --json`, Codex from `codex login status`, Kimi from
+  `claude auth status --json`, Codex from `codex login status` (exit status 0: a ChatGPT login or an API key), Kimi from
   its ACP answers (and `true` after a login went through); read with the
   versions, after every install, login and logout. `null` when not known.
 - `welcome.assistants` lists every assistant pvai knows, installed or not
@@ -1074,9 +1150,12 @@ requests below.
 - Limit: `claude auth status --json` does not check a token against the
   server. Any value in `CLAUDE_CODE_OAUTH_TOKEN` reads as `loggedIn: true`
   (`authMethod: "oauth_token"`, tried with an obviously fake token on Claude
-  Code 2.1.319). So an expired or revoked token is not seen as `loggedIn:
-  false`; sessions fail when they first need the server. pvai does not probe
-  the network for it.
+  Code 2.1.319). So an expired or revoked token is never seen as `loggedIn:
+  false`; it shows through the `login` attention of the session that
+  needed it (see "Login problems": Claude Code writes an
+  `authentication_failed` API error with status 401 into the transcript and
+  shows "Not logged in" in its footer). pvai does not probe the network
+  for it.
 
 ## Versions and updates
 

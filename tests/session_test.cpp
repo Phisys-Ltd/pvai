@@ -90,7 +90,10 @@ public:
     }
 
     std::atomic<int> threadListCalls{0};
-    std::atomic<bool> kidActive{true}; // the subagent thread t-kid of t-new
+    std::atomic<int> rejectTurn{0}; // turn/start answers an error: 1 a model the account may not use, 2 a login problem
+    std::atomic<bool> rejectStart{false}; // thread/start answers an error
+    std::atomic<bool> hasAccount{false};  // account/read answers a ChatGPT account
+    std::atomic<bool> kidActive{false}; // the subagent thread t-kid of t-new (found by the first rescan: idle until a test says so)
     json kid() const
     {
         return {{"id", "t-kid"}, {"parentThreadId", "t-new"}, {"agentRole", "explorer"}, {"agentNickname", "Hume"},
@@ -168,6 +171,9 @@ protected:
         };
         if (method == "initialize")
             reply(id, {{"userAgent", "codex_test/7.7.7 (Linux; test)"}});
+        else if (method == "account/read")
+            reply(id, hasAccount ? json{{"account", {{"type", "chatgpt"}, {"email", "codex.user@example.com"}, {"planType", "plus"}}}, {"requiresOpenaiAuth", true}}
+                                 : json{{"account", nullptr}, {"requiresOpenaiAuth", true}});
         else if (method == "account/rateLimits/read")
             reply(id, {{"rateLimits", json::object()}});
         else if (method == "model/list")
@@ -187,7 +193,16 @@ protected:
             if (params.value("threadId", "") == "t-tui")
                 data.push_back({{"item", {{"type", "agentMessage"}, {"id", "i1"}, {"text", "earlier answer"}}}, {"completedAtMs", 1000}});
             reply(id, {{"data", data}});
-        } else if (method == "thread/start")
+        } else if (method == "turn/start" && rejectTurn > 0) {
+            if (rejectTurn == 1)
+                writeNow({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32600},
+                          {"message", "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."}}}});
+            else
+                writeNow({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32600}, {"message", "unexpected status 401 Unauthorized: Missing bearer"},
+                          {"data", {{"codexErrorInfo", {{"httpConnectionFailed", {{"httpStatusCode", 401}}}}}}}}}});
+        } else if (method == "thread/start" && rejectStart)
+            writeNow({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32600}, {"message", "thread/start refused"}}}});
+        else if (method == "thread/start")
             reply(id, {{"thread", thread("t-new", params.value("cwd", ""))}, {"approvalPolicy", "on-request"},
                        {"sandbox", {{"type", "workspaceWrite"}, {"networkAccess", false}}}, {"model", "gpt-test"}});
         else if (method == "thread/list") {
@@ -299,7 +314,9 @@ setup-token)
   esac;;
 auth) if [ "$2" = status ]; then
     echo "${CLAUDE_CODE_OAUTH_TOKEN-unset}" >> "$d/claude.statusenv"
-    if [ -e "$d/claude.in" ] || [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then echo '{"loggedIn": true}'; else echo '{"loggedIn": false}'; fi
+    if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then echo '{"loggedIn": true, "authMethod": "oauth_token"}'
+    elif [ -e "$d/claude.in" ]; then echo '{"loggedIn": true, "authMethod": "claude.ai", "email": "claude.user@example.com"}'
+    else echo '{"loggedIn": false}'; fi
   elif [ "$2" = logout ]; then
     if [ -e "$d/logout.fail" ]; then echo 'logout failed'; exit 1; fi
     sleep 1; rm -f "$d/claude.in"; echo 'Logged out'
@@ -314,6 +331,7 @@ esac
     writeFile(bin + "/codex",
               "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n--version) echo codex-cli 5.5.5;;\n"
               "update) echo checking; echo 'npm ERR! needs root' >&2; exit 1;;\n"
+              "app-server) echo \"$*\" >> \"$d/codex.calls\";;\n"
               "login) if [ \"$2\" = status ]; then [ -e \"$d/codex.in\" ] && { echo 'Logged in using ChatGPT'; exit 0; }; echo 'Not logged in'; exit 1; fi\n"
               "  echo '1. Open this link in your browser and sign in to your account'; echo '   https://auth.openai.com/codex/device';\n"
               "  echo '2. Enter this one-time code (expires in 15 minutes)'; echo '   ABCD-12345'; sleep 1; touch \"$d/codex.in\";;\n"
@@ -539,6 +557,38 @@ esac
           "its history comes from thread/items/list");
     check(tui.value("stoppable", false), "a thread no pvai codex holds can be stopped");
 
+    // Not logged in (`codex login status` said so): the start is refused before anything goes to the app server;
+    // after the login it goes through, and the account's name (account/read, an email) is in assistants.
+    {
+        auto codexEntry = [](const json &message) {
+            for (const auto &x : message.value("assistants", json::array()))
+                if (x.value("name", "") == "codex")
+                    return x;
+            return json::object();
+        };
+        for (int i = 0; i < 40; ++i) {
+            LineClient probe;
+            probe.send(app());
+            if (codexEntry(probe.next("welcome")).value("loggedIn", json()) == false)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        a.send({{"type", "start"}, {"ref", 1100}, {"assistant", "codex"}, {"cwd", project}});
+        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 1100; }).value("reason", "") == "not-logged-in",
+              "codex without a login: rejected not-logged-in");
+        check(codex.call("thread/start", {}, 300).is_null(), "and no thread/start went to the app server");
+        codex.hasAccount = true;
+        a.send({{"type", "login"}, {"ref", 1101}, {"assistant", "codex"}});
+        check(!a.next("login", [](const json &m) { return m.value("assistant", "") == "codex" && m.value("state", "") == "done"; }, 6000).empty(),
+              "the codex login goes through");
+        const json named = a.next("assistants", [&](const json &m) {
+            const json c = codexEntry(m);
+            return c.value("loggedIn", json()) == true && c.value("account", json()) == "codex.user@example.com";
+        }, 6000);
+        check(!named.empty(), "assistants: codex loggedIn true, account the email from account/read");
+        check(!codexEntry(named).dump().empty() && codexEntry(named).dump().find("token") == std::string::npos, "and no token in it");
+    }
+
     // A new thread: prompt, turn, spoken answer.
     a.send({{"type", "start"}, {"ref", 2}, {"assistant", "codex"}, {"cwd", project}, {"label", "neu"}, {"args", {"-m", "gpt-test"}}});
     json started = a.next("started");
@@ -580,6 +630,122 @@ esac
     codex.send({{"method", "turn/completed"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u1"}, {"status", "completed"}}}}}});
     json say = a.next("say", [](const json &m) { return m.value("session", "") == "t-new"; });
     check(say.value("text", "") == "Spoken." && say.value("voice", false), "the turn's 🔊 line is said, voice=true though the prompt was typed: " + say.dump());
+
+    // Failed turns are visible: a text entry, `say`, and for a login problem the "login" attention, once per incident.
+    {
+        a.drain();
+        const std::string modelText = "Codex: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.";
+        auto textsOf = [&]() {
+            a.send({{"type", "subscribe"}, {"session", "t-new"}});
+            const json h = a.next("history", [](const json &m) { return m.value("session", "") == "t-new"; });
+            std::vector<std::string> out;
+            for (const auto &e : h.value("entries", json::array()))
+                if (e.value("kind", "") == "text" || e.value("kind", "") == "prompt")
+                    out.push_back(e.value("kind", "") + ":" + e.value("text", ""));
+            return out;
+        };
+        auto count = [&](const std::vector<std::string> &all, const std::string &what) { return std::count(all.begin(), all.end(), what); };
+        auto prompt = [&](int ref, const std::string &text) {
+            a.send({{"type", "prompt"}, {"ref", ref}, {"session", "t-new"}, {"text", text}});
+            return !a.next("accepted", [&](const json &m) { return m.value("ref", 0) == ref; }).empty();
+        };
+        // Everything the app hears about t-new for `ms`: the says and the login attentions among it.
+        struct Heard {
+            std::vector<std::string> says;
+            int logins = 0;
+            std::string state; // the last state of the session in a `sessions` list
+        };
+        auto gather = [&](int ms) {
+            Heard heard;
+            const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+            for (;;) {
+                const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now()).count();
+                if (left <= 0)
+                    return heard;
+                const json m = a.next(static_cast<int>(left));
+                if (m.empty())
+                    return heard;
+                if (m.value("type", "") == "sessions") {
+                    if (const json s = sessionIn(m, "t-new"); !s.empty())
+                        heard.state = s.value("state", "");
+                    continue;
+                }
+                if (m.value("session", "") != "t-new")
+                    continue;
+                if (m.value("type", "") == "say")
+                    heard.says.push_back(m.value("text", ""));
+                else if (m.value("type", "") == "attention" && m.value("kind", "") == "login")
+                    ++heard.logins;
+            }
+        };
+        const std::string loginText = "Codex is not logged in.";
+
+        // A turn/start the app server refuses: the prompt and the reason are in the history, an ordinary error.
+        codex.rejectTurn = 1;
+        check(prompt(300, "model refused"), "a prompt goes to turn/start");
+        Heard heard = gather(1200);
+        check(heard.says == std::vector<std::string>{modelText}, "a rejected turn/start is said, whole: " + (heard.says.empty() ? "" : heard.says[0]));
+        check(heard.logins == 0, "a model the account may not use is no login problem");
+        check(heard.state == "idle", "and the session is idle again, not stuck: " + heard.state);
+        auto texts = textsOf();
+        check(count(texts, "prompt:model refused") == 1 && count(texts, "text:" + modelText) == 1, "prompt and reason are in the history");
+        codex.rejectTurn = 0;
+
+        // turn/completed with an error and no answer: the same, one entry.
+        check(prompt(301, "fails at the end"), "next prompt");
+        codex.send({{"method", "turn/started"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u20"}}}}}});
+        codex.send({{"method", "turn/completed"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u20"}, {"status", "failed"},
+                    {"error", {{"message", "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."},
+                               {"codexErrorInfo", "modelNotFound"}}}}}}}});
+        heard = gather(1200);
+        check(heard.says == std::vector<std::string>{modelText} && heard.logins == 0, "turn/completed with an error: said, not a login problem");
+        check(heard.state == "idle", "and idle: " + heard.state);
+        texts = textsOf();
+        check(count(texts, "text:" + modelText) == 2, "one more entry in the history");
+
+        // An `error` that is a retry says nothing; the last one ends the turn (no turn/completed follows), a
+        // login problem: entry, say, attention. The turn/completed that may follow adds nothing.
+        const json authInfo = {{"httpConnectionFailed", {{"httpStatusCode", 401}}}};
+        check(prompt(302, "login lost"), "next prompt");
+        codex.send({{"method", "turn/started"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u21"}}}}}});
+        codex.send({{"method", "error"}, {"params", {{"threadId", "t-new"}, {"turnId", "u21"}, {"willRetry", true},
+                    {"error", {{"message", "Reconnecting... 2/5"}, {"codexErrorInfo", {{"responseStreamDisconnected", {{"httpStatusCode", 401}}}}}}}}}});
+        heard = gather(500);
+        check(heard.says.empty() && heard.logins == 0, "a retrying error says nothing");
+        codex.send({{"method", "error"}, {"params", {{"threadId", "t-new"}, {"turnId", "u21"}, {"willRetry", false},
+                    {"error", {{"message", "unexpected status 401 Unauthorized: Missing bearer"}, {"codexErrorInfo", authInfo}}}}}});
+        heard = gather(1000);
+        check(heard.says == std::vector<std::string>{loginText} && heard.logins == 1, "the last error is said, and it is the login attention (a 401)");
+        check(heard.state == "idle", "the turn is over without a turn/completed: " + heard.state);
+        codex.send({{"method", "turn/completed"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u21"}, {"status", "failed"},
+                    {"error", {{"message", "unexpected status 401 Unauthorized: Missing bearer"}, {"codexErrorInfo", authInfo}}}}}}}});
+        heard = gather(600);
+        check(heard.says.empty() && heard.logins == 0, "the turn/completed after it adds no second say");
+        texts = textsOf();
+        check(count(texts, "text:" + loginText) == 1, "nor a second entry");
+
+        // The same incident again: no second attention. A turn that works re-arms it.
+        check(prompt(303, "still lost"), "again");
+        codex.send({{"method", "turn/started"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u22"}}}}}});
+        codex.send({{"method", "turn/completed"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u22"}, {"status", "failed"},
+                    {"error", {{"message", "401"}, {"codexErrorInfo", "unauthorized"}}}}}}}});
+        heard = gather(1000);
+        check(heard.says == std::vector<std::string>{loginText} && heard.logins == 0, "the same incident: said again, no second attention");
+        check(heard.state == "idle", "idle: " + heard.state);
+        check(prompt(304, "works"), "a working turn");
+        codex.send({{"method", "turn/started"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u23"}}}}}});
+        codex.send({{"method", "item/completed"}, {"params", {{"threadId", "t-new"}, {"item", {{"type", "agentMessage"}, {"id", "i23"}, {"text", "Fine."}}}}}});
+        codex.send({{"method", "turn/completed"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u23"}, {"status", "completed"}}}}}});
+        heard = gather(800);
+        check(heard.says == std::vector<std::string>{"Fine."} && heard.state == "idle", "it is said as usual: " + heard.state);
+        codex.rejectTurn = 2;
+        check(prompt(305, "lost again"), "and the login is lost again");
+        heard = gather(1000);
+        check(heard.logins == 1 && heard.says == std::vector<std::string>{loginText}, "a rejected turn/start with a 401: login attention again, after the working turn");
+        check(heard.state == "idle", "idle: " + heard.state);
+        codex.rejectTurn = 0;
+        a.drain();
+    }
 
     // A subagent thread of it: listed while active, gone when idle.
     codex.kidActive = true;
@@ -1590,6 +1756,71 @@ esac
         check(!spokenSay.empty() && spokenSay.value("voice", false), "its Stop says voice=true: " + spokenSay.dump());
     }
 
+    // Claude Code's login problems: the footer under the prompt box ("Not logged in") and an authentication
+    // failure the transcript records, each an attention of kind "login", once per incident. Words that only appear in
+    // an answer are none.
+    {
+        const std::string authFile = home + "/elsewhere/auth.jsonl";
+        const std::string endLine = R"({"type":"system","subtype":"turn_duration","isSidechain":false})";
+        writeFile(authFile, endLine + "\n");
+        writeFile(runtime + "/pvai/wauth.claude", json({{"claudeSession", "auth-1"}, {"transcript", authFile}}).dump() + "\n");
+        LineClient wrapperAuth;
+        wrapperAuth.send({{"type", "register"}, {"version", kVersion}, {"id", "wauth"}, {"cwd", project}, {"label", "auth"}, {"running", true}, {"restart", true}});
+        check(!waitSession(a, "wauth", [](const json &) { return true; }).empty(), "a session for the login checks");
+        a.drain();
+        auto loginAttention = [&](int ms = 4000) {
+            return a.next("attention", [](const json &m) { return m.value("session", "") == "wauth" && m.value("kind", "") == "login"; }, ms);
+        };
+        auto screen = [&](bool login) {
+            wrapperAuth.send({{"type", "screen"}, {"dialog", nullptr}, {"prompt", true}, {"mode", "default"}, {"login", login}});
+        };
+        auto nowIso = [](int secondsAgo = 0) {
+            std::time_t t = std::time(nullptr) - secondsAgo;
+            char buffer[40];
+            std::strftime(buffer, sizeof buffer, "%Y-%m-%dT%H:%M:%S.000Z", std::gmtime(&t));
+            return std::string(buffer);
+        };
+        auto line = [](const std::string &uuid, const std::string &at, const std::string &text, const std::string &extra = {}) {
+            return std::string(R"({"type":"assistant","uuid":")") + uuid + R"(","timestamp":")" + at + R"(","message":{"content":[{"type":"text","text":")" + text + R"("}]})"
+                + extra + "}\n";
+        };
+        const std::string authFields = R"(,"error":"authentication_failed","isApiErrorMessage":true,"apiErrorStatus":401)";
+        auto appendAuth = [&](const std::string &text) { std::ofstream(authFile, std::ios::app) << text; };
+
+        screen(false);
+        check(loginAttention(500).empty(), "no login problem on the footer: no attention");
+        screen(true);
+        const json first = loginAttention();
+        check(!first.empty() && first.value("text", "") == "Claude Code is not logged in.", "the footer says it: attention login: " + first.dump());
+        screen(true);
+        check(loginAttention(500).empty(), "still shown: once per incident");
+        screen(false);
+        screen(true);
+        check(!loginAttention().empty(), "gone and back (a login, then lost again): news again");
+        screen(false);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        a.drain();
+
+        // The transcript: only the structured fields count, and only a line written now.
+        appendAuth(line("x1", nowIso(), "If it says Please run /login, run it. Not logged in", ""));
+        check(loginAttention(1500).empty(), "an answer that says Please run /login is no login problem");
+        appendAuth(line("x2", nowIso(86400), "Failed to authenticate. API Error: 401", authFields));
+        check(loginAttention(1500).empty(), "an old authentication failure (a copied history) is none");
+        appendAuth(line("x3", nowIso(), "Failed to authenticate. API Error: 401 OAuth access token is invalid.", authFields));
+        const json fromFile = loginAttention();
+        check(!fromFile.empty() && fromFile.value("text", "") == "Claude Code is not logged in, or its login has expired.",
+              "an authentication failure in the transcript: attention login: " + fromFile.dump());
+        appendAuth(line("x4", nowIso(), "Failed to authenticate. API Error: 401 again", authFields));
+        check(loginAttention(1500).empty(), "the same incident: not again");
+        appendAuth(line("x5", nowIso(), "A working answer."));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+        appendAuth(line("x6", nowIso(), "Failed to authenticate. API Error: 401 once more", authFields));
+        check(!loginAttention().empty(), "a reply in between re-arms it");
+        a.drain();
+        hook("wauth", {{"hook_event_name", "Stop"}, {"session_id", "auth-1"}, {"last_assistant_message", "x"}});
+        a.drain();
+    }
+
     // The permission mode: from the hooks and the footer; a change is
     // Shift+Tab until the footer shows it, once round the cycle at most.
     {
@@ -1670,6 +1901,17 @@ esac
               return false;
           }).empty(),
           "codex loggedIn true from codex login status");
+    // The app server holds the account in memory: after a login over an account it knew, it is restarted once
+    // no thread works (`codex app-server daemon restart`).
+    auto restarts = [&]() {
+        for (int i = 0; i < 80; ++i) {
+            if (readFile(bin + "/codex.calls").find("app-server daemon restart") != std::string::npos)
+                return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return false;
+    };
+    check(restarts(), "a login over a known account restarts the shared app server");
     a.send({{"type", "login"}, {"ref", 39}, {"assistant", "claude"}});
     login = a.next("login", [](const json &m) { return m.value("assistant", "") == "claude" && m.value("state", "") == "code-needed"; });
     check(login.value("url", "").rfind("https://claude.com/cai/oauth/authorize?", 0) == 0, "claude: the link, and it wants the code: " + login.dump());
@@ -1678,9 +1920,9 @@ esac
     check(!login.empty(), "the code goes in, the login is done");
     check(!a.next("assistants", [](const json &m) {
               const json list = m.value("assistants", json::array());
-              return !list.empty() && list[0].value("loggedIn", json()) == true;
+              return !list.empty() && list[0].value("loggedIn", json()) == true && list[0].value("account", json()) == "claude.user@example.com";
           }).empty(),
-          "claude loggedIn true from claude auth status");
+          "claude loggedIn true from claude auth status, account the email it reports");
     a.send({{"type", "login-code"}, {"ref", 41}, {"assistant", "claude"}, {"code", "x"}});
     check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 41; }).value("reason", "") == "no-login",
           "a code without a login: no-login");
@@ -1708,6 +1950,22 @@ esac
     a.send({{"type", "logout"}, {"ref", 46}, {"assistant", "kimi"}});
     check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 46; }).value("reason", "") == "not-supported",
           "logout of Kimi: not-supported");
+    // Codex's logout: the account goes, and the app server (which keeps it in memory) is restarted.
+    fs::remove(bin + "/codex.calls");
+    a.send({{"type", "logout"}, {"ref", 47}, {"assistant", "codex"}});
+    check(a.next("logout", [](const json &m) { return m.value("assistant", "") == "codex" && m.value("state", "") == "done"; }, 6000).value("state", "") == "done",
+          "codex logout done");
+    check(restarts(), "and the shared app server is restarted");
+    codex.hasAccount = false;
+    check(!a.next("assistants", [](const json &m) {
+              for (const auto &x : m.value("assistants", json::array()))
+                  if (x.value("name", "") == "codex")
+                      return x.value("loggedIn", json()) == false && x.value("account", json("?")).is_null();
+              return false;
+          }, 6000).empty(),
+          "assistants: codex loggedIn false, account null");
+    a.send({{"type", "login"}, {"ref", 48}, {"assistant", "codex"}});
+    check(!a.next("login", [](const json &m) { return m.value("assistant", "") == "codex" && m.value("state", "") == "done"; }, 6000).empty(), "logged in again");
 
     // ---- Claude token login: the token is a fallback. The decision (account
     // login or not) comes from `auth status` without it; the marker file
@@ -1839,6 +2097,7 @@ esac
         check(leftovers == 0, "no temp file stays behind");
         const json entry = claudeEntry(method("token", true));
         check(!entry.empty() && entry.value("tokenStored", false), "account missing: the fallback is active (loginMethod token, loggedIn true, tokenStored)");
+        check(entry.contains("account") && entry["account"].is_null(), "and with the token in effect there is no account name");
         check(mode(markerFile) == 0600 && readFile(markerFile).empty(), "the marker claude-token-active exists, empty, mode 0600");
         const auto statusEnv = waitLines(bin + "/claude.statusenv", 1);
         check(statusEnv.size() == 1 && statusEnv[0] == tokSet, "set-token ran the status once, and only with the token (no status without it)");
@@ -1888,6 +2147,7 @@ esac
         check(!get("login", [](const json &m) { return m.value("state", "") == "done"; }, 8000).empty(), "an account login goes through");
         const json standby = claudeEntry(method("account", true));
         check(!standby.empty() && standby.value("tokenStored", false), "account logged in: loginMethod account, the token only stored (standby)");
+        check(standby.value("account", json()) == "claude.user@example.com", "the account's name is shown while the token is on standby");
         check(!fs::exists(markerFile), "and the marker is gone");
         const auto afterLogin = lines(bin + "/claude.statusenv");
         check(!afterLogin.empty() && afterLogin.back() == "unset", "the check after the login ran without the token");
@@ -2391,6 +2651,21 @@ esac
     check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 52; }).value("reason", "") == "unknown-conversation", "a bad id");
     a.send({{"type", "forget"}, {"ref", 53}, {"assistant", "codex"}, {"cwd", project}, {"id", "t-arch"}});
     check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 53; }).value("reason", "") == "not-supported", "Codex: not yet");
+    // No login on this host (the cached `claude auth status`), no token: the start is refused, and nothing is run for it.
+    fs::remove(bin + "/claude.calls");
+    a.send({{"type", "start"}, {"ref", 1200}, {"assistant", "claude"}, {"cwd", project}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 1200; }).value("reason", "") == "not-logged-in",
+          "claude without a login: rejected not-logged-in");
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    check(readFile(bin + "/claude.calls").empty(), "and no claude (not even a status run) was started for it");
+    a.send({{"type", "login"}, {"ref", 1201}, {"assistant", "claude"}});
+    a.next("login", [](const json &m) { return m.value("assistant", "") == "claude" && m.value("state", "") == "code-needed"; }, 6000);
+    a.send({{"type", "login-code"}, {"ref", 1202}, {"assistant", "claude"}, {"code", "good#s1"}});
+    check(!a.next("login", [](const json &m) { return m.value("assistant", "") == "claude" && m.value("state", "") == "done"; }, 6000).empty(), "claude logs in");
+    check(!a.next("assistants", [](const json &m) {
+              const json list = m.value("assistants", json::array());
+              return !list.empty() && list[0].value("loggedIn", json()) == true;
+          }, 6000).empty(), "assistants: loggedIn true");
     a.send({{"type", "start"}, {"ref", 15}, {"assistant", "claude"}, {"cwd", project}, {"resume", "../../etc/passwd"}});
     check(a.next("rejected").value("reason", "") == "unknown-conversation", "a bad id is unknown-conversation");
     a.send({{"type", "start"}, {"ref", 16}, {"assistant", "claude"}, {"cwd", project}, {"resume", "c0ffee00-1111-2222-3333-444455556666"}});

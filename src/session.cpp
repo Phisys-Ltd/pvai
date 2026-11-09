@@ -261,13 +261,13 @@ void Session::promptVoice(const std::string &raw, const Prompt *typed)
     prompted_ = true;
 }
 
-void Session::say(const std::string &answer)
+void Session::say(const std::string &answer, bool exact)
 {
     // A turn no prompt started (a hand-back, a task) is spoken as the owner's
     // last prompt was, whatever state it passed through on the way.
     if (!prompted_)
         voiceTurn_ = spokenLast_;
-    std::string text = speakLine(answer);
+    std::string text = exact ? oneLine(answer, 200) : speakLine(answer);
     std::size_t words = 0;
     bool inWord = false;
     for (unsigned char c : text) {
@@ -278,11 +278,11 @@ void Session::say(const std::string &answer)
     host_.log(id_ + ": say voice=" + (voiceTurn_ ? "true" : "false")
               + (text.empty() ? ", no speak line"
                               : ", speak line " + std::to_string(words) + " words " + std::to_string(text.size()) + " bytes"));
-    if (text.empty() && !voiceTurn_)
+    if (text.empty() && !voiceTurn_ && !exact)
         text = firstSentence(answer);
     // A 🔊 line is written for the ear: it is spoken whether the turn counts
     // as spoken or not. Without one, the turn decides as before.
-    const bool voice = voiceTurn_ || (!text.empty() && !speakLine(answer).empty());
+    const bool voice = voiceTurn_ || (!exact && !text.empty() && !speakLine(answer).empty());
     host_.broadcast({{"type", "say"}, {"session", id_}, {"text", text}, {"voice", voice}});
     turnOver();
 }
@@ -290,6 +290,14 @@ void Session::say(const std::string &answer)
 void Session::attention(const std::string &kind, const std::string &text)
 {
     host_.broadcast({{"type", "attention"}, {"session", id_}, {"kind", kind}, {"text", text}});
+}
+
+void Session::loginAttention(const std::string &text)
+{
+    if (loginReported_)
+        return;
+    loginReported_ = true;
+    attention("login", text);
 }
 
 void Session::historyReset()
@@ -311,7 +319,7 @@ Backend::Backend(Host &host)
 json Backend::describe() const
 {
     return {{"name", name()}, {"title", title()}, {"models", models()}, {"modes", modes()}, {"installed", installedHere()},
-            {"loggedIn", loggedIn_}};
+            {"loggedIn", loggedIn_}, {"account", accountName_}};
 }
 
 void Backend::refreshVersion(std::function<void()> done)

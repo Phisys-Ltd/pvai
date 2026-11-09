@@ -46,6 +46,7 @@ public:
     virtual ~Host() = default;
     virtual void broadcast(const json &message) = 0; // to every app
     virtual void sessionsChanged() = 0;              // a `sessions` list is due
+    virtual void assistantsChanged() = 0;            // an `assistants` message is due (models, login, account moved)
     virtual void toSubscribers(const std::string &session, const json &message) = 0;
     // Live sessions only: an ended one is gone from here at once.
     virtual Session *session(const std::string &id) = 0;
@@ -146,6 +147,8 @@ public:
     // Gone from `sessions` at the end of the daemon's loop.
     void end();
     bool ended() const { return ended_; }
+    // A login went through (or a turn worked): the next login problem is news again.
+    void rearmLogin() { loginReported_ = false; }
 
 protected:
     // Types the oldest queued prompt when the session's prompt is free.
@@ -154,8 +157,13 @@ protected:
     virtual void submit(const Prompt &prompt) = 0;
 
     // A turn ended: what to speak, to every app.
-    void say(const std::string &answer);
+    // `exact`: `answer` is the whole text to speak (an error message), not an
+    // answer to find the 🔊 line or the first sentence in.
+    void say(const std::string &answer, bool exact = false);
     void attention(const std::string &kind, const std::string &text);
+    // The assistant's login is gone or no longer good: `attention` of kind
+    // "login", once per incident (until a turn succeeds or a login goes through).
+    void loginAttention(const std::string &text);
     // The whole history again to every subscriber (the conversation moved).
     void historyReset();
     void sendEntries(std::vector<json> entries);
@@ -212,6 +220,7 @@ protected:
 
 private:
     bool ended_ = false;
+    bool loginReported_ = false;
     std::string loggedState_ = "starting";
 };
 
@@ -266,6 +275,12 @@ public:
     const std::string &installed() const { return installed_; }
     // Logged in on this host: true, false, or null when unknown.
     const json &loggedIn() const { return loggedIn_; }
+    // The account's name (an email) when the assistant says it, else null
+    // (a token login, an API key, not known). Never a token.
+    const json &account() const { return accountName_; }
+    // A login or logout of this assistant just ended (`kind` "login" or
+    // "logout", `ok` whether it went through); the login is read again after.
+    virtual void authChanged(const std::string &, bool) {}
     // Reads it again where the assistant can say (`done` with true when it
     // changed); after an install, looks for the program again.
     virtual void refreshLogin(std::function<void(bool changed)> done) { done(false); }
@@ -303,6 +318,7 @@ protected:
     Host &host_;
     std::string installed_;
     json loggedIn_;
+    json accountName_; // see account()
     bool updating_ = false;
 };
 

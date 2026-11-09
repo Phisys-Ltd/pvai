@@ -962,10 +962,17 @@ static std::string promptInBox(const std::string &screen, const std::string &tex
 // A dialog no hook reports, read off the screen by the wrapper (empty: it
 // is gone). At a free prompt it counts at once; in a turn only after a
 // moment, since a permission dialog's hook may still be on its way.
-void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::string &mode)
+void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::string &mode, bool login)
 {
     if (!mode.empty())
         noteMode(mode);
+    // The footer under the prompt box says there is no login (the wrapper
+    // looks at that area only); gone again, a login went through.
+    if (login && !loginSeen_)
+        loginAttention("Claude Code is not logged in.");
+    else if (!login && loginSeen_)
+        rearmLogin();
+    loginSeen_ = login;
     screenText_ = text;
     screenAt_.reset();
     promptFree_ = prompt;
@@ -1479,6 +1486,8 @@ void ClaudeSession::syncMarks()
     hitMark_ = tail_.limitHits();
     clearMark_ = tail_.limitClears();
     endMark_ = tail_.turnEndCount();
+    authMark_ = tail_.authFailures();
+    replyMark_ = tail_.replies();
 }
 
 // A line written just now. A fork copies the earlier conversation into its
@@ -1526,9 +1535,22 @@ void ClaudeSession::pollTranscript()
     }
     // The usage limit: hit (busy until the reset), gone on, or a turn end
     // the Stop hook should have followed.
-    if (tail_.limitHits() < hitMark_ || tail_.limitClears() < clearMark_ || tail_.turnEndCount() < endMark_) { // another file
+    if (tail_.limitHits() < hitMark_ || tail_.limitClears() < clearMark_ || tail_.turnEndCount() < endMark_
+        || tail_.authFailures() < authMark_ || tail_.replies() < replyMark_) { // another file
         syncMarks();
         limited_ = nullptr;
+    }
+    // A reply works: the next login problem is news again. An authentication
+    // failure Claude Code wrote just now is one (an expired or revoked token
+    // reads as logged in to `claude auth status`; only the API says).
+    if (tail_.replies() != replyMark_) {
+        replyMark_ = tail_.replies();
+        rearmLogin();
+    }
+    if (tail_.authFailures() != authMark_) {
+        authMark_ = tail_.authFailures();
+        if (freshLine(tail_.authFailedAt()))
+            loginAttention("Claude Code is not logged in, or its login has expired.");
     }
     if (tail_.limitHits() != hitMark_) {
         hitMark_ = tail_.limitHits();
@@ -1801,6 +1823,16 @@ json loggedInIn(const std::string &output)
     return status.is_object() && status.contains("loggedIn") && status["loggedIn"].is_boolean() ? status["loggedIn"] : json();
 }
 
+// The account's name: the `email` of `claude auth status --json` (there only for
+// an account login, not for a token in the environment), else null.
+json accountIn(const std::string &output)
+{
+    const json status = json::parse(output.substr(std::min(output.find('{'), output.size())), nullptr, false);
+    return status.is_object() && status.contains("email") && status["email"].is_string() && !status["email"].get<std::string>().empty()
+        ? status["email"]
+        : json();
+}
+
 } // namespace
 
 // `claude auth status --json` WITHOUT the stored token decides whether the
@@ -1818,11 +1850,14 @@ void ClaudeBackend::refreshLogin(std::function<void(bool changed)> done)
     if (bin.empty())
         return done(false);
     const std::string before = loginMethod();
-    const json was = loggedIn_;
-    auto finish = [this, done, before, was] { done(loggedIn_ != was || loginMethod() != before); };
+    const json was = loggedIn_, wasName = accountName_;
+    auto finish = [this, done, before, was, wasName] { done(loggedIn_ != was || loginMethod() != before || accountName_ != wasName); };
     host_.runProcess({bin, "auth", "status", "--json"}, std::chrono::seconds(30), [this, bin, finish](int, const std::string &output) {
         const json now = loggedInIn(output);
         loggedIn_ = now;
+        // The name is the account's: none while a token is in effect. An unreadable answer leaves it.
+        if (now.is_boolean())
+            accountName_ = now == json(true) && !inheritedClaudeToken() ? accountIn(output) : json();
         account_ = now.is_boolean() ? std::optional<bool>(now.get<bool>()) : std::nullopt;
         if (inheritedClaudeToken() || now == json(true) || !account_) {
             // The environment's token or the account: no fallback. An unknown
@@ -1852,6 +1887,7 @@ void ClaudeBackend::statusWithToken(std::function<void()> done)
         return done();
     host_.runProcess({bin, "auth", "status", "--json"}, std::chrono::seconds(30), [this, done](int, const std::string &output) {
         loggedIn_ = loggedInIn(output);
+        accountName_ = nullptr; // the token is in effect: no account name
         done();
     }, {{kEnvClaudeToken, token}});
 }
@@ -1911,6 +1947,12 @@ void ClaudeBackend::start(const StartRequest &request, Started done)
     const std::string bin = binary();
     if (bin.empty())
         return done({}, "not-installed");
+    // Known not to be logged in (the decision cached from `auth status`), and
+    // no token to fall back on: the session would only show "Not logged in".
+    // Never a status run here (on a Mac with a damaged Keychain that call
+    // prompts); unknown starts as before.
+    if (loggedIn_ == json(false) && !fallback_ && !inheritedClaudeToken() && readClaudeToken().empty())
+        return done({}, "not-logged-in");
     const std::string id = request.id.empty() ? "w" + randomHex(4) : request.id;
     std::vector<std::string> argv = {selfExe(), "run", "--detached", "--id", id};
     if (!request.label.empty()) {

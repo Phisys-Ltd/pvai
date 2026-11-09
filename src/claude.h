@@ -55,7 +55,7 @@ public:
     void onInput(bool escape, const std::string &key = {});
     void onDraft(bool dirty);
     void onDialog(const std::string &kind);
-    void onScreen(const std::string &text, bool prompt, const std::string &mode = {});
+    void onScreen(const std::string &text, bool prompt, const std::string &mode = {}, bool login = false);
     std::string setMode(const std::string &mode, const json &ref) override;
     std::string setModel(const std::string &model, const json &ref) override;
     void onExited(int status, const std::string &screen);
@@ -148,7 +148,8 @@ private:
     // protocol), and how much of the tail's limit and turn-end counts has
     // been reacted to.
     json limited_;
-    std::size_t hitMark_ = 0, clearMark_ = 0, endMark_ = 0;
+    std::size_t hitMark_ = 0, clearMark_ = 0, endMark_ = 0, authMark_ = 0, replyMark_ = 0;
+    bool loginSeen_ = false; // the footer shows "Not logged in" now
     // A turn ended in the transcript while busy: when to look whether the
     // Stop hook came (it does not for every end).
     std::optional<Clock::time_point> stopCheck_;

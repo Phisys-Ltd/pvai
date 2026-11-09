@@ -170,12 +170,13 @@ void KimiSession::turnEnded(const json &result, const json &error)
         const std::string message = login ? "Kimi Code is not logged in." : "Kimi Code: " + str(error, "message");
         pushEntries({{{"kind", "text"}, {"text", message}, {"id", "e" + randomHex(6)}, {"time", nowIso()}}});
         if (login)
-            attention("login", message);
-        say(message);
+            loginAttention(message);
+        say(message, true);
     } else if (str(result, "stopReason") == "cancelled") {
         pushEntries({{{"kind", "interrupted"}, {"id", "i" + randomHex(6)}, {"time", nowIso()}}});
         turnOver();
     } else {
+        rearmLogin(); // a turn worked: the next login problem is news again
         say(answer_);
     }
     state_ = "idle";

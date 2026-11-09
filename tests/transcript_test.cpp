@@ -274,5 +274,25 @@ int main()
               && tail.limited().value("model", false) && tail.limitHits() == 1,
           "a model's limit is read from apiErrorParams and flagged: " + tail.limited().dump());
     check(tail.recent().back().value("model", false) && tail.recent().back().value("resetsAt", 0LL) == 1791836400, "the entry carries the model flag");
+    // An authentication failure, from the structured fields Claude Code 2.1.319 writes for a dead token
+    // (its text says "Please run /login" too, but the text is never what counts). A limit is no login problem.
+    const std::string auth = home.path + "/auth.jsonl";
+    std::ofstream(auth) << userLine(70, "hi")
+                        << R"({"type":"assistant","uuid":"a71","timestamp":"2026-11-09T09:42:37.504Z","message":{"model":"<synthetic>","content":[{"type":"text","text":"Failed to authenticate. API Error: 401 OAuth access token is invalid."}]},)"
+                           R"("error":"authentication_failed","isApiErrorMessage":true,"apiErrorStatus":401})" "\n";
+    tail.follow(auth);
+    const std::string k1 = kinds();
+    check(tail.authFailures() == 1 && tail.authFailedAt() == "2026-11-09T09:42:37.504Z" && tail.replies() == 0,
+          "an authentication failure line is counted, no reply: " + k1 + " " + std::to_string(tail.authFailures()) + " " + std::to_string(tail.replies()));
+    std::ofstream(auth, std::ios::app)
+        << R"({"type":"assistant","uuid":"a72","message":{"content":[{"type":"text","text":"Please run /login · API Error: 401, Not logged in"}]}})" "\n"
+        << R"({"type":"assistant","uuid":"a73","isSidechain":true,"isApiErrorMessage":true,"apiErrorStatus":401,"message":{"content":[{"type":"text","text":"x"}]}})" "\n";
+    check(kinds() == "text|" && tail.authFailures() == 1 && tail.replies() == 1,
+          "an answer that merely says it, and a subagent's error, are no login problem; the answer is a reply");
+    std::ofstream(auth, std::ios::app)
+        << R"({"type":"assistant","uuid":"a74","isApiErrorMessage":true,"apiError":"usage_limit_reached","apiErrorStatus":429,"message":{"content":[{"type":"text","text":"Limit"}]}})" "\n"
+        << R"({"type":"assistant","uuid":"a75","isApiErrorMessage":true,"apiErrorStatus":401,"message":{"content":[{"type":"text","text":"Unauthorized"}]}})" "\n";
+    kinds();
+    check(tail.authFailures() == 2 && tail.replies() == 1, "a limit is none; a 401 API error is one");
     return pvai::test::finish();
 }

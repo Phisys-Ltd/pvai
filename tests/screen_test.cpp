@@ -362,5 +362,21 @@ int main()
         half.resize(30, 100);
         check(!half.syncOpen(), "a resize drops the open frame");
     }
+    // "Not logged in" counts in the footer under the prompt box only, not in the conversation above it.
+    {
+        pvai::Screen s(14, 80);
+        const std::string r6 = "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80";
+        feed(s, "\x1b[2J\x1b[H\xE2\x9D\xAF hi\r\n  \xE2\x8E\xBF  Not logged in \xC2\xB7 Please run /login\r\n\r\n" + r6 + "\r\n\xE2\x9D\xAF \r\n" + r6 + "\r\n  ? for shortcuts");
+        check(!pvai::screenLoginShown(s), "the words in the conversation are no login problem");
+        feed(s, "\x1b[2J\x1b[HIf it says Not logged in \xC2\xB7 Run /login, log in.\r\n" + r6 + "\r\nan old rule above\r\n" + r6 + "\r\n\xE2\x9D\xAF \r\n" + r6 + "\r\n  ? for shortcuts");
+        check(!pvai::screenLoginShown(s), "an answer that quotes it, with a rule of its own, is none either");
+        feed(s, "\x1b[2J\x1b[H" + r6 + "\r\n\xE2\x9D\xAF \r\n" + r6 + "\r\n  \xE2\x8F\xB5\xE2\x8F\xB5 auto mode on                              Not logged in \xC2\xB7 Run /login");
+        check(pvai::screenLoginShown(s), "the footer says it: login");
+        check(pvai::screenMode(s) == "auto", "and the mode is still read");
+        feed(s, "\x1b[2J\x1b[H" + r6 + "\r\n\xE2\x9D\xAF \r\n" + r6 + "\r\n  ? for shortcuts");
+        check(!pvai::screenLoginShown(s), "gone from the footer: no login problem");
+        feed(s, "\x1b[2J\x1b[HNot logged in \xC2\xB7 Run /login");
+        check(!pvai::screenLoginShown(s), "no prompt box: not decided");
+    }
     return pvai::test::finish();
 }

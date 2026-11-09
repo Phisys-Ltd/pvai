@@ -442,13 +442,14 @@ int runWrapper(const WrapperOptions &options)
     bool shellShown = false;  // that box is in shell mode ("!"): taken, like a draft
     bool draftSent = false;   // what the daemon last heard as `draft`
     std::string modeShown;    // the permission mode the footer shows
+    bool loginShown = false;  // the footer says "Not logged in" (kept while a dialog hides the box)
     std::optional<Clock::time_point> screenCheckAt;
     // A dialog counts once the prompt box has stayed away a moment: it is
     // gone for a redraw, Ctrl+O or a picker page too.
     std::optional<Clock::time_point> dialogSince;
     auto sendScreen = [&] {
         daemon->send({{"type", "screen"}, {"dialog", screenShown.empty() ? json() : json(screenShown)}, {"prompt", promptShown},
-                      {"mode", modeShown.empty() ? json() : json(modeShown)}});
+                      {"mode", modeShown.empty() ? json() : json(modeShown)}, {"login", loginShown}});
     };
     auto promptFree = [&](std::string &box) {
         bool shell = false;
@@ -630,6 +631,7 @@ int runWrapper(const WrapperOptions &options)
         promptShown = false;
         shellShown = false;
         modeShown.clear();
+        loginShown = false; // a relaunch (a restart): the new screen says
         if (typing) {
             typing.reset();
             typed(false);
@@ -985,10 +987,12 @@ int runWrapper(const WrapperOptions &options)
                 shellShown = shell;
                 reportDraft(false);
             }
-            if (shown != screenShown || prompt != promptShown || mode != modeShown) {
+            const bool login = prompt ? screenLoginShown(screen) : loginShown;
+            if (shown != screenShown || prompt != promptShown || mode != modeShown || login != loginShown) {
                 screenShown = std::move(shown);
                 promptShown = prompt;
                 modeShown = mode;
+                loginShown = login;
                 if (daemon)
                     sendScreen();
             }

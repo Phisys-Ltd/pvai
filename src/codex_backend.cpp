@@ -139,6 +139,29 @@ json decision(const std::string &method, const json &params, bool allow)
     return {{"answers", answers}};
 }
 
+std::string nowIso()
+{
+    return isoTime(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+// A login problem in a failure Codex reports: its codexErrorInfo (`unauthorized`,
+// or a connection variant such as {"httpConnectionFailed": {"httpStatusCode":
+// 401}}), else a "401 Unauthorized" in the failure's own message. Anything else
+// (a model the account may not use, a limit, a bad request) is an ordinary error.
+bool authFailure(const json &info, const std::string &message)
+{
+    if (info.is_string() && info.get<std::string>() == "unauthorized")
+        return true;
+    if (info.is_object())
+        for (const auto &[name, detail] : info.items())
+            if (detail.is_object() && detail.contains("httpStatusCode") && detail["httpStatusCode"] == 401)
+                return true;
+    std::string lower = message;
+    for (char &c : lower)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return lower.find("401 unauthorized") != std::string::npos;
+}
+
 // The app server's version from its user agent, "name/1.2.3 (...)".
 std::string agentVersion(const std::string &userAgent)
 {
@@ -204,15 +227,49 @@ void CodexSession::submit(const Prompt &prompt)
         model_.clear();
     }
     backend_.call(compact ? "thread/compact/start" : "turn/start", params,
-                  [&host, id](const json &, const json &error) {
+                  [&host, id, text](const json &, const json &error) {
                       auto *self = dynamic_cast<CodexSession *>(host.session(id));
                       if (!self || error.is_null())
                           return;
+                      // Refused: the prompt never became a turn. It goes into the
+                      // history with the reason, so that it is not lost silently.
                       self->turnPending_ = false;
-                      self->state_ = "idle";
+                      const std::string message = str(error, "message");
+                      const json data = error.value("data", json());
+                      const json info = data.is_object() ? data.value("codexErrorInfo", json()) : json();
+                      self->host_.log(id + ": codex rejected the turn: " + (message.empty() ? error.dump() : message));
+                      self->pushEntries({{{"kind", "prompt"}, {"text", cut(text, kMaxText)}, {"id", "p" + randomHex(6)}, {"time", nowIso()}}});
+                      self->failTurn("", message, authFailure(info, message));
+                      if (self->turnId_.empty())
+                          self->state_ = "idle";
                       self->deliver();
                       self->changed();
                   });
+}
+
+void CodexSession::failTurn(const std::string &turn, const std::string &message, bool login)
+{
+    failedTurn_ = turn;
+    const std::string shown = login ? "Codex is not logged in." : "Codex: " + (message.empty() ? std::string("the turn failed") : message);
+    pushEntries({{{"kind", "text"}, {"text", cut(shown, kMaxText)}, {"id", "e" + randomHex(6)}, {"time", nowIso()}}});
+    if (login)
+        loginAttention(shown);
+    say(shown, true);
+}
+
+void CodexSession::finishTurn()
+{
+    turnId_.clear();
+    request_ = nullptr;
+    outputs_.clear();
+    files_.clear();
+    answer_.clear();
+    if (!turnPending_) {
+        state_ = "idle";
+        dialog_.clear();
+        deliver();
+    }
+    changed();
 }
 
 std::string CodexSession::answer(const std::string &choice)
@@ -484,27 +541,42 @@ void CodexSession::onNotification(const std::string &method, const json &params)
         }
     } else if (method == "turn/completed") {
         const json turn = params.value("turn", json());
-        turnId_.clear();
-        request_ = nullptr;
-        outputs_.clear();
-        files_.clear();
+        const std::string done = str(turn, "id");
+        // An `error` already ended and reported this turn (Codex may send no
+        // turn/completed for it at all, or one after): nothing more to say,
+        // and a turn that started since keeps running.
+        if (!done.empty() && done == failedTurn_) {
+            endedTurn_ = done;
+            return;
+        }
+        endedTurn_ = done;
+        const json error = turn.value("error", json());
         if (str(turn, "status") == "interrupted") {
             const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch());
             pushEntries({{{"kind", "interrupted"}, {"id", str(turn, "id") + ":interrupted"}, {"time", isoTime(now.count())}}});
             turnOver();
+        } else if (error.is_object() || str(turn, "status") == "failed") {
+            const std::string message = str(error, "message");
+            failTurn(done, message, authFailure(error.value("codexErrorInfo", json()), message));
         } else {
-            std::string answer = answer_;
-            if (answer.empty())
-                answer = str(turn.value("error", json()), "message");
-            say(answer);
+            rearmLogin(); // a turn worked: the next login problem is news again
+            say(answer_);
         }
-        answer_.clear();
-        if (!turnPending_) {
-            state_ = "idle";
-            dialog_.clear();
-            deliver();
-        }
-        changed();
+        finishTurn();
+    } else if (method == "error") {
+        // A failure of the turn. `willRetry` ones ("Reconnecting... 2/5") are
+        // not the end. The last one may be all there is: Codex has sent no
+        // turn/completed after it (checked against codex 0.166 with no login).
+        if (params.value("willRetry", false))
+            return;
+        const json error = params.value("error", json());
+        const std::string turn = str(params, "turnId");
+        if (!turn.empty() && (turn == failedTurn_ || turn == endedTurn_ || (!turnId_.empty() && turn != turnId_)))
+            return; // reported already, or another turn's
+        const std::string message = str(error, "message");
+        failTurn(turn, message, authFailure(error.value("codexErrorInfo", json()), message));
+        endedTurn_ = turn;
+        finishTurn();
     } else if (method == "item/completed") {
         const json item = params.value("item", json());
         const std::string type = str(item, "type");
@@ -585,16 +657,69 @@ json CodexBackend::modes() const
     return modes;
 }
 
-// `codex login status`: "Logged in using ..." and status 0 when it is.
+// `codex login status`: status 0 when logged in (a ChatGPT login or an API key); then
+// the account's name from the app server (account/read), when it answers.
 void CodexBackend::refreshLogin(std::function<void(bool changed)> done)
 {
     if (bin_.empty())
         return done(false);
     host_.runProcess({bin_, "login", "status"}, std::chrono::seconds(30), [this, done](int status, const std::string &output) {
-        const json now = status == 0 && output.find("Logged in") != std::string::npos;
+        // Exit 0 is a login: "Logged in using ChatGPT", but also "API key configured - sk-..." for an API key.
+        const json now = status == 0 && output.find("Not logged in") == std::string::npos;
         const bool changed = now != loggedIn_;
         loggedIn_ = now;
+        readAccount([done, changed](bool accountChanged) { done(changed || accountChanged); });
+    });
+}
+
+// account/read: {"account": {"type": "chatgpt", "email": ..., "planType": ...}
+// | {"type": "apiKey"} | null}. Only the email is taken, never a token
+// (account/read has none, and auth.json is not read). The app server keeps
+// the account in memory, so what it says is its own view: `serverAccount_`.
+void CodexBackend::readAccount(std::function<void(bool changed)> done)
+{
+    auto apply = [this, done](const json &account) {
+        serverAccount_ = account.is_object();
+        json name;
+        if (account.is_object() && str(account, "type") == "chatgpt" && account.value("email", json()).is_string()
+            && loggedIn_ != json(false))
+            name = account["email"];
+        const bool changed = name != accountName_;
+        accountName_ = name;
         done(changed);
+    };
+    if (!ready_)
+        return apply(json());
+    call("account/read", json::object(), [apply](const json &result, const json &error) {
+        apply(error.is_null() ? result.value("account", json()) : json());
+    });
+}
+
+// A login or logout ended. The app server holds the account in memory: it
+// picks up a login when it had none (checked against codex 0.166), but not a
+// logout, and an account replaced by another is assumed not seen either. It
+// is restarted then, as soon as no thread works.
+void CodexBackend::authChanged(const std::string &kind, bool ok)
+{
+    if (serverAccount_ && (kind == "logout" || ok))
+        restartWanted_ = true;
+    maybeRestart();
+}
+
+void CodexBackend::maybeRestart()
+{
+    if (!restartWanted_ || restarting_ || bin_.empty() || !ready_ || !tuis_.empty())
+        return;
+    for (const CodexSession *session : sessionsOf<CodexSession>())
+        if (session->state() != "idle")
+            return;
+    restartWanted_ = false;
+    restarting_ = true;
+    host_.log("codex: restarting the app server (the account changed)");
+    host_.runProcess({bin_, "app-server", "daemon", "restart"}, std::chrono::seconds(60), [this](int status, const std::string &) {
+        restarting_ = false;
+        host_.log("codex: app server restart " + std::string(status == 0 ? "done" : "failed (status " + std::to_string(status) + ")"));
+        // The link ends with the old server; the reconnect reads everything again.
     });
 }
 
@@ -609,6 +734,7 @@ void CodexBackend::tick(Clock::time_point now)
             nextRescan_ = now + kRescan;
             rescan();
         }
+        maybeRestart();
         if (!link_.flush())
             lost();
         return;
@@ -645,7 +771,14 @@ void CodexBackend::initialized(const json &result)
             for (const auto &model : result["data"])
                 if (!model.value("hidden", false) && !str(model, "model").empty())
                     models.push_back(str(model, "model"));
+        const bool changed = models != models_;
         models_ = models;
+        if (changed)
+            host_.assistantsChanged();
+    });
+    readAccount([this](bool changed) {
+        if (changed)
+            host_.assistantsChanged();
     });
     nextRescan_ = Clock::now() + kRescan;
     rescan();
@@ -655,6 +788,8 @@ std::optional<Clock::time_point> CodexBackend::deadline() const
 {
     if (bin_.empty())
         return std::nullopt;
+    if (link_.isOpen() && restartWanted_ && !restarting_)
+        return std::min(nextRescan_, Clock::now() + std::chrono::seconds(1)); // look again whether it is idle
     return link_.isOpen() ? nextRescan_ : nextTry_;
 }
 
@@ -689,6 +824,11 @@ void CodexBackend::service()
                 const json &params = object("params");
                 if (method == "account/rateLimits/updated") {
                     setLimits(params.value("rateLimits", json()));
+                } else if (method == "account/updated") {
+                    refreshLogin([this](bool changed) {
+                        if (changed)
+                            host_.assistantsChanged();
+                    });
                 } else if (method == "thread/started") {
                     const json thread = params.value("thread", json());
                     if (thread.value("parentThreadId", json()).is_null())
@@ -961,14 +1101,27 @@ void CodexBackend::start(const StartRequest &request, Started done)
 {
     if (!ready_)
         return done({}, "no-assistant");
+    // Known not to be logged in (from `codex login status`): no thread, as
+    // Kimi's start answers. Unknown starts as before.
+    if (loggedIn_ == json(false))
+        return done({}, "not-logged-in");
     json params = {{"developerInstructions", kVoiceContext}};
     if (const auto model = modelArgument(request.args))
         params["model"] = *model;
     const std::string label = request.label;
     auto started = [this, label, done](const json &result, const json &error, const char *failure) {
         CodexSession *session = error.is_null() && result.contains("thread") ? addSession(result["thread"], true) : nullptr;
-        if (!session)
+        if (!session) {
+            if (!error.is_null()) {
+                // No session exists to show it in: the daemon's log and the `rejected` reason carry it.
+                const std::string message = str(error, "message");
+                const json data = error.value("data", json());
+                host_.log("codex: " + std::string(failure) + ": " + (message.empty() ? error.dump() : message));
+                if (authFailure(data.is_object() ? data.value("codexErrorInfo", json()) : json(), message))
+                    return done({}, "not-logged-in");
+            }
             return done({}, failure);
+        }
         session->setLabel(label);
         session->setSettings(result.value("approvalPolicy", json()), result.value("sandbox", json()), result.value("model", json()));
         done(session->id(), {});

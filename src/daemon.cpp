@@ -291,6 +291,7 @@ public:
     }
 
     void sessionsChanged() override { sessionsDirty_ = true; }
+    void assistantsChanged() override { broadcast(assistantsMessage()); }
 
     void toSubscribers(const std::string &id, const json &message) override
     {
@@ -660,6 +661,7 @@ private:
             return;
         }
         logLine("token of " + chosen->name() + " stored");
+        rearmLogin(chosen->name());
         peer->conn->send({{"type", "token-set"}, {"ref", ref}, {"assistant", chosen->name()}});
         // On standby nothing runs; with the account login missing the token
         // becomes the fallback and the login is read with it.
@@ -702,12 +704,25 @@ private:
         if (kind == "login" && ok)
             if (auto *kimi = dynamic_cast<KimiBackend *>(chosen))
                 kimi->setLoggedIn(true);
+        if (kind == "login" || kind == "logout") {
+            chosen->authChanged(kind, ok);
+            // A login went through: the next login problem is news again.
+            if (kind == "login" && ok)
+                rearmLogin(name);
+        }
         broadcast(assistantsMessage());
         chosen->refreshVersion([this] { broadcast(assistantsMessage()); });
         chosen->refreshLogin([this](bool changed) {
             if (changed)
                 broadcast(assistantsMessage());
         });
+    }
+
+    void rearmLogin(const std::string &assistant)
+    {
+        for (Session *s : sessions())
+            if (s->assistant() == assistant)
+                s->rearmLogin();
     }
 
     json assistantsMessage() const
@@ -818,7 +833,7 @@ private:
             else if (type == "screen")
                 session->onScreen(str(message, "dialog"),
                                   message.value("prompt", false),
-                                  str(message, "mode"));
+                                  str(message, "mode"), message.value("login", false));
             else if (type == "typed")
                 session->onTyped(message.value("ok", false), str(message, "screen"), str(message, "how"));
             else if (type == "submitted")

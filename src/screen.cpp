@@ -778,7 +778,7 @@ std::string screenDialog(const Screen &screen)
     return joinLines(lines);
 }
 
-bool promptBox(const Screen &screen, std::string &text, bool *shell, int *topRule)
+bool promptBox(const Screen &screen, std::string &text, bool *shell, int *topRule, int *bottomRule)
 {
     static const std::string mark = "\xE2\x9D\xAF"; // ❯
     // A box taller than 16 rows is a long prompt wrapped: every row after
@@ -814,6 +814,8 @@ bool promptBox(const Screen &screen, std::string &text, bool *shell, int *topRul
             *shell = bang;
         if (topRule)
             *topRule = r;
+        if (bottomRule)
+            *bottomRule = below;
         text.clear();
         for (int k = r + 1; k < below; ++k)
             text += (k > r + 1 ? "\n" : "") + screen.row(k);
@@ -933,6 +935,21 @@ bool turnWorkingShown(const Screen &screen)
         if (static_cast<unsigned char>(row[0]) < 0x80 || row.compare(0, 3, "\xE2\x8F\xBA") == 0 || row.compare(0, 3, "\xE2\x8E\xBF") == 0)
             continue;
         if (row.find("\xE2\x80\xA6 (") != std::string::npos)
+            return true;
+    }
+    return false;
+}
+
+bool screenLoginShown(const Screen &screen)
+{
+    std::string box;
+    int bottom = -1;
+    if (!promptBox(screen, box, nullptr, nullptr, &bottom))
+        return false;
+    for (int r = bottom + 1; r < screen.rows(); ++r) {
+        const std::string row = screen.row(r);
+        const auto at = row.find("Not logged in");
+        if (at != std::string::npos && row.find("/login", at) != std::string::npos)
             return true;
     }
     return false;

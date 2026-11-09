@@ -96,6 +96,15 @@ public:
     const std::string &limitedAt() const { return limitedAt_; }
     std::size_t limitHits() const { return limitHits_; }
     std::size_t limitClears() const { return limitClears_; }
+    // Login problems and working replies in the file, as Claude Code writes
+    // them: an assistant line with `isApiErrorMessage` and an authentication
+    // failure (`error` "authentication_failed", `apiErrorStatus` 401) counts in
+    // authFailures(); any other assistant line of the conversation itself is a
+    // reply. Only these structured fields count, never the words of a text, so
+    // an answer that quotes the error is none.
+    std::size_t authFailures() const { return authFailures_; }
+    const std::string &authFailedAt() const { return authFailedAt_; }
+    std::size_t replies() const { return replies_; }
     // How many turn_duration lines (a turn ended in the file) were read.
     std::size_t turnEndCount() const { return turnEndCount_; }
     // The texts Claude Code holds in its own queue: a prompt typed while a
@@ -130,6 +139,8 @@ private:
     json limited_;
     std::string limitedAt_;
     std::size_t limitHits_ = 0, limitClears_ = 0, turnEndCount_ = 0;
+    std::size_t authFailures_ = 0, replies_ = 0;
+    std::string authFailedAt_;
     bool turnRunning_ = false, turnEnds_ = false, windowed_ = false;
     long long noteAt_ = 0; // an unanswered task notification, written then
     std::deque<std::string> queued_;

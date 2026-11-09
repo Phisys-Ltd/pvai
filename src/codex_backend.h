@@ -50,6 +50,12 @@ protected:
 private:
     std::vector<json> entries(const json &item, long long ms);
     void reply(bool allow);
+    // A turn failed (turn/completed with an error, an `error` that is not a
+    // retry, a rejected turn/start): a text entry, `say` and, for a login
+    // problem, the "login" attention. `turn` may be empty (a rejection).
+    void failTurn(const std::string &turn, const std::string &message, bool login);
+    // The turn is over for good: nothing runs, the prompt is free again.
+    void finishTurn();
 
     CodexBackend &backend_;
     bool detached_;
@@ -58,6 +64,8 @@ private:
     json request_;             // the approval the thread waits on: id, method, params
     std::map<std::string, std::string> outputs_; // command output by item id, while it runs
     std::map<std::string, std::string> files_;   // a file change's paths by item id, while it runs
+    std::string failedTurn_;   // the turn failTurn reported last: its other report is no news
+    std::string endedTurn_;    // the turn that completed last
     std::string answer_;       // the turn's last agent message so far
     std::string approval_;     // a new approval policy for the next turn/start
     json sandbox_;             // a new sandbox policy for it
@@ -73,6 +81,7 @@ public:
     json models() const override { return models_; }
     json modes() const override;
     void refreshLogin(std::function<void(bool changed)> done) override;
+    void authChanged(const std::string &kind, bool ok) override;
 
     void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) override;
     void start(const StartRequest &request, Started done) override;
@@ -104,6 +113,12 @@ protected:
 
 private:
     void rescan();
+    // The account the app server says is logged in (account/read): the
+    // email of a ChatGPT login, else null (an API key has no name).
+    void readAccount(std::function<void(bool changed)> done);
+    // Restarts the shared app server when an account change is waiting for
+    // it and no thread works.
+    void maybeRestart();
     void adopt(const std::string &id);
     CodexSession *addSession(const json &thread, bool detached);
     void setLimits(const json &limits);
@@ -118,6 +133,9 @@ private:
     json limits_ = {{"fiveHour", nullptr}, {"sevenDay", nullptr}};
     json models_ = json::array();
     std::string serverVersion_;
+    bool serverAccount_ = false;   // the app server holds an account (it keeps it in memory)
+    bool restartWanted_ = false;   // a login or logout changed what the server holds
+    bool restarting_ = false;
     std::set<std::string> stopped_;  // threads stopped here: not adopted again
     std::set<std::string> adopting_; // thread/resume sent
     // Loaded subagent threads (parentThreadId set) by id: their parent, the
