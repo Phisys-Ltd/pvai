@@ -366,7 +366,10 @@ daemon knows every live one on its host.
   presses Return again (twice at most, 1.5 s apart); if the box still holds
   the text after that, it empties the box (`draft` dirty until done) and
   sends `{"type": "submitted", "ok": false}`; a Return that took sends
-  `{"type": "submitted", "ok": true}` (the daemon ignores it). On `ok: false`
+  `{"type": "submitted", "ok": true}` (the daemon ignores it); `ok: false`
+  also carries `screen`, the wrapper's snapshot of the screen as the box
+  showed it, from which the daemon logs the prompt box and footer
+  (about 300 characters, for a slash or shell command only). On `ok: false`
   the daemon ends a pending slash or shell command (`attention` `stuck`) and
   puts a normal prompt back at the front of the queue: typed again once,
   silently, once the box is empty; the second time for the same prompt it

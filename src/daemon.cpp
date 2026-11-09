@@ -853,7 +853,7 @@ private:
             else if (type == "typed")
                 session->onTyped(message.value("ok", false), str(message, "screen"), str(message, "how"));
             else if (type == "submitted")
-                session->onSubmitted(message.value("ok", false), str(message, "why"));
+                session->onSubmitted(message.value("ok", false), str(message, "why"), str(message, "screen"));
             else if (type == "snapshot")
                 session->onSnapshot(str(message, "screen"));
             return;

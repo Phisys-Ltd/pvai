@@ -946,11 +946,15 @@ int runWrapper(const WrapperOptions &options)
                 // Claude Code never took the Return: empty the box, the
                 // daemon decides about the prompt. The box is emptied now
                 // (the daemon hears `draft` first) so a retry waits for it.
+                // The screen goes with it, as the box showed it before it is
+                // emptied: the daemon logs the box and footer to tell later
+                // why the Return did not take.
                 submitCheck.reset();
                 leftover = false;
+                const std::string shown = screenSnapshot(screen);
                 clearBox();
                 if (daemon)
-                    daemon->send({{"type", "submitted"}, {"ok", false}});
+                    daemon->send({{"type", "submitted"}, {"ok", false}, {"screen", shown}});
             }
         }
         // The paste that did not go in leaves the box once no dialog is over

@@ -1260,17 +1260,43 @@ void ClaudeSession::armEscapeCheck(bool forceIdle)
     escapeChecks_ = {now + std::chrono::milliseconds(500), now + std::chrono::milliseconds(1500), now + std::chrono::seconds(4)};
 }
 
+// The prompt box and the footer under it of a screen snapshot, flattened to
+// about 300 characters, for a log line: only that area, since the lines
+// above are the conversation. A rule is drawn as "───" in the snapshot.
+static std::string boxAndFooter(const std::string &screen)
+{
+    std::vector<std::string> lines;
+    std::istringstream in(screen);
+    for (std::string line; std::getline(in, line);)
+        lines.push_back(line);
+    const std::string rule = "\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80";
+    std::size_t from = lines.size() > 6 ? lines.size() - 6 : 0; // no box found: the last rows
+    int rules = 0;
+    for (std::size_t i = lines.size(); i-- > 0;)
+        if (trim(lines[i], " ") == rule && ++rules == 2) {
+            from = i;
+            break;
+        }
+    std::string out;
+    for (std::size_t i = from; i < lines.size(); ++i) {
+        const std::string row = trim(lines[i], " ");
+        if (!row.empty() && row != rule)
+            out += (out.empty() ? "" : " | ") + row;
+    }
+    return out.empty() ? std::string() : " [screen: " + oneLine(cut(out, 300), 320) + "]";
+}
+
 // The wrapper pressed Return three times and the box still held the text:
 // Claude Code never took it, and the wrapper has emptied the box (its
 // `draft` message, which came first, keeps the next prompt waiting for it).
-void ClaudeSession::onSubmitted(bool ok, const std::string &why)
+void ClaudeSession::onSubmitted(bool ok, const std::string &why, const std::string &screen)
 {
     if (ok && !why.empty())
         host_.log(id_ + ": submitted (" + why + ")");
     if (ok || !submitCheck_)
         return;
     if (slashPending_) {
-        host_.log(id_ + ": " + slashText_.substr(0, 40) + " stayed in the prompt box, cleared");
+        host_.log(id_ + ": " + slashText_.substr(0, 40) + " stayed in the prompt box, cleared" + boxAndFooter(screen));
         slashPending_ = false;
         if (slashModel_)
             modelDone("failed", "did not run");

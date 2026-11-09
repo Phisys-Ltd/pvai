@@ -1535,9 +1535,14 @@ esac
         check(sw.next("type").value("text", "") == "/context", "the slash command is typed");
         sw.send({{"type", "typed"}, {"ok", true}});
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "busy while the command is pending");
-        sw.send({{"type", "submitted"}, {"ok", false}});
+        sw.send({{"type", "submitted"}, {"ok", false}, {"screen", "SECRET talk above\n\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\n\xE2\x9D\xAF /context\n\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\n  ? for shortcuts"}});
         const json stuck = a.next("attention", [](const json &m) { return m.value("kind", "") == "stuck"; }, 2000);
         check(stuck.value("text", "") == "/context", "the app is told: " + stuck.dump());
+        {
+            const std::string log = readFile(daemonLog);
+            check(log.find("[screen: \xE2\x9D\xAF /context | ? for shortcuts]") != std::string::npos && log.find("SECRET talk") == std::string::npos,
+                  "the log shows the box and footer of the stuck command, not the conversation above");
+        }
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after the stuck command");
         // (b) a prompt whose Return did not take: never typed again by
         // itself (Claude Code may have taken it after all); the owner sees it
