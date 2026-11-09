@@ -335,6 +335,19 @@ int main()
         check(pvai::promptHolds(draft, "ja"), "the start alone is held");
         check(!pvai::promptStands(draft, "ja"), "a short prompt does not stand in a longer draft");
         check(pvai::promptStands(draft, "ja, aber  erst morgen"), "the same text stands, blanks aside");
+        // A slash command comes back with its argument hint behind it, also
+        // with the autocomplete list drawn under the box.
+        pvai::Screen hint(40, 100);
+        feed(hint, "\x1b[2J\x1b[H" + r3 + "\r\n\xE2\x9D\xAF /compact  <optional custom summarization instructions>\r\n" + r3 + "\r\n  ? for shortcuts");
+        check(pvai::promptStands(hint, "/compact"), "a slash command stands with its argument hint");
+        check(!pvai::promptStands(hint, "/comp"), "a shorter command does not stand in it");
+        pvai::Screen menu(40, 100);
+        feed(menu, "\x1b[2J\x1b[H" + r3 + "\r\n\xE2\x9D\xAF /compact  <optional custom summarization instructions>\r\n" + r3
+                       + "\r\n  \xE2\x9D\xAF /compact   Clear conversation history but keep a summary in context\r\n    /context   Visualize current context usage");
+        check(pvai::promptStands(menu, "/compact"), "and with the autocomplete list under the box");
+        pvai::Screen own(40, 100);
+        feed(own, "\x1b[2J\x1b[H" + r3 + "\r\n\xE2\x9D\xAF /compact focus on the tests\r\n" + r3 + "\r\n  ? for shortcuts");
+        check(!pvai::promptStands(own, "/compact"), "the owner's own argument is not an argument hint");
         pvai::Screen wrapped(40, 60);
         const std::string longText = "[Message p2 from srv] Vorschlag: bitte einen Lauf des Workflows nur mit dem Upload starten und danach melden";
         feed(wrapped, "\x1b[2J\x1b[H" + r3 + "\r\n\xE2\x9D\xAF [Message p2 from srv] Vorschlag: bitte einen Lauf\r\n  des Workflows nur mit dem Upload starten und danach\r\n  melden\r\n" + r3 + "\r\n  ? for shortcuts");

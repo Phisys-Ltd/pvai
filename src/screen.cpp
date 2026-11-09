@@ -900,8 +900,18 @@ bool promptStands(const Screen &screen, const std::string &text)
     if (want.empty())
         return false;
     constexpr std::size_t kLong = 80;
-    if (want.size() <= kLong)
-        return shown == want;
+    if (want.size() <= kLong) {
+        if (shown == want)
+            return true;
+        // Claude Code draws a slash command's argument hint after it, dimmed
+        // ("/compact <optional custom summarization instructions>"): it is
+        // no text of the owner's.
+        if (want[0] == '/' && shown.size() > want.size() && shown.compare(0, want.size(), want) == 0 && shown[want.size()] == ' ') {
+            const std::string rest = trim(shown.substr(want.size()), " ");
+            return !rest.empty() && (rest[0] == '<' || rest[0] == '[') && rest.back() == (rest[0] == '<' ? '>' : ']');
+        }
+        return false;
+    }
     const std::string head = want.substr(0, utf8Boundary(want, kLong));
     return shown.compare(0, head.size(), head) == 0;
 }
