@@ -14,6 +14,7 @@
 #endif
 
 #include <algorithm>
+#include <thread>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +27,8 @@ namespace {
 constexpr auto kInstallTime = std::chrono::minutes(15);
 constexpr auto kLoginTime = std::chrono::minutes(30);
 constexpr auto kLogoutTime = std::chrono::minutes(1);
+// A stopped login or install gets this long after SIGTERM before SIGKILL.
+constexpr auto kKillAfter = std::chrono::seconds(2);
 constexpr std::size_t kMaxOutput = 64 * 1024;
 constexpr const char *kStep = "pvai-step: ";
 // `claude setup-token` is run in a terminal this wide, so that it does not
@@ -225,10 +228,21 @@ Setup::Setup(Emit emit, Finished finished)
 
 Setup::~Setup()
 {
+    // The daemon is going down: a short, bounded wait, then SIGKILL.
     for (auto &[name, task] : tasks_) {
         ::kill(-task.pid, SIGTERM);
         ::close(task.fd);
-        ::waitpid(task.pid, nullptr, 0);
+    }
+    const auto until = Clock::now() + std::chrono::milliseconds(500);
+    for (auto &[name, task] : tasks_) {
+        while (::waitpid(task.pid, nullptr, WNOHANG) == 0) {
+            if (Clock::now() >= until) {
+                ::kill(-task.pid, SIGKILL);
+                ::waitpid(task.pid, nullptr, 0); // SIGKILL cannot be ignored
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
 }
 
@@ -299,7 +313,7 @@ std::string Setup::logout(const std::string &assistant, const std::string &binar
 std::string Setup::loginCode(const std::string &assistant, const std::string &code)
 {
     const auto it = tasks_.find(assistant);
-    if (it == tasks_.end() || it->second.install || it->second.logout)
+    if (it == tasks_.end() || it->second.install || it->second.logout || it->second.ending)
         return "no-login";
     const std::string clean = oneLine(code, 512);
     if (clean.empty())
@@ -315,11 +329,11 @@ std::string Setup::loginCode(const std::string &assistant, const std::string &co
 std::string Setup::loginCancel(const std::string &assistant)
 {
     const auto it = tasks_.find(assistant);
-    if (it == tasks_.end() || it->second.install || it->second.logout)
+    if (it == tasks_.end() || it->second.install || it->second.logout || it->second.ending)
         return "no-login";
-    ::kill(-it->second.pid, SIGTERM);
-    ::waitpid(it->second.pid, nullptr, 0);
-    end(assistant, -1, "cancelled");
+    // The task ends (`failed`, "cancelled") when the process has gone: the
+    // daemon's tick looks, it never waits here.
+    stopTask(assistant, it->second, "cancelled");
     return {};
 }
 
@@ -367,7 +381,8 @@ std::vector<int> Setup::fds() const
 {
     std::vector<int> out;
     for (const auto &[name, task] : tasks_)
-        out.push_back(task.fd);
+        if (!task.ending)
+            out.push_back(task.fd);
     return out;
 }
 
@@ -397,27 +412,67 @@ void Setup::service(int fd)
     if (eof) {
         if ((task.install || task.logout) && !task.buffer.empty())
             line(assistant, task, plain(task.buffer));
-        int status = 0;
-        ::waitpid(task.pid, &status, 0);
-        status = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        std::string why;
-        if (task.token && status == 0) {
-            // Whole `setup-token` output is read; the token goes to its file
-            // and nowhere else.
-            const std::string found = findToken(task.output);
-            if (found.empty()) {
-                status = -1;
-                why = "token-not-recognized";
-            } else if (!storeClaudeToken(found)) {
-                status = -1;
-                why = "cannot-store-token";
-            }
-        } else if (task.token && status != 0) {
-            why = "setup-token failed";
-        }
-        task.output.clear();
-        end(assistant, status, why);
+        task.ending = true; // its output is over: the tick reaps it
+        task.killAt = Clock::now() + kKillAfter;
+        reapEnding(assistant);
     }
+}
+
+void Setup::stopTask(const std::string &assistant, Task &task, const std::string &why)
+{
+    (void)assistant;
+    ::kill(-task.pid, SIGTERM);
+    task.ending = true;
+    task.forced = why;
+    task.killAt = Clock::now() + kKillAfter;
+    task.output.clear();
+}
+
+void Setup::reapEnding(const std::string &assistant)
+{
+    const auto it = tasks_.find(assistant);
+    if (it == tasks_.end() || !it->second.ending)
+        return;
+    Task &task = it->second;
+    int status = 0;
+    const pid_t got = ::waitpid(task.pid, &status, WNOHANG);
+    if (got == 0) {
+        if (task.killAt && Clock::now() >= *task.killAt && !task.killed) {
+            ::kill(-task.pid, SIGKILL);
+            task.killed = true;
+        }
+        return;
+    }
+    if (!task.forced.empty()) {
+        end(assistant, -1, std::string(task.forced)); // a copy: end() moves the task away
+        return;
+    }
+    finishNatural(assistant, got < 0 ? -1 : WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+}
+
+void Setup::finishNatural(const std::string &assistant, int status)
+{
+    const auto it = tasks_.find(assistant);
+    if (it == tasks_.end())
+        return;
+    Task &task = it->second;
+    std::string why;
+    if (task.token && status == 0) {
+        // Whole `setup-token` output is read; the token goes to its file
+        // and nowhere else.
+        const std::string found = findToken(task.output);
+        if (found.empty()) {
+            status = -1;
+            why = "token-not-recognized";
+        } else if (!storeClaudeToken(found)) {
+            status = -1;
+            why = "cannot-store-token";
+        }
+    } else if (task.token && status != 0) {
+        why = "setup-token failed";
+    }
+    task.output.clear();
+    end(assistant, status, why);
 }
 
 void Setup::line(const std::string &assistant, Task &task, const std::string &text)
@@ -519,23 +574,30 @@ void Setup::event(const std::string &assistant, const Task &task, const std::str
 
 void Setup::tick(Clock::time_point now)
 {
-    std::vector<std::string> late;
-    for (const auto &[name, task] : tasks_)
-        if (now >= task.until)
+    std::vector<std::string> late, ending;
+    for (const auto &[name, task] : tasks_) {
+        if (task.ending)
+            ending.push_back(name);
+        else if (now >= task.until)
             late.push_back(name);
-    for (const auto &name : late) {
-        ::kill(-tasks_[name].pid, SIGKILL);
-        ::waitpid(tasks_[name].pid, nullptr, 0);
-        end(name, -1, "timed out");
     }
+    for (const auto &name : late) {
+        stopTask(name, tasks_[name], "timed out");
+        ending.push_back(name);
+    }
+    for (const auto &name : ending)
+        reapEnding(name);
 }
 
 std::optional<Setup::Clock::time_point> Setup::deadline() const
 {
     std::optional<Clock::time_point> next;
-    for (const auto &[name, task] : tasks_)
-        if (!next || task.until < *next)
-            next = task.until;
+    for (const auto &[name, task] : tasks_) {
+        // A process on its way out is looked at every 20 ms.
+        const auto at = task.ending ? Clock::now() + std::chrono::milliseconds(20) : task.until;
+        if (!next || at < *next)
+            next = at;
+    }
     return next;
 }
 

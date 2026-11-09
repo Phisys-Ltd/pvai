@@ -65,6 +65,14 @@ private:
         std::string state;   // login: waiting, code-needed
         std::string url, code, last;
         Clock::time_point until;
+        // The process is on its way out (its output ended, it was cancelled or
+        // timed out): the daemon's tick reaps it without ever blocking, and
+        // the task ends when it has gone. `forced` is the reason of a task
+        // ended by us ("cancelled", "timed out"), empty after a natural end.
+        bool ending = false;
+        std::string forced;
+        std::optional<Clock::time_point> killAt; // SIGTERM sent: SIGKILL after this
+        bool killed = false;
     };
 
     static const char *kindOf(const Task &task) { return task.install ? "install" : task.logout ? "logout" : "login"; }
@@ -72,6 +80,12 @@ private:
     void line(const std::string &assistant, Task &task, const std::string &text);
     void loginOutput(const std::string &assistant, Task &task);
     void end(const std::string &assistant, int status, const std::string &why = {});
+    // Stops a task's process: SIGTERM now, SIGKILL if it is still there after
+    // kKillAfter; the task ends with `why` once it is reaped.
+    void stopTask(const std::string &assistant, Task &task, const std::string &why);
+    // Whether the ended process has gone, without waiting; then the task ends.
+    void reapEnding(const std::string &assistant);
+    void finishNatural(const std::string &assistant, int status);
     void event(const std::string &assistant, const Task &task, const std::string &state, const std::string &error = {});
 
     Emit emit_;

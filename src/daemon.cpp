@@ -137,9 +137,16 @@ struct Job {
     std::string output;
     Clock::time_point deadline;
     std::function<void(int status, const std::string &output)> done;
+    // Its output has ended (or it timed out): the process is reaped by the
+    // loop without waiting, SIGKILL for one that stays; never a blocking wait.
+    bool ended = false;
+    bool timedOut = false;
+    bool killed = false;
 };
 
 constexpr std::size_t kMaxJobOutput = 64 * 1024;
+// An ended job's process that is still there is killed after this.
+constexpr auto kJobKillAfter = std::chrono::seconds(2);
 // `installed` is read again on a `hello` when it is older than this.
 constexpr auto kVersionAge = std::chrono::minutes(10);
 
@@ -212,7 +219,7 @@ public:
                 fds.push_back({backend->fd(), backend->events(), 0});
             const std::size_t firstJob = fds.size();
             for (const auto &job : jobs_)
-                fds.push_back({job.fd, POLLIN, 0});
+                fds.push_back({job.ended ? -1 : job.fd, POLLIN, 0}); // an ended job's EOF is known
             const std::size_t firstSetup = fds.size();
             const std::vector<int> setupFds = setup_->fds();
             for (const int fd : setupFds)
@@ -574,20 +581,31 @@ private:
         const auto now = Clock::now();
         std::vector<std::pair<std::function<void(int, const std::string &)>, std::pair<int, std::string>>> finished;
         for (auto &job : jobs_) {
-            bool eof = false;
-            if (std::find(readable.begin(), readable.end(), job.pid) != readable.end())
-                eof = readAvailable(job.fd, job.output, kMaxJobOutput);
-            int status = 0;
-            if (eof) {
-                ::waitpid(job.pid, &status, 0);
-                status = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-            } else if (now >= job.deadline) {
-                ::kill(-job.pid, SIGKILL);
-                ::waitpid(job.pid, nullptr, 0);
-                status = -1;
-            } else {
-                continue;
+            if (!job.ended) {
+                bool eof = false;
+                if (std::find(readable.begin(), readable.end(), job.pid) != readable.end())
+                    eof = readAvailable(job.fd, job.output, kMaxJobOutput);
+                if (eof) {
+                    job.ended = true;
+                    job.deadline = now + kJobKillAfter;
+                } else if (now >= job.deadline) {
+                    ::kill(-job.pid, SIGKILL);
+                    job.ended = job.timedOut = job.killed = true;
+                    job.deadline = now + kJobKillAfter;
+                } else {
+                    continue;
+                }
             }
+            int status = 0;
+            const pid_t got = ::waitpid(job.pid, &status, WNOHANG);
+            if (got == 0) {
+                if (now >= job.deadline && !job.killed) {
+                    ::kill(-job.pid, SIGKILL);
+                    job.killed = true;
+                }
+                continue; // looked at again in 20 ms
+            }
+            status = job.timedOut || got < 0 || !WIFEXITED(status) ? -1 : WEXITSTATUS(status);
             ::close(job.fd);
             job.fd = -1;
             finished.push_back({std::move(job.done), {status, std::move(job.output)}});
@@ -1534,7 +1552,7 @@ private:
         for (const auto &backend : backends_)
             take(backend->deadline());
         for (const auto &job : jobs_)
-            take(job.deadline);
+            take(job.ended ? Clock::now() + std::chrono::milliseconds(20) : job.deadline);
         take(setup_->deadline());
         take(directDeadline());
         if (!kept_.empty())

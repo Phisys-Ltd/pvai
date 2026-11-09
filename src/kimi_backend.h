@@ -9,9 +9,12 @@
 #include "rpc_backend.h"
 #include "session.h"
 
+#include <chrono>
 #include <map>
 #include <memory>
 #include <sys/types.h>
+
+#include <vector>
 
 namespace pvai {
 
@@ -22,7 +25,7 @@ class KimiBackend;
 class KimiLink : public Link {
 public:
     KimiLink() = default;
-    ~KimiLink() override { close(); }
+    ~KimiLink() override;
 
     bool open(const std::string &program);
     void close() override;
@@ -35,8 +38,18 @@ public:
     void respondError(const json &id, int code, const std::string &message) override;
     bool read(std::vector<json> &messages) override;
     bool flush() override { return !conn_ || conn_->flush(); }
+    // Reaps the agents that were closed (SIGTERM sent), without waiting;
+    // SIGKILL for one that stays more than 2 s.
+    void reapClosed();
+    bool hasClosed() const { return !closed_.empty(); }
 
 private:
+    struct Closed {
+        pid_t pid;
+        std::chrono::steady_clock::time_point killAt;
+        bool killed = false;
+    };
+    std::vector<Closed> closed_;
     std::unique_ptr<Conn> conn_;
     pid_t child_ = -1;
     long long nextId_ = 1;

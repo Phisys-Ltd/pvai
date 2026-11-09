@@ -2278,6 +2278,19 @@ esac
         get("login", [](const json &m) { return m.value("ref", 0) == 2130 && m.value("state", "") == "failed"; }, 8000);
         fs::remove(bin + "/login.linkonly");
 
+        // A login cancelled while it waits for its code: the task ends as cancelled once the
+        // process has gone (the daemon never waits for it), and the next login starts at once.
+        t.send({{"type", "login"}, {"ref", 2140}, {"assistant", "claude"}});
+        get("login", [](const json &m) { return m.value("ref", 0) == 2140 && m.value("state", "") == "code-needed"; });
+        t.send({{"type", "login-cancel"}, {"ref", 2141}, {"assistant", "claude"}});
+        const json cancelled = get("login", [](const json &m) { return m.value("ref", 0) == 2140 && m.value("state", "") == "failed"; }, 5000);
+        check(cancelled.value("error", "") == "cancelled", "a cancelled login ends as cancelled: " + cancelled.dump());
+        t.send({{"type", "login"}, {"ref", 2142}, {"assistant", "claude"}});
+        check(!get("login", [](const json &m) { return m.value("ref", 0) == 2142 && m.value("state", "") == "code-needed"; }).empty(),
+              "and the next login starts");
+        t.send({{"type", "login-cancel"}, {"ref", 2143}, {"assistant", "claude"}});
+        get("login", [](const json &m) { return m.value("ref", 0) == 2142 && m.value("state", "") == "failed"; }, 5000);
+
         // The account logs in (a Claude login ends with a status without the token): the fallback goes inactive.
         t.send({{"type", "login"}, {"ref", 214}, {"assistant", "claude"}});
         get("login", [](const json &m) { return m.value("state", "") == "code-needed"; });

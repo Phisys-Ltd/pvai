@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <thread>
 #include <ctime>
 
 namespace pvai {
@@ -441,12 +442,46 @@ bool KimiLink::open(const std::string &program)
 
 void KimiLink::close()
 {
+    // No waiting on the daemon's loop: the agent is reaped by reapClosed().
     if (child_ > 0) {
         ::kill(child_, SIGTERM);
-        ::waitpid(child_, nullptr, 0);
+        closed_.push_back({child_, std::chrono::steady_clock::now() + std::chrono::seconds(2)});
         child_ = -1;
     }
     conn_.reset();
+    reapClosed();
+}
+
+void KimiLink::reapClosed()
+{
+    const auto now = std::chrono::steady_clock::now();
+    for (auto it = closed_.begin(); it != closed_.end();) {
+        if (::waitpid(it->pid, nullptr, WNOHANG) != 0) { // reaped (or not ours any more)
+            it = closed_.erase(it);
+            continue;
+        }
+        if (now >= it->killAt && !it->killed) {
+            ::kill(it->pid, SIGKILL);
+            it->killed = true;
+        }
+        ++it;
+    }
+}
+
+// The daemon is going down: a short, bounded wait, then SIGKILL.
+KimiLink::~KimiLink()
+{
+    close();
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+    while (!closed_.empty() && std::chrono::steady_clock::now() < until) {
+        reapClosed();
+        if (!closed_.empty())
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    for (const auto &c : closed_) {
+        ::kill(c.pid, SIGKILL);
+        ::waitpid(c.pid, nullptr, 0);
+    }
 }
 
 long long KimiLink::request(const std::string &method, const json &params)
@@ -509,6 +544,8 @@ void KimiBackend::noteAuth(const json &error)
 
 void KimiBackend::tick(Clock::time_point now)
 {
+    if (link_.hasClosed())
+        link_.reapClosed();
     if (bin_.empty())
         return;
     if (link_.isOpen()) {
@@ -540,9 +577,11 @@ void KimiBackend::initialized(const json &result)
 
 std::optional<Clock::time_point> KimiBackend::deadline() const
 {
+    // An agent that was closed is looked at every 50 ms until it is reaped.
+    const auto reaping = link_.hasClosed() ? std::optional<Clock::time_point>(Clock::now() + std::chrono::milliseconds(50)) : std::nullopt;
     if (bin_.empty() || link_.isOpen())
-        return std::nullopt;
-    return nextTry_;
+        return reaping;
+    return reaping && *reaping < nextTry_ ? reaping : std::optional<Clock::time_point>(nextTry_);
 }
 
 // Kimi ended (or its link broke): its sessions go with it; the next tick
