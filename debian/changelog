@@ -1,3 +1,16 @@
+pvai (0.5.75-1) trixie; urgency=medium
+
+  * Claude token login as a fallback: set-token, login method token,
+    welcome.tokenLogin, and loginMethod / tokenStored on the assistant
+    entries.
+  * Codex failures are shown in the history.
+  * Login attention for Claude and Codex.
+  * The account name is reported per assistant.
+  * A turn with a 🔊 line is spoken.
+  * propose needs HOST/SESSION.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 09 Nov 2026 12:00:00 +0100
+
 pvai (0.5.74-1) trixie; urgency=medium
 
   * The app can rename a session (rename request, welcome.rename); the
