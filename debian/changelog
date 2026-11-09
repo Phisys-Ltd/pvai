@@ -1,3 +1,14 @@
+pvai (0.5.77-1) trixie; urgency=medium
+
+  * An Esc from the app on a running slash command clears the box when
+    Claude Code put the command back, also with its argument hint.
+  * A silent slash or shell command ends after its quiet time counted
+    from the command itself, not from an older free screen.
+  * A typed check that fails and is retried by itself no longer flashes a
+    dialog in the app.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 09 Nov 2026 21:00:00 +0100
+
 pvai (0.5.76-1) trixie; urgency=medium
 
   * Bad transcript or hook data no longer ends the daemon.
