@@ -32,7 +32,14 @@ std::string trim(const std::string &text, const char *set = " \t\r\n");
 std::string cut(std::string text, std::size_t limit);
 // One line of at most `limit` bytes: control characters dropped, trimmed.
 std::string oneLine(std::string_view text, std::size_t limit);
+// Type-safe getters for data other programs wrote (transcripts, hook events,
+// subagent files): json::value() throws on a null or a wrong type, these give
+// the default instead. `object` need not be an object.
 std::string str(const json &object, const char *key);
+bool flag(const json &object, const char *key, bool fallback = false);
+long long integer(const json &object, const char *key, long long fallback = 0);
+// The member `key`, or null when there is none.
+json member(const json &object, const char *key);
 // Unix seconds of an ISO 8601 stamp ("2026-10-28T19:20:28.623Z"), 0 if it is none.
 long long unixTime(const std::string &stamp);
 // -1, 0 or 1: `a` before, equal to or after `b`, comparing dotted numbers

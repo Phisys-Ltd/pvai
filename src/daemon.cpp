@@ -186,6 +186,20 @@ public:
         refreshVersions();
     }
 
+    // One step of the loop that reads what other programs wrote (a transcript,
+    // an assistant's output): an exception in it is logged, never fatal, and
+    // the loop goes on. Only the kind of failure is logged, no content.
+    template <class F> void guarded(const std::string &what, F &&step)
+    {
+        try {
+            step();
+        } catch (const json::exception &e) {
+            logLine(what + " failed: JSON error " + std::to_string(e.id));
+        } catch (const std::exception &e) {
+            logLine(what + " failed: " + oneLine(e.what(), 120));
+        }
+    }
+
     int run()
     {
         for (;;) {
@@ -213,10 +227,10 @@ public:
                 return 1;
             const auto now = Clock::now();
             for (Session *session : sessions())
-                session->tick(now);
+                guarded("session " + session->id() + " tick", [&] { session->tick(now); });
             for (std::size_t i = 0; i < backends_.size(); ++i)
                 if (fds[firstBackend + i].fd >= 0 && fds[firstBackend + i].revents)
-                    backends_[i]->service();
+                    guarded(backends_[i]->name() + " service", [&] { backends_[i]->service(); });
             if (fds[0].revents & POLLIN)
                 accept(unixFd_, false);
             if (fds[1].revents & POLLIN)
@@ -250,7 +264,7 @@ public:
                 setup_->service(fd);
             setup_->tick(Clock::now());
             for (const auto &backend : backends_)
-                backend->tick(Clock::now());
+                guarded(backend->name() + " tick", [&] { backend->tick(Clock::now()); });
             directTick();
             expireProposals();
             expireKept();

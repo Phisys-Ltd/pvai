@@ -62,7 +62,7 @@ json questionsOf(const json &input)
         if (question.is_object() && question.contains("options") && question["options"].is_array())
             for (const auto &option : question["options"])
                 options.push_back({{"label", str(option, "label")}, {"description", str(option, "description")}});
-        const bool multi = question.is_object() && question.value("multiSelect", false);
+        const bool multi = question.is_object() && flag(question, "multiSelect");
         json entry = {{"question", str(question, "question")}, {"header", str(question, "header")},
                       {"multiSelect", multi}, {"options", options}};
         if (multi)
@@ -99,9 +99,9 @@ std::string firstPrompt(const std::string &path)
         if (line.find("\"type\":\"user\"") == std::string::npos)
             continue;
         const json entry = json::parse(line, nullptr, false);
-        if (!entry.is_object() || isBookkeeping(entry) || entry.value("isSidechain", false))
+        if (!entry.is_object() || isBookkeeping(entry) || flag(entry, "isSidechain"))
             continue;
-        const json content = entry.value("message", json()).value("content", json());
+        const json content = member(member(entry, "message"), "content");
         std::string text;
         if (content.is_string())
             text = content.get<std::string>();
@@ -136,27 +136,27 @@ bool isSlash(const std::string &raw)
 } // namespace
 
 ClaudeSession::ClaudeSession(Host &host, Conn &wrapper, const json &registration)
-    : Session(host, registration.value("id", ""), registration.value("cwd", ""), registration.value("label", ""))
+    : Session(host, str(registration, "id"), str(registration, "cwd"), str(registration, "label"))
     , wrapper_(wrapper)
-    , canRestart_(registration.value("restart", false))
-    , verify_(registration.value("verify", false))
-    , screenModes_(registration.value("modes", false))
+    , canRestart_(flag(registration, "restart"))
+    , verify_(flag(registration, "verify"))
+    , screenModes_(flag(registration, "modes"))
 {
-    canClear_ = registration.value("clear", false);
-    if (const json v = registration.value("version", json()); v.is_string())
+    canClear_ = flag(registration, "clear");
+    if (const json v = member(registration, "version"); v.is_string())
         wrapperVersion_ = cut(oneLine(v.get<std::string>(), 64), 32);
-    canPace_ = registration.value("paced", false);
-    submitCheck_ = registration.value("submitCheck", false);
-    typedUnchecked_ = registration.value("typedUnchecked", false);
+    canPace_ = flag(registration, "paced");
+    submitCheck_ = flag(registration, "submitCheck");
+    typedUnchecked_ = flag(registration, "typedUnchecked");
     // A wrapper that registers again after a daemon restart has a running
     // Claude Code: idle, unless its transcript shows a turn going on.
-    if (registration.value("running", false)) {
+    if (flag(registration, "running")) {
         state_ = "idle";
         std::ifstream in(runtimeDir() + "/" + id_ + ".claude");
         const json known = json::parse(in, nullptr, false);
         if (known.is_object()) {
-            claudeSession_ = known.value("claudeSession", "");
-            transcript_ = known.value("transcript", "");
+            claudeSession_ = str(known, "claudeSession");
+            transcript_ = str(known, "transcript");
             if (!transcript_.empty()) {
                 tail_.follow(transcript_);
                 tail_.poll();
@@ -373,7 +373,7 @@ std::string ClaudeSession::answerQuestion(const std::string &choice)
         return "bad-choice"; // the review: allow or deny
     json &question = questions[static_cast<std::size_t>(current)];
     const int options = static_cast<int>(question["options"].size());
-    const bool multi = question.value("multiSelect", false);
+    const bool multi = flag(question, "multiSelect");
     if (choice == "next") {
         if (!multi)
             return "bad-choice";
@@ -562,7 +562,7 @@ json ClaudeSession::history(int limit)
 
 void ClaudeSession::onHook(const json &event)
 {
-    const std::string name = event.value("hook_event_name", "");
+    const std::string name = str(event, "hook_event_name");
     // The same hook installed twice (user and project settings) reports
     // every event twice, a moment apart; an exact repeat later is a new one.
     const auto field = [&](const char *key) {
@@ -579,19 +579,19 @@ void ClaudeSession::onHook(const json &event)
     lastEventAt_ = now;
     if (twice)
         return;
-    if (!ours(event.value("session_id", ""), name == "SessionStart" ? event.value("source", "") : "")) {
-        host_.log(id_ + ": " + name + " of another Claude Code (" + event.value("session_id", "") + "), dropped");
+    if (!ours(str(event, "session_id"), name == "SessionStart" ? str(event, "source") : "")) {
+        host_.log(id_ + ": " + name + " of another Claude Code (" + str(event, "session_id") + "), dropped");
         return;
     }
-    if (const std::string mode = event.value("permission_mode", ""); !mode.empty())
+    if (const std::string mode = str(event, "permission_mode"); !mode.empty())
         noteMode(mode);
     bool known = false;
-    if (const std::string id = event.value("session_id", ""); !id.empty() && id != claudeSession_) {
+    if (const std::string id = str(event, "session_id"); !id.empty() && id != claudeSession_) {
         claudeSession_ = id;
         known = true;
         claimKept();
     }
-    if (const std::string path = event.value("transcript_path", ""); !path.empty() && path != transcript_) {
+    if (const std::string path = str(event, "transcript_path"); !path.empty() && path != transcript_) {
         known = true;
         transcript_ = path;
         tail_.follow(path);
@@ -617,12 +617,12 @@ void ClaudeSession::onHook(const json &event)
         if (name == "UserPromptSubmit") {
             // Claude Code took a slash command where our text was typed (an
             // offer in its prompt took the Return): ours is not delivered.
-            if (inFlight_ && !isSlash(inFlight_->text) && isSlash(event.value("prompt", ""))) {
+            if (inFlight_ && !isSlash(inFlight_->text) && isSlash(str(event, "prompt"))) {
                 lost(*inFlight_, "Claude Code ran a command instead");
                 inFlight_.reset();
             }
             if (!inFlight_)
-                dropQueued(event.value("prompt", ""));
+                dropQueued(str(event, "prompt"));
             confirmed = inFlight_;
             delivered();
         } else if (inFlight_ && queuedInClaude_ && name == "Stop") {
@@ -640,7 +640,7 @@ void ClaudeSession::onHook(const json &event)
     }
     if (name == "SessionStart") {
         limited_ = nullptr;
-        const std::string source = event.value("source", "");
+        const std::string source = str(event, "source");
         if (state_ == "starting" || (state_ == "waiting" && trust) || source == "clear" || source == "resume")
             state_ = "idle";
         if (source == "clear") { // a new transcript: its output count starts at 0
@@ -649,7 +649,7 @@ void ClaudeSession::onHook(const json &event)
     } else if (name == "UserPromptSubmit") {
         limited_ = nullptr;
         state_ = "busy";
-        promptVoice(event.value("prompt", ""), confirmed ? &*confirmed : nullptr);
+        promptVoice(str(event, "prompt"), confirmed ? &*confirmed : nullptr);
     } else if (name == "Stop" && limited_.is_object() && limitAhead(limited_)) {
         // The limit ended the turn in the file, but Claude Code goes on by
         // itself at the reset: stay busy until it does.
@@ -663,16 +663,16 @@ void ClaudeSession::onHook(const json &event)
         state_ = "idle";
         forceIdle_ = false;
         endSlash();
-        say(event.value("last_assistant_message", ""));
+        say(str(event, "last_assistant_message"));
     } else if (name == "PermissionRequest") {
         // Claude Code shows a permission dialog for this tool call; its
         // Notification may come before or after.
-        const std::string tool = event.value("tool_name", "");
-        const json input = event.value("tool_input", json());
+        const std::string tool = str(event, "tool_name");
+        const json input = member(event, "tool_input");
         const bool asks = tool == "AskUserQuestion";
         std::string text = asks ? questionOf(input) : toolText(input);
-        const std::string description = tool == "Bash" && input.is_object() ? input.value("description", "") : "";
-        const json message = dialogInfo_.is_object() && !dialog_.empty() ? dialogInfo_.value("message", json()) : json();
+        const std::string description = tool == "Bash" && input.is_object() ? str(input, "description") : "";
+        const json message = dialogInfo_.is_object() && !dialog_.empty() ? member(dialogInfo_, "message") : json();
         dialogInfo_ = dialogInfo(asks ? "" : tool, text, message.is_string() ? message.get<std::string>() : "", description);
         if (asks) {
             dialogInfo_["questions"] = questionsOf(input);
@@ -686,8 +686,8 @@ void ClaudeSession::onHook(const json &event)
         dialog_ = asks ? "question" : "permission";
         attention(dialog_, asks ? text : tool + ": " + text);
     } else if (name == "Notification") {
-        const std::string kind = event.value("notification_type", "");
-        const std::string text = event.value("message", "");
+        const std::string kind = str(event, "notification_type");
+        const std::string text = str(event, "message");
         const bool idleNudge = kind == "idle_prompt" || (kind.empty() && text.find("waiting for your input") != std::string::npos);
         if (idleNudge || state_ == "idle")
             return;
@@ -735,7 +735,7 @@ bool ClaudeSession::ours(const std::string &claudeSession, const std::string &so
 // short. Passed on when it changes.
 void ClaudeSession::onStatus(const json &status)
 {
-    if (status.is_object() && !ours(status.value("session_id", ""), ""))
+    if (status.is_object() && !ours(str(status, "session_id"), ""))
         return;
     auto pick = [](const json &object, const char *key) {
         return object.is_object() && object.contains(key) ? object[key] : json();
@@ -977,7 +977,7 @@ void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::st
     screenAt_.reset();
     promptFree_ = prompt;
     if (blocked_) {
-        if (!text.empty() && dialogInfo_.value("text", json()) != json(text)) {
+        if (!text.empty() && member(dialogInfo_, "text") != json(text)) {
             dialogInfo_ = screenInfo(text);
             changed();
         }
@@ -1291,7 +1291,7 @@ void ClaudeSession::tick(Clock::time_point now)
     }
     if (limited_.is_object()) {
         // Gone on without a line we know, or the session ended some other way.
-        const json &at = limited_.value("resetsAt", json());
+        const json &at = member(limited_, "resetsAt");
         if ((state_ != "busy" && state_ != "waiting")
             || (at.is_number() && at.get<long long>() + kLimitGrace.count() < static_cast<long long>(std::time(nullptr)))) {
             limited_ = nullptr;
@@ -1505,7 +1505,7 @@ static bool freshLine(const std::string &iso)
 
 bool ClaudeSession::limitAhead(const json &limited)
 {
-    const json &at = limited.value("resetsAt", json());
+    const json &at = member(limited, "resetsAt");
     return !at.is_number() || at.get<long long>() > static_cast<long long>(std::time(nullptr));
 }
 
@@ -1529,7 +1529,7 @@ void ClaudeSession::drain()
 void ClaudeSession::pollTranscript()
 {
     auto fresh = tail_.poll();
-    if (usage_.is_object() && usage_.value("cache", json()) != tail_.cache()) {
+    if (usage_.is_object() && member(usage_, "cache") != tail_.cache()) {
         usage_["cache"] = tail_.cache();
         usageChanged();
     }
@@ -1572,7 +1572,7 @@ void ClaudeSession::pollTranscript()
             limited_ = tail_.limited();
             state_ = "busy";
             stopCheck_.reset();
-            attention("limited", limited_.value("text", ""));
+            attention("limited", str(limited_, "text"));
             changed();
         }
     } else if (tail_.limitClears() != clearMark_) {
@@ -1691,13 +1691,13 @@ void ClaudeSession::scanSubagents(Clock::time_point)
         } else {
             std::ifstream in(file.path());
             const json meta = json::parse(in, nullptr, false);
-            if (meta.is_object() && !meta.value("finished", false)) {
+            if (meta.is_object() && !flag(meta, "finished")) {
                 const auto started = std::chrono::system_clock::now()
                     - std::chrono::duration_cast<std::chrono::system_clock::duration>(fileNow - mtime);
                 entry = {{"id", id},
-                         {"type", meta.value("agentType", "")},
-                         {"description", meta.value("description", "")},
-                         {"background", meta.value("requestShape", "") == "background"},
+                         {"type", str(meta, "agentType")},
+                         {"description", str(meta, "description")},
+                         {"background", str(meta, "requestShape") == "background"},
                          {"startedAt", std::chrono::duration_cast<std::chrono::seconds>(started.time_since_epoch()).count()}};
             }
         }
@@ -1972,7 +1972,7 @@ void ClaudeBackend::start(const StartRequest &request, Started done)
 
 std::unique_ptr<ClaudeSession> ClaudeBackend::attach(Conn &wrapper, const json &registration)
 {
-    if (registration.value("detached", false))
+    if (flag(registration, "detached"))
         return std::make_unique<DetachedClaudeSession>(host_, wrapper, registration);
     return std::make_unique<TerminalClaudeSession>(host_, wrapper, registration);
 }

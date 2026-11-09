@@ -39,6 +39,28 @@ std::string str(const json &object, const char *key)
                                                                                  : std::string();
 }
 
+bool flag(const json &object, const char *key, bool fallback)
+{
+    return object.is_object() && object.contains(key) && object[key].is_boolean() ? object[key].get<bool>() : fallback;
+}
+
+long long integer(const json &object, const char *key, long long fallback)
+{
+    if (!object.is_object() || !object.contains(key))
+        return fallback;
+    const json &value = object[key];
+    if (value.is_number_integer())
+        return value.get<long long>();
+    if (value.is_number_float() && value.get<double>() > -9e18 && value.get<double>() < 9e18)
+        return static_cast<long long>(value.get<double>());
+    return fallback;
+}
+
+json member(const json &object, const char *key)
+{
+    return object.is_object() && object.contains(key) ? object[key] : json();
+}
+
 long long unixTime(const std::string &stamp)
 {
     std::tm tm{};

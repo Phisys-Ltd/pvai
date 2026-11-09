@@ -35,8 +35,8 @@ std::string resultText(const json &content)
     std::string text;
     if (content.is_array())
         for (const auto &block : content)
-            if (block.is_object() && block.value("type", "") == "text")
-                text += block.value("text", "");
+            if (block.is_object() && str(block, "type") == "text")
+                text += str(block, "text");
     return text;
 }
 
@@ -71,7 +71,7 @@ bool element(const std::string &text, const std::string &tag, std::string &inner
 
 bool isBookkeeping(const json &line)
 {
-    return line.value("isMeta", false) || line.value("isCompactSummary", false) || line.value("isVisibleInTranscriptOnly", false);
+    return flag(line, "isMeta") || flag(line, "isCompactSummary") || flag(line, "isVisibleInTranscriptOnly");
 }
 
 bool isMachinePrompt(const std::string &text)
@@ -157,9 +157,9 @@ bool isWake(const json &line);
 // writes it as a meta user line and takes it up like a task notification.
 bool isHandBack(const json &line)
 {
-    if (line.value("type", "") != "user" || !line.value("isMeta", false) || !line.contains("message") || !line["message"].is_object())
+    if (str(line, "type") != "user" || !flag(line, "isMeta") || !line.contains("message") || !line["message"].is_object())
         return false;
-    const json content = line["message"].value("content", json());
+    const json content = member(line["message"], "content");
     if (!content.is_string())
         return false;
     const std::string text = content.get<std::string>();
@@ -180,21 +180,21 @@ bool freshNote(long long noteAt)
 // runAt: when the last line that said running was written.
 void turnStep(const json &entry, bool &running, bool &ends, long long &noteAt, long long *runAt = nullptr)
 {
-    if (!entry.is_object() || entry.value("isSidechain", false))
+    if (!entry.is_object() || flag(entry, "isSidechain"))
         return;
-    const std::string type = entry.value("type", "");
+    const std::string type = str(entry, "type");
     if (isWake(entry) || isHandBack(entry)) {
-        noteAt = unixTime(entry.value("timestamp", ""));
+        noteAt = unixTime(str(entry, "timestamp"));
         return;
     }
-    if (type == "system" && (entry.value("subtype", "") == "turn_duration" || entry.value("subtype", "") == "stop_hook_summary")) {
+    if (type == "system" && (str(entry, "subtype") == "turn_duration" || str(entry, "subtype") == "stop_hook_summary")) {
         running = false;
         ends = true;
         noteAt = 0;
     } else if (type == "user" && !isBookkeeping(entry) && entry.contains("message") && entry["message"].is_object()) {
-        const json content = entry["message"].value("content", json());
+        const json content = member(entry["message"], "content");
         const std::string text = content.is_string() ? content.get<std::string>()
-                               : content.is_array() && !content.empty() && content[0].is_object() ? content[0].value("text", "") : "";
+                               : content.is_array() && !content.empty() && content[0].is_object() ? str(content[0], "text") : "";
         if (text.rfind("[Request interrupted by user", 0) == 0) {
             running = false;
             noteAt = 0;
@@ -207,13 +207,13 @@ void turnStep(const json &entry, bool &running, bool &ends, long long &noteAt, l
             running = true;
             noteAt = 0;
             if (runAt)
-                *runAt = unixTime(entry.value("timestamp", ""));
+                *runAt = unixTime(str(entry, "timestamp"));
         }
     } else if (type == "assistant") {
         running = true;
         noteAt = 0;
         if (runAt)
-            *runAt = unixTime(entry.value("timestamp", ""));
+            *runAt = unixTime(str(entry, "timestamp"));
     }
 }
 
@@ -273,10 +273,10 @@ bool lastPromptSpoken(const std::string &path)
         if (skippable(line.data(), line.size()) || line.find("\"user\"") == std::string::npos)
             continue;
         const json entry = json::parse(line, nullptr, false);
-        if (!entry.is_object() || entry.value("type", "") != "user" || entry.value("isSidechain", false) || isBookkeeping(entry)
+        if (!entry.is_object() || str(entry, "type") != "user" || flag(entry, "isSidechain") || isBookkeeping(entry)
             || !entry.contains("message") || !entry["message"].is_object())
             continue;
-        const json content = entry["message"].value("content", json());
+        const json content = member(entry["message"], "content");
         if (!content.is_string())
             continue;
         const std::string text = stripPasteFrame(content.get<std::string>());
@@ -372,8 +372,8 @@ std::vector<json> TranscriptTail::poll()
         const json line = json::parse(partial_.begin() + static_cast<long>(start), partial_.begin() + static_cast<long>(end), nullptr, false);
         if (!line.is_object())
             continue;
-        turnStep(line, turnRunning_, turnEnds_, noteAt_);
         try {
+            turnStep(line, turnRunning_, turnEnds_, noteAt_);
             take(line, out);
         } catch (const json::exception &) {
             // A line of the wrong shape: skipped.
@@ -394,17 +394,17 @@ namespace {
 // newer versions, a user message in older ones.
 bool isWake(const json &line)
 {
-    if (line.value("isSidechain", false))
+    if (flag(line, "isSidechain"))
         return false;
     const std::string mark = "<task-notification>";
-    const std::string type = line.value("type", "");
+    const std::string type = str(line, "type");
     if (type == "attachment" && line.contains("attachment") && line["attachment"].is_object()) {
         const json &attachment = line["attachment"];
-        return attachment.value("type", "") == "queued_command" && attachment.contains("prompt")
+        return str(attachment, "type") == "queued_command" && attachment.contains("prompt")
             && attachment["prompt"].is_string() && attachment["prompt"].get<std::string>().rfind(mark, 0) == 0;
     }
     if (type == "user" && line.contains("message") && line["message"].is_object()) {
-        const json &content = line["message"].value("content", json());
+        const json &content = member(line["message"], "content");
         return content.is_string() && content.get<std::string>().rfind(mark, 0) == 0;
     }
     return false;
@@ -420,26 +420,26 @@ void TranscriptTail::clearLimited()
 
 void TranscriptTail::take(const json &line, std::vector<json> &out)
 {
-    const std::string type = line.value("type", "");
+    const std::string type = str(line, "type");
     // A hand-back is taken up like a task notification, with no hook.
-    if (isWake(line) || (!line.value("isSidechain", false) && isHandBack(line))) {
+    if (isWake(line) || (!flag(line, "isSidechain") && isHandBack(line))) {
         wakePending_ = true;
-    } else if (!line.value("isSidechain", false) && !line.value("isMeta", false)) {
+    } else if (!flag(line, "isSidechain") && !flag(line, "isMeta")) {
         if (type == "assistant" && wakePending_) {
             ++wakeTurns_;
             wakePending_ = false;
         } else if (type == "user" && line.contains("message") && line["message"].is_object()
-                   && line["message"].value("content", json()).is_string()) {
+                   && member(line["message"], "content").is_string()) {
             wakePending_ = false; // the owner's prompt takes the notification along
         }
     }
-    if (type == "system" && line.value("subtype", "") == "turn_duration" && !line.value("isSidechain", false))
+    if (type == "system" && str(line, "subtype") == "turn_duration" && !flag(line, "isSidechain"))
         ++turnEndCount_;
     // The usage limit: Claude Code writes the 429 as an assistant line and
     // goes on by itself at the reset, after a dequeue of its own prompt.
     if (type == "queue-operation") {
-        const std::string operation = line.value("operation", "");
-        const json content = line.value("content", json());
+        const std::string operation = str(line, "operation");
+        const json content = member(line, "content");
         if (operation == "enqueue" && content.is_string()) {
             queued_.push_back(content.get<std::string>());
             if (queued_.size() > 64)
@@ -447,7 +447,7 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
         } else if (operation == "dequeue" && !queued_.empty()) {
             queued_.pop_front();
         } else if (operation == "remove" && content.is_string()) {
-            if (line.value("reason", "") == "absorbed_mid_turn") {
+            if (str(line, "reason") == "absorbed_mid_turn") {
                 absorbed_.push_back(content.get<std::string>());
                 if (absorbed_.size() > 64)
                     absorbed_.erase(absorbed_.begin());
@@ -457,42 +457,42 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
         }
         if (operation == "dequeue" && limited_.is_object()) {
             clearLimited();
-            json entry = {{"kind", "resumed"}, {"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}};
+            json entry = {{"kind", "resumed"}, {"id", str(line, "uuid")}, {"time", str(line, "timestamp")}};
             out.push_back(std::move(entry));
         }
         return;
     }
-    if (type == "assistant" && !line.value("isSidechain", false)) {
-        if (line.value("isApiErrorMessage", false)) {
-            const json status = line.value("apiErrorStatus", json());
+    if (type == "assistant" && !flag(line, "isSidechain")) {
+        if (flag(line, "isApiErrorMessage")) {
+            const json status = member(line, "apiErrorStatus");
             const std::string error = str(line, "error"), apiError = str(line, "apiError");
             if (error == "authentication_failed" || apiError == "authentication_failed" || apiError == "authentication_error"
                 || (status.is_number() && status == 401)) {
                 ++authFailures_;
-                authFailedAt_ = line.value("timestamp", "");
+                authFailedAt_ = str(line, "timestamp");
             }
-        } else if (!line.value("isMeta", false)) {
+        } else if (!flag(line, "isMeta")) {
             ++replies_;
         }
         // A model's own quota (Fable's, model_requires_usage_credits) has no
         // quotaLimits: its reset is in apiErrorParams.rate_limit_info.
-        const std::string apiError = line.value("apiError", "");
+        const std::string apiError = str(line, "apiError");
         const bool model = apiError == "model_requires_usage_credits";
-        if (line.value("isApiErrorMessage", false) && (apiError == "usage_limit_reached" || model)) {
+        if (flag(line, "isApiErrorMessage") && (apiError == "usage_limit_reached" || model)) {
             std::string text;
-            const json content = line.contains("message") && line["message"].is_object() ? line["message"].value("content", json()) : json();
+            const json content = line.contains("message") && line["message"].is_object() ? member(line["message"], "content") : json();
             if (content.is_array())
                 for (const auto &block : content)
-                    if (block.is_object() && block.value("type", "") == "text") {
-                        text = block.value("text", "");
+                    if (block.is_object() && str(block, "type") == "text") {
+                        text = str(block, "text");
                         break;
                     }
             text = cut(text, kMaxText);
             std::replace(text.begin(), text.end(), '\n', ' ');
-            json quota = line.value("quotaLimits", json());
+            json quota = member(line, "quotaLimits");
             if (model) {
-                const json params = line.value("apiErrorParams", json());
-                quota = params.is_object() ? params.value("rate_limit_info", json()) : json();
+                const json params = member(line, "apiErrorParams");
+                quota = params.is_object() ? member(params, "rate_limit_info") : json();
             }
             json at = nullptr, kind = nullptr;
             if (quota.is_object()) {
@@ -502,10 +502,10 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
                     kind = quota["rateLimitType"];
             }
             limited_ = {{"resetsAt", at}, {"type", kind}, {"text", text}, {"model", model}};
-            limitedAt_ = line.value("timestamp", "");
+            limitedAt_ = str(line, "timestamp");
             ++limitHits_;
             json entry = {{"kind", "limited"}, {"text", text}, {"resetsAt", at}, {"type", kind}, {"model", model}};
-            entry.update(json{{"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}});
+            entry.update(json{{"id", str(line, "uuid")}, {"time", str(line, "timestamp")}});
             out.push_back(std::move(entry));
             return;
         }
@@ -515,12 +515,12 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
     // A compaction Claude Code started itself (the context ran full, or idle
     // before the prompt cache expired); /compact typed by the owner shows as
     // its command line already.
-    if (type == "system" && line.value("subtype", "") == "compact_boundary" && !line.value("isSidechain", false)) {
+    if (type == "system" && str(line, "subtype") == "compact_boundary" && !flag(line, "isSidechain")) {
         ++compactions_;
-        const json meta = line.value("compactMetadata", json());
-        if (!meta.is_object() || meta.value("trigger", "") != "manual") {
+        const json meta = member(line, "compactMetadata");
+        if (!meta.is_object() || str(meta, "trigger") != "manual") {
             json entry = {{"kind", "command"}, {"text", "/compact"}};
-            entry.update(json{{"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}});
+            entry.update(json{{"id", str(line, "uuid")}, {"time", str(line, "timestamp")}});
             out.push_back(std::move(entry));
         }
         return;
@@ -528,24 +528,24 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
     // Local slash commands and their output: a system line of their own in
     // newer Claude Code versions, a user message in older ones. The summary
     // a compaction leaves is no prompt of the owner's.
-    const bool localCommand = type == "system" && line.value("subtype", "") == "local_command";
-    if ((type != "user" && type != "assistant" && !localCommand) || line.value("isSidechain", false) || isBookkeeping(line))
+    const bool localCommand = type == "system" && str(line, "subtype") == "local_command";
+    if ((type != "user" && type != "assistant" && !localCommand) || flag(line, "isSidechain") || isBookkeeping(line))
         return;
     if (!localCommand && (!line.contains("message") || !line["message"].is_object()))
         return;
     if (type == "assistant") {
-        const json usage = line["message"].value("usage", json());
-        const json created = usage.is_object() ? usage.value("cache_creation", json()) : json();
-        long long ttl = cache_.is_object() ? cache_.value("ttl", 0LL) : 0;
-        if (created.is_object() && created.value("ephemeral_1h_input_tokens", 0LL) > 0)
+        const json usage = member(line["message"], "usage");
+        const json created = usage.is_object() ? member(usage, "cache_creation") : json();
+        long long ttl = cache_.is_object() ? integer(cache_, "ttl") : 0;
+        if (created.is_object() && integer(created, "ephemeral_1h_input_tokens") > 0)
             ttl = 3600;
-        else if (created.is_object() && created.value("ephemeral_5m_input_tokens", 0LL) > 0)
+        else if (created.is_object() && integer(created, "ephemeral_5m_input_tokens") > 0)
             ttl = 300;
-        if (const long long at = unixTime(line.value("timestamp", "")); usage.is_object() && ttl > 0 && at > 0)
+        if (const long long at = unixTime(str(line, "timestamp")); usage.is_object() && ttl > 0 && at > 0)
             cache_ = {{"ttl", ttl}, {"at", at}};
     }
-    const json &content = localCommand ? line.value("content", json()) : line["message"].value("content", json());
-    const json base = {{"id", line.value("uuid", "")}, {"time", line.value("timestamp", "")}};
+    const json &content = localCommand ? member(line, "content") : member(line["message"], "content");
+    const json base = {{"id", str(line, "uuid")}, {"time", str(line, "timestamp")}};
     auto emit = [&](json entry) {
         entry.update(base);
         out.push_back(std::move(entry));
@@ -598,33 +598,33 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
     for (const auto &block : content) {
         if (!block.is_object())
             continue;
-        const std::string kind = block.value("type", "");
+        const std::string kind = str(block, "type");
         if (type == "user" && kind == "text") {
-            prompt(block.value("text", ""));
+            prompt(str(block, "text"));
         } else if (type == "assistant" && kind == "text") {
-            const std::string text = block.value("text", "");
+            const std::string text = str(block, "text");
             if (!text.empty())
                 emit({{"kind", "text"}, {"text", cut(text, kMaxText)}});
         } else if (type == "assistant" && kind == "tool_use") {
-            const std::string name = block.value("name", "");
-            toolNames_[block.value("id", "")] = name;
+            const std::string name = str(block, "name");
+            toolNames_[str(block, "id")] = name;
             if (toolNames_.size() > 2000)
                 toolNames_.erase(toolNames_.begin());
-            const json input = block.value("input", json());
+            const json input = member(block, "input");
             json entry = {{"kind", "tool"}, {"tool", name}, {"text", toolSummary(input)}};
             // The file whose content the result shows.
             const std::string file = !input.is_object() ? std::string()
-                                     : name == "Read" ? input.value("file_path", "")
-                                     : name == "Bash" ? commandFile(input.value("command", ""))
+                                     : name == "Read" ? str(input, "file_path")
+                                     : name == "Bash" ? commandFile(str(input, "command"))
                                                       : std::string();
             if (!file.empty())
                 entry["file"] = file;
             emit(std::move(entry));
         } else if (type == "user" && kind == "tool_result") {
-            const auto it = toolNames_.find(block.value("tool_use_id", ""));
+            const auto it = toolNames_.find(str(block, "tool_use_id"));
             emit({{"kind", "result"}, {"tool", it == toolNames_.end() ? "" : it->second},
-                  {"error", block.value("is_error", false)},
-                  {"text", cut(resultText(block.value("content", json())), kMaxResult)}});
+                  {"error", flag(block, "is_error")},
+                  {"text", cut(resultText(member(block, "content")), kMaxResult)}});
         }
     }
 }

@@ -294,5 +294,38 @@ int main()
         << R"({"type":"assistant","uuid":"a75","isApiErrorMessage":true,"apiErrorStatus":401,"message":{"content":[{"type":"text","text":"Unauthorized"}]}})" "\n";
     kinds();
     check(tail.authFailures() == 2 && tail.replies() == 1, "a limit is none; a 401 API error is one");
+
+    // A transcript is written by another program: null or wrongly typed
+    // fields end a line's reading, never the daemon's.
+    const std::string odd = home.path + "/odd.jsonl";
+    std::ofstream(odd)
+        << R"({"type":null,"isSidechain":null,"isMeta":null,"message":null})" "\n"
+        << R"({"type":"user","isSidechain":"no","isMeta":3,"isCompactSummary":null,"timestamp":null,"message":{"content":null}})" "\n"
+        << R"({"type":"user","uuid":null,"timestamp":5,"message":{"content":[{"type":"text","text":null},{"type":null}]}})" "\n"
+        << R"({"type":"assistant","isSidechain":null,"isApiErrorMessage":null,"apiError":7,"error":null,"timestamp":null,"message":{"content":[{"type":"tool_use","id":null,"name":null,"input":null},{"type":"text","text":5}],"usage":{"cache_creation":{"ephemeral_1h_input_tokens":null}}}})" "\n"
+        << R"({"type":"assistant","isApiErrorMessage":true,"apiError":"usage_limit_reached","timestamp":null,"quotaLimits":null,"message":{"content":[{"type":"text","text":null}]}})" "\n"
+        << R"({"type":"system","subtype":null,"isSidechain":null,"compactMetadata":null})" "\n"
+        << R"({"type":"system","subtype":"compact_boundary","compactMetadata":null})" "\n"
+        << R"({"type":"queue-operation","operation":null,"content":null,"reason":null})" "\n"
+        << R"({"type":"attachment","attachment":{"type":null,"prompt":null}})" "\n"
+        << userLine(90, "after the odd ones") << "\n";
+    bool threw = false;
+    try {
+        pvai::turnRunning(odd);
+        pvai::lastPromptSpoken(odd);
+        pvai::TranscriptTail oddTail;
+        oddTail.follow(odd);
+        const auto taken = oddTail.poll();
+        std::string last;
+        for (const auto &e : taken)
+            last = e.value("kind", "") + ":" + e.value("text", "");
+        check(last == "prompt:after the odd ones", "a line after the odd ones is still read: " + last);
+        check(pvai::turnRunning(odd), "the turn state is still read from such a file");
+        check(oddTail.compactions() == 1, "a compaction with null metadata still counts");
+    } catch (const std::exception &e) {
+        threw = true;
+        std::printf("threw: %s\n", e.what());
+    }
+    check(!threw, "null fields in a transcript throw nothing");
     return pvai::test::finish();
 }

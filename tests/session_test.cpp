@@ -2804,6 +2804,43 @@ esac
         check(fresh.next("welcome").value("rename", false), "welcome.rename");
     }
 
+    // Null or wrongly typed fields in a hook, a transcript and a subagent's
+    // meta file (written by other programs) end nothing: the state change
+    // always happens and the daemon keeps running.
+    {
+        const std::string nullRun = home + "/elsewhere/nul-run.jsonl";
+        writeFile(nullRun,
+                  R"({"type":null,"isSidechain":null,"isMeta":null,"message":null})" "\n"
+                  R"({"type":"user","isSidechain":"no","timestamp":null,"message":{"content":[{"type":"text","text":null}]}})" "\n");
+        LineClient nw;
+        nw.send({{"type", "register"}, {"version", kVersion}, {"id", "wnull"}, {"cwd", project}, {"label", "nulls"}});
+        check(!waitSession(a, "wnull", [](const json &s) { return s.value("state", "") == "starting"; }).empty(), "null fields: registered");
+        hook("wnull", {{"hook_event_name", "SessionStart"}, {"session_id", "nul-1"}, {"source", "startup"}, {"transcript_path", nullRun}});
+        check(!waitSession(a, "wnull", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "null fields: SessionStart");
+        hook("wnull", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "nul-1"}, {"prompt", nullptr}, {"permission_mode", 4},
+                       {"transcript_path", nullptr}, {"source", nullptr}});
+        check(!waitSession(a, "wnull", [](const json &s) { return s.value("state", "") == "busy"; }).empty(),
+              "null fields: UserPromptSubmit still makes it busy");
+        hook("wnull", {{"hook_event_name", "PermissionRequest"}, {"session_id", nullptr}, {"tool_name", nullptr}, {"tool_input", nullptr}});
+        check(!waitSession(a, "wnull", [](const json &s) { return s.value("state", "") == "waiting"; }).empty(),
+              "null fields: PermissionRequest still waits");
+        hook("wnull", {{"hook_event_name", "Notification"}, {"notification_type", 3}, {"message", nullptr}});
+        hook("wnull", {{"hook_event_name", "Stop"}, {"session_id", "nul-1"}, {"last_assistant_message", nullptr}});
+        check(!waitSession(a, "wnull", [](const json &s) { return s.value("state", "") == "idle"; }).empty(),
+              "null fields: Stop still ends the turn");
+        writeFile(home + "/elsewhere/nul-run/subagents/agent-n1.jsonl", "{}\n");
+        writeFile(home + "/elsewhere/nul-run/subagents/agent-n1.meta.json",
+                  R"({"agentType":null,"description":5,"requestShape":null,"finished":null})");
+        const json listed = waitSession(a, "wnull", [&](const json &s) { return agents(s).size() == 1; }, 4000);
+        check(!listed.empty() && agents(listed)[0].value("id", "") == "n1" && agents(listed)[0].value("type", "x").empty(),
+              "null fields in a subagent's meta: listed with empty fields: " + listed.dump());
+        hook("wnull", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "nul-1"}, {"prompt", "still working"}});
+        check(!waitSession(a, "wnull", [](const json &s) { return s.value("state", "") == "busy"; }).empty(), "the session works after all of it");
+        LineClient after;
+        after.send(app());
+        check(after.next("welcome").value("type", "") == "welcome", "and the daemon answers");
+    }
+
     // ---- Hooks: pvai run puts them in place, once.
     auto shell = [](const std::string &command) { return runCommand(command + " </dev/null", false).out; };
     const std::string settings = home + "/.claude/settings.json";
