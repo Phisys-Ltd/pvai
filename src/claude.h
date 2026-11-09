@@ -239,6 +239,15 @@ public:
     bool available() const override { return true; }
     bool installedHere() const override { return !binary().empty(); }
     void refreshLogin(std::function<void(bool changed)> done) override;
+    json describe() const override;
+    // The fallback token (PROTOCOL.md, "Claude token login"): `set-token`
+    // stored one; `done` runs when what that changes is known. Logout drops
+    // the token and the decision.
+    void tokenStored(std::function<void()> done);
+    void dropToken();
+    // "token" (the fallback is active, or the environment has a token),
+    // "account", or "none" (the account is not logged in and there is no token).
+    std::string loginMethod() const;
     json modes() const override;
     static json claudeModes();
 
@@ -256,6 +265,15 @@ protected:
     std::string binary() const override;
 
 private:
+    // `claude auth status --json` with the stored token in its environment
+    // (never on the command line); sets loggedIn_.
+    void statusWithToken(std::function<void()> done);
+
+    // The cached decision: the account login as the last check without the
+    // token saw it (empty: not known), and whether the fallback is active.
+    std::optional<bool> account_;
+    bool fallback_ = false;
+
     // Conversation titles by transcript path, read once per (mtime, size).
     struct Title {
         std::filesystem::file_time_type mtime;

@@ -453,7 +453,8 @@ App to daemon:
 | `model` | `ref`, `session`, `model` | (since 0.5.34) switch the session's model; a `model` event follows (see "Models") |
 | `mode` | `ref`, `session`, `mode` | (since 0.5.25) switch the session's permission mode to one of its assistant's `modes`; a `mode` event follows (see "Permission modes") |
 | `install` | `ref`, `assistant` | (since 0.5.24) install an assistant for the daemon's user, only on the owner's click (see "Install and login") |
-| `login` | `ref`, `assistant` | (since 0.5.24) log an assistant in on this host: a link and a code for the owner (see "Install and login") |
+| `login` | `ref`, `assistant`, `method` | (since 0.5.24) log an assistant in on this host: a link and a code for the owner (see "Install and login"); `method: "token"` (Claude only, `welcome.tokenLogin`) runs `claude setup-token` instead, see "Claude token login" |
+| `set-token` | `ref`, `assistant`, `token` | (`welcome.tokenLogin`) store a Claude Code token the owner pasted; answered with `token-set`, see "Claude token login" |
 | `login-code` | `ref`, `assistant`, `code` | the code the login page showed, for a login in state `code-needed` (Claude Code) |
 | `login-cancel` | `ref`, `assistant` | end a running login |
 | `logout` | `ref`, `assistant` | (since 0.5.39) log an assistant out on this host (see "Install and login") |
@@ -476,7 +477,7 @@ Daemon to app:
 
 | type | fields | meaning |
 |---|---|---|
-| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer |
+| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer; `tokenLogin: true`: it takes `login` with `method: "token"` and `set-token` |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
@@ -499,6 +500,7 @@ Daemon to app:
 | `updated` | `ref`, `installed`, `changed`, `errors` | answer to `update` |
 | `install` | `ref`, `assistant`, `state`, `step`, `text`, `error` | an install's progress, to every app: `state` `running`, then `done` or `failed` (`error` why); `step` `download` (claude), `node`, `npm` (codex, kimi), `check`; `text` the last line of output |
 | `login` | `ref`, `assistant`, `state`, `url`, `code`, `text`, `error` | a login's progress, to every app: `state` `waiting` (show `url` and `code`; the owner signs in in a browser), `code-needed` (Claude Code: the page shows a code, send it with `login-code`), `done` or `failed` (`error`: why, also `cancelled` and `timed out`) |
+| `token-set` | `ref`, `assistant` | answer to `set-token`: the token is stored (it is never sent back); `rejected` otherwise |
 | `logout` | `ref`, `assistant`, `state`, `text`, `error` | a logout's progress, to every app: `state` `running`, then `done` or `failed` (`error` why, also `timed out`); `text` the last line of output |
 | `model` | `ref`, `session`, `model`, `state`, `error` | a model change ended, to every app: `done` or `failed` (see "Models"); `rejected` before (`unknown-session`, `bad-model`, `not-supported`) |
 | `mode` | `ref`, `session`, `state`, `mode`, `error` | a mode change ended, to every app: `state` `done` (`mode` the new one) or `failed` (`error`: `unavailable`, the mode is not in this session's cycle; `no change on the screen`; Kimi's own words); `rejected` before (`unknown-session`, `unknown-mode`, `not-supported`, `busy`) |
@@ -958,6 +960,8 @@ one task per assistant at a time.
     page shows a code after the sign-in, which the app sends with
     `{"type": "login-code", "ref", "assistant", "code"}` (`rejected`
     `no-login` when none waits for it); `waiting` again until it is through.
+  - Claude Code with `"method": "token"`: `claude setup-token`, see
+    "Claude token login".
   `login-cancel` ends it; after 30 minutes it ends by itself. The output's
   forms are the assistants' own and may change with their versions: `text`
   always carries the last line as it came.
@@ -969,13 +973,97 @@ one task per assistant at a time.
   command). Events `logout` follow (`running` with the last line of output
   as `text`, then `done` or `failed`; at most 1 minute), then `assistants`
   with `loggedIn` read again. Running sessions of that assistant are left
-  as they are.
+  as they are. For Claude Code the stored fallback token is deleted too,
+  even when `claude auth logout` fails (see "Claude token login").
 - `loggedIn` in `welcome.assistants` for all three: Claude Code from
   `claude auth status --json`, Codex from `codex login status`, Kimi from
   its ACP answers (and `true` after a login went through); read with the
   versions, after every install, login and logout. `null` when not known.
 - `welcome.assistants` lists every assistant pvai knows, installed or not
-  (`installed: false`), so the app can offer to install it.
+  (`installed: false`), so the app can offer to install it. The `claude`
+  entry also has `loginMethod` and `tokenStored` (see "Claude token login").
+
+### Claude token login
+
+Claude Code on macOS can fall back to the Keychain (`/usr/bin/security`),
+and every session then risks a prompt. A long-lived token in the
+environment (`CLAUDE_CODE_OAUTH_TOKEN`) beats the Keychain, so pvai can keep
+one itself and hand it to Claude Code, also with no app running and on a
+host that has no app. It is only a fallback: where the account login works
+it is not used. `welcome.tokenLogin: true` says the daemon knows both
+requests below.
+
+- `{"type": "login", "ref", "assistant": "claude", "method": "token"}` runs
+  `claude setup-token` in the login terminal (1000 columns wide, so that it
+  does not wrap its link; a wrapped link or token is put together anyway).
+  Same events as `claude auth login`: `url`, then `code-needed` (the page's
+  code goes back with `login-code`), then `done` or `failed`. The token it
+  prints is recognized (`sk-ant-oat` and URL-safe characters), stored and
+  never sent on: with this method `text` holds fixed words only (`Waiting
+  for the sign-in`, `Waiting for the code`, `Token stored`), never the
+  output. `setup-token` exiting successfully without a recognized token is
+  `failed` with `error: "token-not-recognized"`; the app then offers the
+  paste field (`set-token`). A failing exit is `failed` with `error:
+  "setup-token failed"`. `rejected`: as for `login`, and `bad-method` for an
+  unknown `method` (or `token` for another assistant). The login code is
+  typed into the terminal and logged nowhere. On macOS this method may
+  prompt once for the Keychain (`claude setup-token` itself touches it).
+- `{"type": "set-token", "ref", "assistant": "claude", "token"}` stores a
+  token the owner pasted. The only check is local: a non-empty string of up
+  to 1024 printable characters without whitespace, else `rejected` with
+  `bad-token`. Claude Code is not started to check it, so a paste never
+  causes a Keychain prompt. `rejected` also: `unknown-assistant`,
+  `not-supported` (not Claude), `busy` (a login or logout of Claude runs),
+  `cannot-store-token`. Answer: `{"type": "token-set", "ref", "assistant":
+  "claude"}`, then `assistants`. Set only: no message, log line or event
+  ever returns the token. What else happens depends on the decision below:
+  with the account login missing the token is the fallback at once and
+  `claude auth status --json` runs once with it (never one without it);
+  with the account logged in, or a token in the daemon's environment, the
+  token is on standby and nothing runs.
+- Where: the file `claude-token` in pvai's config directory
+  (`~/.config/pvai`, `$XDG_CONFIG_HOME/pvai`), mode 0600, one line, written
+  to a 0600 temp file in that directory and renamed: never readable by
+  others, not even briefly. Next to it the empty marker file
+  `claude-token-active` (0600) says that the fallback is active.
+- The decision, cached: the daemon runs `claude auth status --json` without
+  the token only where it checks the login anyway (at its start, on a `hello`
+  when the versions are old, after every install, login and logout), never
+  before a session start and not on a timer (on a Mac with a damaged
+  Keychain that very call prompts). `loggedIn: true`: the fallback is
+  inactive (marker removed), starts get no token. `loggedIn: false` and a
+  token file: the fallback is active (marker created) and the status is read
+  again with the token, whose answer is the `loggedIn` shown. `loggedIn:
+  false` and no file: inactive, `loginMethod: "none"`. An unreadable answer
+  leaves the decision as it was.
+- Who gets it, while the fallback is active: every Claude Code start as
+  `CLAUDE_CODE_OAUTH_TOKEN` in its environment, never on a command line.
+  All sessions are `pvai run` wrappers, the app's detached ones and the
+  owner's in a terminal, and a wrapper does not talk to the daemon for this:
+  at every launch of claude (a `restart`'s relaunch too) it adds the token
+  when the marker exists, the file exists and its own environment has no
+  `CLAUDE_CODE_OAUTH_TOKEN`. The daemon's status run with the token gets it
+  in its environment likewise. `pvai run -- COMMAND` with another command is
+  treated alike.
+- Precedence: a `CLAUDE_CODE_OAUTH_TOKEN` that is already in a process's
+  environment (the daemon's or the wrapper's shell) is left alone and the
+  file is never applied over it. Without it the file is a fallback as
+  above.
+- `loginMethod` of the `claude` entry in `welcome.assistants` and
+  `assistants`: the login in effect, `"token"` (the fallback is active, or
+  the daemon's environment has a token), `"account"`, or `"none"` (the account
+  is not logged in and there is no token to fall back to). `tokenStored`:
+  whether a token file exists (standby or not). The token itself is never
+  sent.
+- `logout` of Claude deletes the token file and the marker, and forgets the
+  decision, even when `claude auth logout` fails; the status is read again
+  afterwards. A token in the daemon's own environment is not removed by it.
+- Limit: `claude auth status --json` does not check a token against the
+  server. Any value in `CLAUDE_CODE_OAUTH_TOKEN` reads as `loggedIn: true`
+  (`authMethod: "oauth_token"`, tried with an obviously fake token on Claude
+  Code 2.1.319). So an expired or revoked token is not seen as `loggedIn:
+  false`; sessions fail when they first need the server. pvai does not probe
+  the network for it.
 
 ## Versions and updates
 

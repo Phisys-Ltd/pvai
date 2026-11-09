@@ -6,9 +6,13 @@
 // usage: pvai-session-test /path/to/pvai
 #include "support.h"
 
+#include <fcntl.h>
+#include <sys/stat.h>
+
 #include <ctime>
 #include <fstream>
 #include <memory>
+#include <sstream>
 
 using namespace pvai;
 using namespace pvai::test;
@@ -273,16 +277,38 @@ int main(int argc, char **argv)
     // claude: a version that `update` raises, and a session that records
     // its arguments and waits. codex: an update that fails.
     writeFile(bin + "/claude.version", "1.0.0\n");
-    writeFile(bin + "/claude",
-              "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n"
-              "--version) echo \"$(cat \"$d/claude.version\") (Claude Code)\";;\n"
-              "update) echo 2.0.0 > \"$d/claude.version\"; echo updated;;\n"
-              "auth) if [ \"$2\" = status ]; then [ -e \"$d/claude.in\" ] && echo '{\"loggedIn\": true}' || echo '{\"loggedIn\": false}';\n"
-              "  elif [ \"$2\" = logout ]; then sleep 1; rm -f \"$d/claude.in\"; echo 'Logged out';\n"
-              "  else echo 'Opening browser to sign in'; echo 'If the browser did not open, visit: https://claude.com/cai/oauth/authorize?code=true&state=s1';\n"
-              "  printf 'Paste code here if prompted > '; read code; [ \"$code\" = good#s1 ] || { echo 'Invalid code'; exit 1; }\n"
-              "  touch \"$d/claude.in\"; echo 'Login successful'; fi;;\n"
-              "*) echo \"$@\" >> \"$d/claude.args\"; exec sleep 30;;\nesac\n",
+    writeFile(bin + "/claude", R"SH(#!/bin/sh
+d=$(dirname "$0")
+t="${XDG_CONFIG_HOME:-$HOME/.config}/pvai/claude-token"
+if [ -e "$t" ]; then echo "after $*"; else echo "before $*"; fi >> "$d/claude.calls"
+case "$1" in
+--version) echo "$(cat "$d/claude.version") (Claude Code)";;
+update) echo 2.0.0 > "$d/claude.version"; echo updated;;
+setup-token)
+  stty size > "$d/setup-token.size" 2>/dev/null
+  m=$(cat "$d/setup-token.mode"); u=$(cat "$d/setup-token.url"); k=$(cat "$d/setup-token.tok")
+  echo 'Opening browser to sign in'
+  if [ "$m" = wrapped ]; then printf 'If the browser did not open, visit: %s\n' "$u" | fold -w 80
+  else printf 'If the browser did not open, visit: %s\n' "$u"; fi
+  printf 'Paste code here if prompted > '; read code; echo
+  case "$m" in
+  ok) echo 'Your OAuth token (valid for 1 year):'; echo "$k"; echo 'Store this token securely.';;
+  wrapped) echo 'Your OAuth token (valid for 1 year):'; echo "$k" | fold -w 80; echo; echo 'Store this token securely.';;
+  fail) echo "$k"; exit 1;;
+  *) echo 'Long-lived token created.';;
+  esac;;
+auth) if [ "$2" = status ]; then
+    echo "${CLAUDE_CODE_OAUTH_TOKEN-unset}" >> "$d/claude.statusenv"
+    if [ -e "$d/claude.in" ] || [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then echo '{"loggedIn": true}'; else echo '{"loggedIn": false}'; fi
+  elif [ "$2" = logout ]; then
+    if [ -e "$d/logout.fail" ]; then echo 'logout failed'; exit 1; fi
+    sleep 1; rm -f "$d/claude.in"; echo 'Logged out'
+  else echo 'Opening browser to sign in'; echo 'If the browser did not open, visit: https://claude.com/cai/oauth/authorize?code=true&state=s1'
+    printf 'Paste code here if prompted > '; read code; [ "$code" = good#s1 ] || { echo 'Invalid code'; exit 1; }
+    touch "$d/claude.in"; echo 'Login successful'; fi;;
+*) echo "$@" >> "$d/claude.args"; echo "${CLAUDE_CODE_OAUTH_TOKEN-unset}" >> "$d/claude.env"; exec sleep 30;;
+esac
+)SH",
               true);
     writeFile(bin + "/codex",
               "#!/bin/sh\nd=$(dirname \"$0\")\ncase \"$1\" in\n--version) echo codex-cli 5.5.5;;\n"
@@ -308,6 +334,7 @@ int main(int argc, char **argv)
               true);
     ::setenv("PVAI_KIMI", (bin + "/kimi").c_str(), 1);
     ::unsetenv(kEnvId);
+    ::unsetenv(kEnvClaudeToken); // the daemon must not inherit a login from the machine running this test
     const int appPort = 20000 + static_cast<int>(::getpid() % 20000);
 
     // Ended Claude conversations in a project folder.
@@ -330,7 +357,18 @@ int main(int argc, char **argv)
     FakeKimi kimi(kimiSocket);
 
     DaemonProcess daemon;
-    daemon.start(g_pvai, appPort, 1200, true);
+    // The daemon logs to stderr: into a file for the token checks below.
+    const std::string daemonLog = home + "/daemon.log";
+    {
+        const int saved = ::dup(STDERR_FILENO);
+        const int logFd = ::open(daemonLog.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
+        if (logFd >= 0)
+            ::dup2(logFd, STDERR_FILENO);
+        ::close(logFd);
+        daemon.start(g_pvai, appPort, 1200, true);
+        ::dup2(saved, STDERR_FILENO);
+        ::close(saved);
+    }
 
     // A field of the wrong JSON type is one peer's error, not the daemon's end.
     {
@@ -1669,6 +1707,243 @@ int main(int argc, char **argv)
     a.send({{"type", "logout"}, {"ref", 46}, {"assistant", "kimi"}});
     check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 46; }).value("reason", "") == "not-supported",
           "logout of Kimi: not-supported");
+
+    // ---- Claude token login: the token is a fallback. The decision (account
+    // login or not) comes from `auth status` without it; the marker file
+    // tells `pvai run`; an inherited token is never touched. The tokens are
+    // fake; no message below prints one.
+    {
+        const std::string tokenFile = configHome + "/pvai/claude-token";
+        const std::string markerFile = configHome + "/pvai/claude-token-active";
+        const std::string pattern = "abcdefghijklmnopqrstuvwxyz0123456789-_ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        auto mk = [&](const std::string &tag) { return "sk-ant-oat01-" + tag + pattern + pattern.substr(0, 20); };
+        const std::string tokSet = mk("SET"), tokNew = mk("NEW"), tokStandby = mk("STANDBY"), tokOk = mk("OK"), tokWrapped = mk("WRAP"),
+                          tokFail = mk("FAIL");
+        const std::string secretCode = "secretcode#s2";
+        const std::string inherited = "sk-ant-oat01-inherited-from-the-environment";
+        const std::string url = "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-1111-2222-3333-444444444444"
+                                "&redirect_uri=https%3A%2F%2Fexample.invalid%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&state=s2";
+
+        LineClient t;
+        t.send(app());
+        std::string seen; // everything the client heard, to prove what never came
+        auto get = [&](const std::string &type, const std::function<bool(const json &)> &pred = {}, int ms = 5000) {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+            for (;;) {
+                const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now()).count();
+                if (left <= 0)
+                    return json::object();
+                const json m = t.next(static_cast<int>(left));
+                if (m.empty())
+                    return json::object();
+                seen += m.dump();
+                if (m.value("type", "") == type && (!pred || pred(m)))
+                    return m;
+            }
+        };
+        auto refIs = [](int ref) { return [ref](const json &m) { return m.value("ref", 0) == ref; }; };
+        auto lines = [&](const std::string &path) {
+            std::vector<std::string> out;
+            std::istringstream in(readFile(path));
+            for (std::string line; std::getline(in, line);)
+                out.push_back(line);
+            return out;
+        };
+        auto waitLines = [&](const std::string &path, std::size_t count) {
+            for (int i = 0; i < 60 && lines(path).size() < count; ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            return lines(path);
+        };
+        auto claudeEntry = [](const json &message) {
+            const json list = message.value("assistants", json::array());
+            return list.empty() ? json::object() : list[0];
+        };
+        // The next `assistants` in which claude has that method and `loggedIn`.
+        auto method = [&](const std::string &wanted, const json &loggedIn) {
+            return get("assistants", [&](const json &m) {
+                const json c = claudeEntry(m);
+                return c.value("loginMethod", "") == wanted && c.value("loggedIn", json("?")) == loggedIn;
+            });
+        };
+        auto gone = [&](const std::string &id) {
+            t.send({{"type", "stop"}, {"ref", 299}, {"session", id}});
+            return !get("sessions", [&](const json &m) { return sessionIn(m, id).empty(); }, 8000).empty();
+        };
+        // `pvai run` as the owner starts it in a terminal, with an inherited login token; what claude saw.
+        auto wrapperSaw = [&](const std::string &id, const std::string &inheritedToken) {
+            const std::string out = home + "/" + id + ".env";
+            fs::remove(out);
+            (void)std::system(("cd '" + project + "' && " + (inheritedToken.empty() ? "" : "CLAUDE_CODE_OAUTH_TOKEN='" + inheritedToken + "' ") + g_pvai
+                               + " run --detached --id " + id + " -- sh -c 'echo \"${CLAUDE_CODE_OAUTH_TOKEN-unset}\" > " + out
+                               + "; exec sleep 20' >/dev/null 2>&1 &")
+                                  .c_str());
+            const auto seenLines = waitLines(out, 1);
+            (void)gone(id);
+            return seenLines.empty() ? std::string("(nothing)") : seenLines[0];
+        };
+        auto mode = [&](const std::string &path) {
+            struct stat st {};
+            return ::stat(path.c_str(), &st) == 0 ? static_cast<int>(st.st_mode & 0777) : -1;
+        };
+        auto startedSaw = [&](int ref) {
+            fs::remove(bin + "/claude.env");
+            t.send({{"type", "start"}, {"ref", ref}, {"assistant", "claude"}, {"cwd", project}});
+            const std::string id = get("started", refIs(ref)).value("session", "");
+            const auto env = waitLines(bin + "/claude.env", 1);
+            return std::make_pair(id, env.empty() ? std::string("(nothing)") : env[0]);
+        };
+
+        // F: welcome. The account is not logged in and no token is stored.
+        const json hello = get("welcome");
+        check(hello.value("tokenLogin", false), "welcome.tokenLogin is true");
+        check(claudeEntry(hello).value("loginMethod", "") == "none" && claudeEntry(hello).value("tokenStored", true) == false
+                  && !hello["assistants"][1].contains("loginMethod"),
+              "claude: loginMethod none, tokenStored false (no account login, no token)");
+
+        // set-token: only the syntax is checked.
+        int ref = 200;
+        const std::vector<json> bad = {"", "has space", "tab\there", "line\nbreak", std::string(2000, 'x'), "bell\x07", 7, nullptr};
+        bool allBad = true;
+        for (const json &value : bad) {
+            t.send({{"type", "set-token"}, {"ref", ++ref}, {"assistant", "claude"}, {"token", value}});
+            allBad = get("rejected", refIs(ref)).value("reason", "") == "bad-token" && allBad;
+        }
+        t.send({{"type", "set-token"}, {"ref", ++ref}, {"assistant", "claude"}});
+        allBad = get("rejected", refIs(ref)).value("reason", "") == "bad-token" && allBad;
+        check(allBad && !fs::exists(tokenFile), "set-token rejects empty, spaces, control characters, too long, non-strings and none: bad-token, nothing stored");
+        t.send({{"type", "set-token"}, {"ref", ++ref}, {"assistant", "codex"}, {"token", tokSet}});
+        check(get("rejected", refIs(ref)).value("reason", "") == "not-supported", "set-token for Codex: not-supported");
+        t.send({{"type", "set-token"}, {"ref", ++ref}, {"assistant", "nobody"}, {"token", tokSet}});
+        check(get("rejected", refIs(ref)).value("reason", "") == "unknown-assistant", "set-token for an unknown assistant: unknown-assistant");
+
+        // D, account missing: the token is stored, becomes the fallback, and
+        // the status runs with it only; claude is not started before the file is.
+        fs::remove(bin + "/claude.calls");
+        fs::remove(bin + "/claude.statusenv");
+        t.send({{"type", "set-token"}, {"ref", 210}, {"assistant", "claude"}, {"token", tokSet}});
+        const json stored = get("token-set", refIs(210));
+        check(stored.value("assistant", "") == "claude" && stored.size() == 3, "set-token answers token-set with the assistant and nothing else");
+        check(mode(tokenFile) == 0600 && readFile(tokenFile) == tokSet + "\n", "the token file is claude-token, mode 0600, with the token");
+        std::size_t leftovers = 0;
+        for (const auto &entry : fs::directory_iterator(configHome + "/pvai"))
+            if (entry.path().filename().string().rfind("claude-token.", 0) == 0)
+                ++leftovers;
+        check(leftovers == 0, "no temp file stays behind");
+        const json entry = claudeEntry(method("token", true));
+        check(!entry.empty() && entry.value("tokenStored", false), "account missing: the fallback is active (loginMethod token, loggedIn true, tokenStored)");
+        check(mode(markerFile) == 0600 && readFile(markerFile).empty(), "the marker claude-token-active exists, empty, mode 0600");
+        const auto statusEnv = waitLines(bin + "/claude.statusenv", 1);
+        check(statusEnv.size() == 1 && statusEnv[0] == tokSet, "set-token ran the status once, and only with the token (no status without it)");
+        const std::string calls = readFile(bin + "/claude.calls");
+        check(!calls.empty() && calls.find("before") == std::string::npos,
+              "set-token started no claude before the token was stored: every claude run after it saw the file");
+        check(calls.find(tokSet) == std::string::npos, "the token is on no command line");
+
+        // B, C: a session the app starts and one in a terminal get it while the fallback is active; a restart reads it again.
+        auto [tokSession, started] = startedSaw(211);
+        check(!tokSession.empty() && started == tokSet, "fallback active: a started session gets the token in its environment");
+        hook(tokSession, {{"hook_event_name", "SessionStart"}, {"session_id", "tok-1"}, {"source", "startup"}});
+        check(!waitSession(t, tokSession, [](const json &s) { return s.value("restartable", false) && s.value("state", "") == "idle"; }).empty(),
+              "the session is restartable");
+        t.send({{"type", "set-token"}, {"ref", 212}, {"assistant", "claude"}, {"token", tokNew}});
+        check(!get("token-set", refIs(212)).empty(), "a second set-token replaces the file");
+        check(readFile(tokenFile) == tokNew + "\n" && mode(tokenFile) == 0600, "with mode 0600 again");
+        t.send({{"type", "restart"}, {"ref", 213}, {"session", tokSession}});
+        check(!get("restarting", refIs(213)).empty(), "restarting");
+        auto env = waitLines(bin + "/claude.env", 2);
+        check(env.size() >= 2 && env[1] == tokNew, "the wrapper's relaunch reads the file again");
+        check(gone(tokSession), "the session ends");
+        check(wrapperSaw("wtok1", "") == tokNew, "pvai run in a terminal: claude gets the token (marker and file exist)");
+        // A: an inherited token is never replaced.
+        check(wrapperSaw("wtok2", inherited) == inherited, "pvai run: an inherited CLAUDE_CODE_OAUTH_TOKEN is left alone, the file does not override it");
+        // C: no marker, no token.
+        fs::remove(markerFile);
+        check(wrapperSaw("wtok3", "") == "unset", "pvai run without the marker: no token, though the file exists");
+        writeFile(markerFile, "");
+        fs::permissions(markerFile, fs::perms::owner_read | fs::perms::owner_write);
+
+        // The account logs in (a Claude login ends with a status without the token): the fallback goes inactive.
+        t.send({{"type", "login"}, {"ref", 214}, {"assistant", "claude"}});
+        get("login", [](const json &m) { return m.value("state", "") == "code-needed"; });
+        t.send({{"type", "login-code"}, {"ref", 215}, {"assistant", "claude"}, {"code", "good#s1"}});
+        check(!get("login", [](const json &m) { return m.value("state", "") == "done"; }, 8000).empty(), "an account login goes through");
+        const json standby = claudeEntry(method("account", true));
+        check(!standby.empty() && standby.value("tokenStored", false), "account logged in: loginMethod account, the token only stored (standby)");
+        check(!fs::exists(markerFile), "and the marker is gone");
+        const auto afterLogin = lines(bin + "/claude.statusenv");
+        check(!afterLogin.empty() && afterLogin.back() == "unset", "the check after the login ran without the token");
+        const auto plain = startedSaw(216);
+        check(plain.second == "unset", "account logged in: a started session gets no token");
+        check(gone(plain.first), "it ends");
+        check(wrapperSaw("wtok4", "") == "unset", "pvai run: no token without the marker, the standby token is not used");
+
+        // D, account logged in: stored as standby, nothing runs.
+        fs::remove(bin + "/claude.calls");
+        fs::remove(bin + "/claude.statusenv");
+        t.send({{"type", "set-token"}, {"ref", 217}, {"assistant", "claude"}, {"token", tokStandby}});
+        check(!get("token-set", refIs(217)).empty(), "set-token with the account logged in");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        check(readFile(tokenFile) == tokStandby + "\n" && !fs::exists(markerFile) && !fs::exists(bin + "/claude.calls") && !fs::exists(bin + "/claude.statusenv"),
+              "stored on standby: no marker, and claude was not started at all");
+
+        // The account logs out again; the check after a setup-token run turns the fallback on.
+        fs::remove(bin + "/claude.in");
+        writeFile(bin + "/setup-token.url", url + "\n");
+        auto runSetup = [&](const std::string &mode, const std::string &tok, int loginRef) {
+            writeFile(bin + "/setup-token.mode", mode + "\n");
+            writeFile(bin + "/setup-token.tok", tok + "\n");
+            t.send({{"type", "login"}, {"ref", loginRef}, {"assistant", "claude"}, {"method", "token"}});
+            const json waiting = get("login", [&](const json &m) { return m.value("ref", 0) == loginRef && m.value("state", "") == "code-needed"; });
+            check(waiting.value("url", "") == url, "setup-token (" + mode + "): the link comes whole, and it wants the code");
+            t.send({{"type", "login-code"}, {"ref", loginRef + 1}, {"assistant", "claude"}, {"code", secretCode}});
+            return get("login", [&](const json &m) { return m.value("ref", 0) == loginRef && (m.value("state", "") == "done" || m.value("state", "") == "failed"); }, 8000);
+        };
+        fs::remove(bin + "/claude.statusenv");
+        json ended = runSetup("ok", tokOk, 220);
+        check(ended.value("state", "") == "done", "setup-token with a printed token: done");
+        check(readFile(tokenFile) == tokOk + "\n" && mode(tokenFile) == 0600, "the recognized token is stored, mode 0600");
+        const std::string size = readFile(bin + "/setup-token.size");
+        check(size.size() >= 5 && size.find(" 1000") != std::string::npos, "its terminal is very wide: " + size);
+        check(!claudeEntry(method("token", true)).empty() && fs::exists(markerFile), "account missing after the login: the fallback is active, the marker is back");
+        const auto decided = waitLines(bin + "/claude.statusenv", 2);
+        check(decided.size() >= 2 && decided[0] == "unset" && decided[1] == tokOk, "that check ran without the token, then with it");
+        ended = runSetup("wrapped", tokWrapped, 230);
+        check(ended.value("state", "") == "done" && readFile(tokenFile) == tokWrapped + "\n", "a link and a token wrapped at 80 columns are put together");
+        ended = runSetup("none", tokFail, 240);
+        check(ended.value("state", "") == "failed" && ended.value("error", "") == "token-not-recognized",
+              "setup-token without a recognizable token: failed token-not-recognized");
+        check(readFile(tokenFile) == tokWrapped + "\n", "and the stored token stays as it was");
+        ended = runSetup("fail", tokFail, 250);
+        check(ended.value("state", "") == "failed" && ended.value("error", "") == "setup-token failed", "a failing setup-token: failed, whatever it printed");
+        check(readFile(tokenFile) == tokWrapped + "\n", "no token is taken from a failed run");
+        t.send({{"type", "login"}, {"ref", 260}, {"assistant", "claude"}, {"method", "carrier-pigeon"}});
+        check(get("rejected", refIs(260)).value("reason", "") == "bad-method", "an unknown login method: bad-method");
+
+        // E: logout drops file, marker and decision even when `claude auth logout` fails.
+        writeFile(bin + "/logout.fail", "");
+        t.send({{"type", "logout"}, {"ref", 270}, {"assistant", "claude"}});
+        ended = get("logout", [](const json &m) { return m.value("state", "") != "running"; });
+        check(ended.value("state", "") == "failed", "the failing logout reports failed");
+        check(!fs::exists(tokenFile) && !fs::exists(markerFile), "and the token file and the marker are gone");
+        fs::remove(bin + "/logout.fail");
+        const json none = claudeEntry(method("none", false));
+        check(!none.empty() && none.value("tokenStored", true) == false, "assistants: none, loggedIn false, no token stored");
+        check(wrapperSaw("wtok5", inherited) == inherited, "without a file an inherited token is left alone");
+        check(wrapperSaw("wtok6", "") == "unset", "and without one claude gets none");
+
+        // The token reached nothing but the file and claude's environment.
+        std::string everything = seen + readFile(bin + "/claude.calls") + readFile(bin + "/claude.args") + readFile(daemonLog);
+        bool leaked = false;
+        for (const std::string &secret : {tokSet, tokNew, tokStandby, tokOk, tokWrapped, tokFail, secretCode, std::string("sk-ant-oat01-")})
+            leaked = leaked || everything.find(secret) != std::string::npos;
+        check(!leaked, "no token and no login code in any event, claude argument or the daemon's log");
+        check(seen.find("Opening browser") == std::string::npos && seen.find("OAuth token") == std::string::npos && seen.find("Store this") == std::string::npos,
+              "setup-token's raw output never went to an app");
+        t.drain();
+        a.drain();
+        fs::remove(bin + "/claude.args"); // the sessions above are not the ones later tests count
+        fs::remove(bin + "/claude.env");
+    }
 
     // A session the app started that ends at once: the app hears why.
     {

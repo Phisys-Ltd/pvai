@@ -330,7 +330,8 @@ public:
     }
 
     void runProcess(const std::vector<std::string> &argv, std::chrono::seconds timeout,
-                    std::function<void(int status, const std::string &output)> done) override
+                    std::function<void(int status, const std::string &output)> done,
+                    const std::vector<std::pair<std::string, std::string>> &env) override
     {
         int out[2];
         if (argv.empty() || ::pipe(out) != 0) {
@@ -341,6 +342,7 @@ public:
         options.argv = argv;
         options.search = true;
         options.ownGroup = true;
+        options.env = env;
         options.in = Stdio::null();
         options.out = Stdio::descriptor(out[1]);
         options.err = Stdio::sameAsOut();
@@ -626,7 +628,8 @@ private:
         Backend *chosen = backend(message.value("assistant", ""));
         std::string reason = !chosen ? "unknown-assistant" : "";
         if (reason.empty() && type == "login")
-            reason = !chosen->installedHere() ? "not-installed" : setup_->login(chosen->name(), chosen->program(), ref);
+            reason = !chosen->installedHere() ? "not-installed"
+                                              : setup_->login(chosen->name(), chosen->program(), ref, message.value("method", ""));
         else if (reason.empty() && type == "login-code")
             reason = setup_->loginCode(chosen->name(), message.value("code", ""));
         else if (reason.empty())
@@ -634,7 +637,33 @@ private:
         if (!reason.empty())
             peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", reason}});
         else if (type == "login")
-            logLine("login of " + chosen->name() + " started");
+            logLine("login of " + chosen->name() + (message.value("method", "") == "token" ? " (token)" : "") + " started");
+    }
+
+    // `set-token`: the token goes to its file and nowhere else. Claude Code
+    // is not started to check it (on macOS that alone can prompt for the
+    // Keychain); the only check is local. No log line, reply or event holds it.
+    void onSetToken(Peer *peer, const json &message)
+    {
+        const json ref = message.value("ref", json());
+        Backend *chosen = backend(message.value("assistant", ""));
+        const json &value = message.contains("token") ? message["token"] : json();
+        std::string reason = !chosen ? "unknown-assistant" : chosen->name() != "claude" ? "not-supported" : "";
+        if (reason.empty() && setup_->busy(chosen->name()))
+            reason = "busy";
+        if (reason.empty() && (!value.is_string() || !claudeTokenProblem(value.get<std::string>()).empty()))
+            reason = "bad-token";
+        if (reason.empty() && !storeClaudeToken(value.get<std::string>()))
+            reason = "cannot-store-token";
+        if (!reason.empty()) {
+            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", reason}});
+            return;
+        }
+        logLine("token of " + chosen->name() + " stored");
+        peer->conn->send({{"type", "token-set"}, {"ref", ref}, {"assistant", chosen->name()}});
+        // On standby nothing runs; with the account login missing the token
+        // becomes the fallback and the login is read with it.
+        claude_->tokenStored([this] { broadcast(assistantsMessage()); });
     }
 
     void onLogout(Peer *peer, const json &message)
@@ -644,8 +673,13 @@ private:
         std::string reason = !chosen ? "unknown-assistant" : !chosen->installedHere() ? "not-installed" : "";
         if (reason.empty() && chosen->name() == "kimi")
             reason = "not-supported";
-        else if (reason.empty() && !setup_->busy(chosen->name()) && chosen->loggedIn() == json(false))
+        else if (reason.empty() && !setup_->busy(chosen->name()) && chosen->loggedIn() == json(false)
+                 && !(chosen->name() == "claude" && !readClaudeToken().empty()))
             reason = "not-logged-in";
+        // A Claude logout drops the stored token, the marker and the decision
+        // too, whatever the logout command says.
+        if (reason.empty() && chosen->name() == "claude" && !setup_->busy("claude"))
+            claude_->dropToken();
         if (reason.empty())
             reason = setup_->logout(chosen->name(), chosen->program(), ref);
         if (!reason.empty())
@@ -692,7 +726,7 @@ private:
         }
         return {{"type", "welcome"}, {"host", hostName()}, {"user", userName()}, {"version", kVersion},
                 {"assistants", assistants}, {"installed", installed}, {"conversations", true},
-                {"peers", true}, {"forget", true}, {"model", true}, {"logout", true}, {"rename", true}};
+                {"peers", true}, {"forget", true}, {"model", true}, {"logout", true}, {"rename", true}, {"tokenLogin", true}};
     }
 
     void handle(Peer *peer, const json &message)
@@ -811,6 +845,8 @@ private:
             onLogin(peer, message);
         else if (type == "logout")
             onLogout(peer, message);
+        else if (type == "set-token")
+            onSetToken(peer, message);
         else if (type == "update")
             onUpdate(peer, message);
         else if (type == "projects")

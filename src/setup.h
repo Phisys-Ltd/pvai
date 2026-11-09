@@ -36,7 +36,10 @@ public:
     // Each returns the reason for a `rejected`, or empty. `binary` is the
     // assistant's program for a login.
     std::string install(const std::string &assistant, const json &ref);
-    std::string login(const std::string &assistant, const std::string &binary, const json &ref);
+    // `method` "token" (Claude Code only): `claude setup-token`, whose token
+    // is stored (claudeTokenPath), never sent on; "" or "account": the
+    // assistant's own login. "bad-method" for anything else.
+    std::string login(const std::string &assistant, const std::string &binary, const json &ref, const std::string &method = {});
     std::string logout(const std::string &assistant, const std::string &binary, const json &ref);
     std::string loginCode(const std::string &assistant, const std::string &code);
     std::string loginCancel(const std::string &assistant);
@@ -52,6 +55,7 @@ private:
     struct Task {
         bool install = false;
         bool logout = false;
+        bool token = false;  // login: `claude setup-token`; its output is never passed on
         json ref;
         pid_t pid = -1;
         int fd = -1;

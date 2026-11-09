@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace pvai {
@@ -44,6 +45,35 @@ std::string findBinary(const std::string &name);
 /// findBinary("claude"). The daemon and `pvai run` both use it, so a program
 /// the app installed under ~/.local/bin runs from a PATH without it.
 std::string claudeBinary();
+// The Claude token login (PROTOCOL.md, "Claude token login"): a long-lived
+// token in the file `claude-token` of configDir(), mode 0600, which is only
+// a fallback for a host where the account login is missing. The daemon
+// decides (from `claude auth status --json` without the token) and keeps
+// the decision in the empty marker file `claude-token-active` beside it; a
+// `pvai run` in a terminal reads the marker, not the daemon. A
+// CLAUDE_CODE_OAUTH_TOKEN that is already in the environment always wins and
+// is never touched. No function here logs or prints a token.
+constexpr const char *kEnvClaudeToken = "CLAUDE_CODE_OAUTH_TOKEN";
+std::string claudeTokenPath();
+std::string claudeTokenMarkerPath();
+// Empty when the token is fine, else why not ("empty", "too-long",
+// "bad-characters"): local syntax only, nothing is started.
+std::string claudeTokenProblem(const std::string &token);
+// The stored token, empty when there is no file or it holds nothing usable.
+std::string readClaudeToken();
+// Written through a 0600 temp file and renamed, so that nobody reads it
+// half written or with a wider mode. False when it could not be stored.
+bool storeClaudeToken(const std::string &token);
+void removeClaudeToken();
+// The fallback marker: created empty (0600) or removed; a no-op when it is
+// that way already.
+void setClaudeTokenMarker(bool active);
+// The process environment holds CLAUDE_CODE_OAUTH_TOKEN (not empty).
+bool inheritedClaudeToken();
+// What `pvai run` adds to claude's environment at every (re)launch: the
+// stored token when the marker and the file exist and the environment has
+// no token of its own, else nothing.
+std::vector<std::pair<std::string, std::string>> claudeTokenEnv();
 // The convention for spoken turns, given to every session as context:
 // Claude Code gets it from the SessionStart hook, Codex as developer
 // instructions.

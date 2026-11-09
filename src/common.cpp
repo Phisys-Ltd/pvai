@@ -127,6 +127,97 @@ std::string token()
     return fresh;
 }
 
+std::string claudeTokenPath()
+{
+    return configDir() + "/claude-token";
+}
+
+std::string claudeTokenProblem(const std::string &token)
+{
+    if (token.empty())
+        return "empty";
+    if (token.size() > 1024)
+        return "too-long";
+    for (const unsigned char c : token)
+        if (c <= 0x20 || c >= 0x7f)
+            return "bad-characters";
+    return {};
+}
+
+std::string readClaudeToken()
+{
+    std::ifstream in(claudeTokenPath());
+    std::string value;
+    if (!in || !std::getline(in, value))
+        return {};
+    while (!value.empty() && (value.back() == '\r' || value.back() == ' ' || value.back() == '\t'))
+        value.pop_back();
+    return claudeTokenProblem(value).empty() ? value : std::string();
+}
+
+bool storeClaudeToken(const std::string &token)
+{
+    if (!claudeTokenProblem(token).empty())
+        return false;
+    const std::string path = claudeTokenPath();
+    // mkstemp makes the file 0600 from the start.
+    std::string temp = path + ".XXXXXX";
+    const int fd = ::mkstemp(temp.data());
+    if (fd < 0)
+        return false;
+    setCloseOnExec(fd);
+    const bool ok = ::fchmod(fd, 0600) == 0 && writeAll(fd, token + "\n") && ::fsync(fd) == 0;
+    ::close(fd);
+    if (!ok || ::rename(temp.c_str(), path.c_str()) != 0) {
+        ::unlink(temp.c_str());
+        return false;
+    }
+    return true;
+}
+
+void removeClaudeToken()
+{
+    ::unlink(claudeTokenPath().c_str());
+}
+
+std::string claudeTokenMarkerPath()
+{
+    return configDir() + "/claude-token-active";
+}
+
+void setClaudeTokenMarker(bool active)
+{
+    const std::string path = claudeTokenMarkerPath();
+    if (!active) {
+        ::unlink(path.c_str());
+        return;
+    }
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+    if (fd >= 0) {
+        ::fchmod(fd, 0600);
+        ::close(fd);
+    }
+}
+
+bool inheritedClaudeToken()
+{
+    const char *value = std::getenv(kEnvClaudeToken);
+    return value && *value;
+}
+
+std::vector<std::pair<std::string, std::string>> claudeTokenEnv()
+{
+    if (inheritedClaudeToken())
+        return {};
+    struct stat st;
+    if (::stat(claudeTokenMarkerPath().c_str(), &st) != 0)
+        return {};
+    const std::string token = readClaudeToken();
+    if (token.empty())
+        return {};
+    return {{kEnvClaudeToken, token}};
+}
+
 std::string selfExe()
 {
     char buffer[PATH_MAX];
@@ -249,7 +340,7 @@ void dropClaudeEnvironment()
     for (char **e = environ; *e; ++e) {
         const std::string name(*e, std::strcspn(*e, "="));
         // The owner's login token is theirs, not the parent session's.
-        if (name == "CLAUDE_CODE_OAUTH_TOKEN")
+        if (name == kEnvClaudeToken)
             continue;
         if (name.rfind("CLAUDE_CODE_", 0) == 0 || name == "CLAUDECODE" || name == kEnvId || name == kEnvSocket)
             names.push_back(name);

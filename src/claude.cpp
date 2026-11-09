@@ -1792,19 +1792,105 @@ json ClaudeBackend::modes() const
     return claudeModes();
 }
 
-// `claude auth status --json`: {"loggedIn": true, ...}.
+namespace {
+
+// {"loggedIn": true, ...} from `claude auth status --json`, or null.
+json loggedInIn(const std::string &output)
+{
+    const json status = json::parse(output.substr(std::min(output.find('{'), output.size())), nullptr, false);
+    return status.is_object() && status.contains("loggedIn") && status["loggedIn"].is_boolean() ? status["loggedIn"] : json();
+}
+
+} // namespace
+
+// `claude auth status --json` WITHOUT the stored token decides whether the
+// fallback token is used (on a Mac a broken Keychain makes exactly this call
+// prompt, so it runs only where the daemon checks the login anyway: at its
+// start, on a hello with old versions, after a login and a logout): logged in
+// by the account, no token; not logged in and a token stored, the fallback is
+// active (marker file for `pvai run`) and the status is read again with the
+// token. A CLAUDE_CODE_OAUTH_TOKEN in the daemon's own environment is left
+// alone and decides everything: no fallback. Claude Code does not check a
+// token against the server: any value reads as logged in.
 void ClaudeBackend::refreshLogin(std::function<void(bool changed)> done)
 {
     const std::string bin = binary();
     if (bin.empty())
         return done(false);
-    host_.runProcess({bin, "auth", "status", "--json"}, std::chrono::seconds(30), [this, done](int, const std::string &output) {
-        const json status = json::parse(output.substr(std::min(output.find('{'), output.size())), nullptr, false);
-        const json now = status.is_object() && status.contains("loggedIn") && status["loggedIn"].is_boolean() ? status["loggedIn"] : json();
-        const bool changed = now != loggedIn_;
+    const std::string before = loginMethod();
+    const json was = loggedIn_;
+    auto finish = [this, done, before, was] { done(loggedIn_ != was || loginMethod() != before); };
+    host_.runProcess({bin, "auth", "status", "--json"}, std::chrono::seconds(30), [this, bin, finish](int, const std::string &output) {
+        const json now = loggedInIn(output);
         loggedIn_ = now;
-        done(changed);
+        account_ = now.is_boolean() ? std::optional<bool>(now.get<bool>()) : std::nullopt;
+        if (inheritedClaudeToken() || now == json(true) || !account_) {
+            // The environment's token or the account: no fallback. An unknown
+            // answer leaves the decision as it was.
+            if (now == json(true) || inheritedClaudeToken()) {
+                fallback_ = false;
+                setClaudeTokenMarker(false);
+            }
+            return finish();
+        }
+        if (readClaudeToken().empty()) {
+            fallback_ = false;
+            setClaudeTokenMarker(false);
+            return finish();
+        }
+        fallback_ = true;
+        setClaudeTokenMarker(true);
+        statusWithToken(finish);
     });
+}
+
+void ClaudeBackend::statusWithToken(std::function<void()> done)
+{
+    const std::string bin = binary();
+    const std::string token = readClaudeToken();
+    if (bin.empty() || token.empty())
+        return done();
+    host_.runProcess({bin, "auth", "status", "--json"}, std::chrono::seconds(30), [this, done](int, const std::string &output) {
+        loggedIn_ = loggedInIn(output);
+        done();
+    }, {{kEnvClaudeToken, token}});
+}
+
+// `set-token` stored a token. With the account logged in (or a token of the
+// environment) it stays on standby and nothing runs. When the cached decision
+// says the account login is missing the fallback becomes active and the
+// status is read with the token only; no status without it runs here.
+void ClaudeBackend::tokenStored(std::function<void()> done)
+{
+    if (inheritedClaudeToken() || account_ != std::optional<bool>(false))
+        return done();
+    fallback_ = true;
+    setClaudeTokenMarker(true);
+    statusWithToken(std::move(done));
+}
+
+// Logout: the token, the marker and the decision are gone.
+void ClaudeBackend::dropToken()
+{
+    removeClaudeToken();
+    setClaudeTokenMarker(false);
+    fallback_ = false;
+    account_.reset();
+}
+
+std::string ClaudeBackend::loginMethod() const
+{
+    if (inheritedClaudeToken() || fallback_)
+        return "token";
+    return account_ == std::optional<bool>(false) ? "none" : "account";
+}
+
+json ClaudeBackend::describe() const
+{
+    json entry = Backend::describe();
+    entry["loginMethod"] = loginMethod();
+    entry["tokenStored"] = !readClaudeToken().empty();
+    return entry;
 }
 
 std::string ClaudeBackend::binary() const

@@ -28,6 +28,11 @@ constexpr auto kLoginTime = std::chrono::minutes(30);
 constexpr auto kLogoutTime = std::chrono::minutes(1);
 constexpr std::size_t kMaxOutput = 64 * 1024;
 constexpr const char *kStep = "pvai-step: ";
+// `claude setup-token` is run in a terminal this wide, so that it does not
+// wrap its link or its token; wraps are put together anyway.
+constexpr int kTokenCols = 1000;
+constexpr std::size_t kWrapMin = 40; // a line this long may go on in the next one
+constexpr std::size_t kTokenMin = 40;
 
 // For claude: the official installer. For codex and kimi: npm into a
 // prefix of their own under ~/.local/share/pvai, with a Node of the
@@ -115,6 +120,89 @@ std::string lastLine(const std::string &text)
     return cut(out, 300);
 }
 
+bool urlSafe(unsigned char c)
+{
+    return std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~';
+}
+
+bool hasSpace(const std::string &text)
+{
+    return std::any_of(text.begin(), text.end(), [](unsigned char c) { return std::isspace(c) || c == '\'' || c == '"' || c == '<' || c == '>'; });
+}
+
+// The first link in `text`, put together when the terminal wrapped it over
+// lines (a long line goes on in a next one without a space). `closed` is
+// false while more of it may still come.
+std::string findLink(const std::string &text, bool &closed)
+{
+    closed = false;
+    const std::size_t at = text.find("https://");
+    if (at == std::string::npos)
+        return {};
+    const std::size_t found = text.rfind('\n', at);
+    std::size_t lineStart = found == std::string::npos ? 0 : found + 1;
+    std::size_t end = at;
+    while (end < text.size() && !std::isspace(static_cast<unsigned char>(text[end])) && std::strchr("'\"<>", text[end]) == nullptr)
+        ++end;
+    std::string link = text.substr(at, end - at);
+    for (;;) {
+        if (end >= text.size())
+            return link;
+        if (text[end] != '\n') {
+            closed = true;
+            return link;
+        }
+        if (end - lineStart < kWrapMin) {
+            closed = true;
+            return link;
+        }
+        const std::size_t nextEnd = text.find('\n', end + 1);
+        const std::string next = trim(text.substr(end + 1, (nextEnd == std::string::npos ? text.size() : nextEnd) - end - 1));
+        if (nextEnd == std::string::npos && next.empty())
+            return link; // the next line has not started yet
+        if (next.empty() || hasSpace(next)) {
+            closed = true;
+            return link;
+        }
+        if (nextEnd == std::string::npos)
+            return link; // may be a word of the prompt; wait for more
+        link += next;
+        lineStart = end + 1;
+        end = nextEnd;
+    }
+}
+
+// The token `claude setup-token` printed, or empty: `sk-ant-oat` and
+// URL-safe characters, put together when the terminal wrapped it. Anything
+// else is not taken (an unrecognized output is "token-not-recognized").
+std::string findToken(const std::string &text)
+{
+    static const std::string prefix = "sk-ant-oat";
+    auto tokenChar = [](unsigned char c) { return std::isalnum(c) || c == '-' || c == '_'; };
+    for (std::size_t at = text.find(prefix); at != std::string::npos; at = text.find(prefix, at + 1)) {
+        if (at > 0 && tokenChar(static_cast<unsigned char>(text[at - 1])))
+            continue;
+        const std::size_t found = text.rfind('\n', at);
+        std::size_t lineStart = found == std::string::npos ? 0 : found + 1;
+        std::size_t end = at;
+        while (end < text.size() && tokenChar(static_cast<unsigned char>(text[end])))
+            ++end;
+        std::string token = text.substr(at, end - at);
+        while (end < text.size() && text[end] == '\n' && end - lineStart >= kWrapMin) {
+            const std::size_t nextEnd = text.find('\n', end + 1);
+            const std::string next = trim(text.substr(end + 1, (nextEnd == std::string::npos ? text.size() : nextEnd) - end - 1));
+            if (next.empty() || !std::all_of(next.begin(), next.end(), [&](unsigned char c) { return tokenChar(c); }))
+                break;
+            token += next;
+            lineStart = end + 1;
+            end = nextEnd == std::string::npos ? text.size() : nextEnd;
+        }
+        if (token.size() >= kTokenMin && claudeTokenProblem(token).empty())
+            return token;
+    }
+    return {};
+}
+
 } // namespace
 
 std::string installScript(const std::string &assistant)
@@ -159,13 +247,18 @@ std::string Setup::install(const std::string &assistant, const json &ref)
     return tasks_.count(assistant) ? "" : "cannot-start";
 }
 
-std::string Setup::login(const std::string &assistant, const std::string &binary, const json &ref)
+std::string Setup::login(const std::string &assistant, const std::string &binary, const json &ref, const std::string &method)
 {
     if (busy(assistant))
         return "busy";
+    const bool token = method == "token";
+    if (!method.empty() && method != "account" && !token)
+        return "bad-method";
+    if (token && assistant != "claude")
+        return "bad-method";
     std::vector<std::string> argv;
     if (assistant == "claude")
-        argv = {binary, "auth", "login"};
+        argv = token ? std::vector<std::string>{binary, "setup-token"} : std::vector<std::string>{binary, "auth", "login"};
     else if (assistant == "codex")
         argv = {binary, "login", "--device-auth"};
     else if (assistant == "kimi")
@@ -174,6 +267,7 @@ std::string Setup::login(const std::string &assistant, const std::string &binary
         return "unknown-assistant";
     Task task;
     task.ref = ref;
+    task.token = token;
     task.state = "waiting";
     task.until = Clock::now() + kLoginTime;
     spawn(assistant, std::move(task), argv, true);
@@ -242,7 +336,7 @@ void Setup::spawn(const std::string &assistant, Task task, const std::vector<std
                    {"TERM", "dumb"}};
     if (pty) {
         options.ptyRows = 40;
-        options.ptyCols = 200; // a long link on one line
+        options.ptyCols = task.token ? kTokenCols : 200; // a long link on one line
         options.ptyMaster = &fd;
     } else if (::pipe(out) == 0) {
         fd = out[0];
@@ -305,7 +399,24 @@ void Setup::service(int fd)
             line(assistant, task, plain(task.buffer));
         int status = 0;
         ::waitpid(task.pid, &status, 0);
-        end(assistant, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        status = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        std::string why;
+        if (task.token && status == 0) {
+            // Whole `setup-token` output is read; the token goes to its file
+            // and nowhere else.
+            const std::string found = findToken(task.output);
+            if (found.empty()) {
+                status = -1;
+                why = "token-not-recognized";
+            } else if (!storeClaudeToken(found)) {
+                status = -1;
+                why = "cannot-store-token";
+            }
+        } else if (task.token && status != 0) {
+            why = "setup-token failed";
+        }
+        task.output.clear();
+        end(assistant, status, why);
     }
 }
 
@@ -332,7 +443,15 @@ void Setup::loginOutput(const std::string &assistant, Task &task)
     static const std::regex code("\\b[A-Z0-9]{4}-[A-Z0-9]{4,5}\\b");
     bool news = false;
     std::smatch m;
-    if (task.url.empty() && std::regex_search(task.output, m, url)) {
+    if (task.url.empty() && assistant == "claude") {
+        // A link the terminal wrapped is put together, and taken when whole.
+        bool closed = false;
+        const std::string link = findLink(task.output, closed);
+        if (closed && !link.empty()) {
+            task.url = link;
+            news = true;
+        }
+    } else if (task.url.empty() && std::regex_search(task.output, m, url)) {
         task.url = m.str();
         news = true;
     }
@@ -348,7 +467,8 @@ void Setup::loginOutput(const std::string &assistant, Task &task)
         task.output.clear(); // what comes after the code is what counts now
         news = true;
     }
-    if (const std::string last = lastLine(task.output); !last.empty() && last != task.last) {
+    // The raw output of `setup-token` may hold the token: never passed on.
+    if (const std::string last = lastLine(task.output); !task.token && !last.empty() && last != task.last) {
         task.last = last;
         news = true;
     }
@@ -374,8 +494,13 @@ void Setup::end(const std::string &assistant, int status, const std::string &why
 
 void Setup::event(const std::string &assistant, const Task &task, const std::string &state, const std::string &error)
 {
-    json message = {{"type", kindOf(task)}, {"ref", task.ref}, {"assistant", assistant}, {"state", state},
-                    {"text", task.last.empty() ? json() : json(task.last)}};
+    json text = task.last.empty() ? json() : json(task.last);
+    if (task.token) {
+        // Fixed words only: the output of `setup-token` is never passed on.
+        text = state == "waiting" ? "Waiting for the sign-in" : state == "code-needed" ? "Waiting for the code"
+               : state == "done" ? "Token stored" : json();
+    }
+    json message = {{"type", kindOf(task)}, {"ref", task.ref}, {"assistant", assistant}, {"state", state}, {"text", text}};
     if (task.logout) {
         // text only
     } else if (task.install) {

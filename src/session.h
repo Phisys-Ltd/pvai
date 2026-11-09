@@ -52,9 +52,12 @@ public:
     virtual std::vector<Session *> sessions() = 0;
     virtual void addSession(std::unique_ptr<Session> session) = 0;
     // A child process with stdin from /dev/null; `done` gets its exit status
-    // (-1 when killed after `timeout`) and stdout and stderr together.
+    // (-1 when killed after `timeout`) and stdout and stderr together. `env`
+    // is set in the child on top of the daemon's environment (never put a
+    // secret on `argv`).
     virtual void runProcess(const std::vector<std::string> &argv, std::chrono::seconds timeout,
-                            std::function<void(int status, const std::string &output)> done) = 0;
+                            std::function<void(int status, const std::string &output)> done,
+                            const std::vector<std::pair<std::string, std::string>> &env = {}) = 0;
     virtual void log(const std::string &text) = 0;
     // The prompts kept for an ended conversation of `cwd` (oldest first),
     // taken out of the daemon's memory: a session that went on with that

@@ -394,6 +394,12 @@ int runWrapper(const WrapperOptions &options)
     std::vector<std::string> command = options.command;
     int master = -1;
     auto spawn = [&]() -> bool {
+        // The stored Claude token is only a fallback: it is added when the
+        // daemon's marker says the account login is missing, the file exists
+        // and the environment has no token of its own. Checked at every
+        // start, a restart's too, here and not in the child; the daemon is
+        // not asked.
+        const auto tokenEnv = claudeTokenEnv();
         g_child = ::forkpty(&master, nullptr, tty ? &g_savedTermios : nullptr, &size);
         if (g_child < 0) {
             std::perror("pvai: forkpty");
@@ -402,6 +408,8 @@ int runWrapper(const WrapperOptions &options)
         if (g_child == 0) {
             ::setenv(kEnvId, id.c_str(), 1);
             ::setenv(kEnvSocket, daemonSocket().c_str(), 1);
+            for (const auto &[name, value] : tokenEnv)
+                ::setenv(name.c_str(), value.c_str(), 1);
             execChild(command[0], command, true);
             std::fprintf(stderr, "pvai: cannot run %s: %s\n", command[0].c_str(), std::strerror(errno));
             ::_exit(127);
