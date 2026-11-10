@@ -1,3 +1,11 @@
+pvai (0.5.79-1) trixie; urgency=medium
+
+  * Subagents stopped with TaskStop no longer show as running: a killed,
+    failed or completed task notification in the session's transcript ends
+    them, unless the agent's own transcript moves afterwards (a resume).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 10 Nov 2026 20:13:08 +0100
+
 pvai (0.5.78-1) trixie; urgency=medium
 
   * Prompts steered into a running turn are shown in the app.
