@@ -358,6 +358,7 @@ void TranscriptTail::resetState()
     noteAt_ = 0;
     queued_.clear();
     absorbed_.clear();
+    endedTasks_.clear();
     recent_.clear();
 }
 
@@ -438,6 +439,35 @@ bool isWake(const json &line)
     return false;
 }
 
+// The text of a line that may hold a task notification, whatever its shape:
+// a queue-operation's content, a queued_command's prompt, a user message.
+std::string notificationText(const json &line)
+{
+    const json content = member(line, "content");
+    if (str(line, "type") == "queue-operation")
+        return content.is_string() ? content.get<std::string>() : "";
+    if (const json attachment = member(line, "attachment"); attachment.is_object())
+        return str(attachment, "type") == "queued_command" ? str(attachment, "prompt") : "";
+    if (const json message = member(line, "message"); message.is_object()) {
+        const json body = member(message, "content");
+        if (body.is_string())
+            return body.get<std::string>();
+        if (body.is_array() && !body.empty() && body[0].is_object())
+            return str(body[0], "text");
+    }
+    return "";
+}
+
+std::string tagValue(const std::string &text, const std::string &tag)
+{
+    const std::string open = "<" + tag + ">";
+    const auto from = text.find(open);
+    if (from == std::string::npos)
+        return "";
+    const auto to = text.find("</" + tag + ">", from);
+    return to == std::string::npos ? "" : text.substr(from + open.size(), to - from - open.size());
+}
+
 } // namespace
 
 void TranscriptTail::clearLimited()
@@ -449,6 +479,13 @@ void TranscriptTail::clearLimited()
 void TranscriptTail::take(const json &line, std::vector<json> &out)
 {
     const std::string type = str(line, "type");
+    if (!flag(line, "isSidechain")) {
+        if (const std::string text = notificationText(line); text.find("<task-notification>") != std::string::npos) {
+            const std::string id = tagValue(text, "task-id"), status = tagValue(text, "status");
+            if (!id.empty() && (status == "killed" || status == "failed" || status == "completed"))
+                endedTasks_[id] = std::filesystem::file_time_type::clock::now();
+        }
+    }
     // A hand-back is taken up like a task notification, with no hook.
     if (isWake(line) || (!flag(line, "isSidechain") && isHandBack(line))) {
         wakePending_ = true;

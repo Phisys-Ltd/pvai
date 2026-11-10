@@ -9,6 +9,7 @@
 #include <sys/types.h>
 
 #include <deque>
+#include <filesystem>
 #include <optional>
 #include <map>
 #include <string>
@@ -123,6 +124,11 @@ public:
     // prompt into the running turn itself (a `queued_command` attachment),
     // with no UserPromptSubmit. Taken (and cleared) by the caller.
     std::vector<std::string> takeAbsorbed() { return std::exchange(absorbed_, {}); }
+    // Task ids whose task notification said killed, failed or completed, by
+    // id, with the moment the line was read (file clock, to compare with
+    // mtimes). Claude Code writes no `finished` for an agent stopped with
+    // TaskStop; the notification is all that says it ended.
+    const std::map<std::string, std::filesystem::file_time_type> &endedTasks() const { return endedTasks_; }
 
 private:
     void resetState();
@@ -151,6 +157,7 @@ private:
     long long noteAt_ = 0; // an unanswered task notification, written then
     std::deque<std::string> queued_;
     std::vector<std::string> absorbed_;
+    std::map<std::string, std::filesystem::file_time_type> endedTasks_;
 };
 
 } // namespace pvai

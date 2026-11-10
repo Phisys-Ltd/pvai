@@ -95,7 +95,30 @@ int main()
         const std::string typedAfter = home.path + "/typed.jsonl";
         std::ofstream(typedAfter) << userLine(1, mic + "spoken") << userLine(2, "<command-name>/model</command-name>") << userLine(3, "typed later");
         check(!pvai::lastPromptSpoken(typedAfter), "then a typed prompt: not spoken");
-        const std::string slash = home.path + "/slash.jsonl";
+        // Ended tasks: the id from any line shape, only killed/failed/completed.
+    {
+        const std::string file = home.path + "/ended.jsonl";
+        auto note = [](const std::string &id, const std::string &status) {
+            return "<task-notification>\n<task-id>" + id + "</task-id>\n<status>" + status + "</status>\n</task-notification>";
+        };
+        std::ofstream(file)
+            << pvai::json({{"type", "queue-operation"}, {"operation", "enqueue"}, {"content", note("k1", "killed")}}).dump() << "\n"
+            << pvai::json({{"type", "attachment"}, {"attachment", {{"type", "queued_command"}, {"prompt", note("f1", "failed")}, {"commandMode", "prompt"}}}}).dump() << "\n"
+            << userLine(80, note("c1", "completed")) << userLine(81, note("r1", "running"))
+            << pvai::json({{"type", "queue-operation"}, {"operation", "enqueue"}, {"content", "<task-notification>\n<status>killed</status>"}}).dump() << "\n";
+        pvai::TranscriptTail t;
+        t.follow(file);
+        const auto entries = t.poll();
+        std::string ids;
+        for (const auto &[id, at] : t.endedTasks())
+            ids += id + ",";
+        check(ids == "c1,f1,k1,", "ended task ids: " + ids);
+        std::string seen;
+        for (const auto &e : entries)
+            seen += e.value("kind", "") + ":" + e.value("text", "").substr(0, 5) + "|";
+        check(seen.find("<task") == std::string::npos && seen.find("prompt:\n<task") == std::string::npos, "a task notification attachment is no prompt: " + seen);
+    }
+    const std::string slash = home.path + "/slash.jsonl";
         std::ofstream(slash) << userLine(1, mic + "spoken") << userLine(2, "<command-name>/model</command-name>") << userLine(3, "/model sonnet");
         check(pvai::lastPromptSpoken(slash), "slash and local command lines are no prompt");
         check(!pvai::lastPromptSpoken(home.path + "/none.jsonl"), "no file: not spoken");

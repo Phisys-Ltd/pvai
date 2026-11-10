@@ -1873,7 +1873,7 @@ void ClaudeSession::scanSubagents(Clock::time_point)
         auto known = subagents_.find(id);
         json entry;
         if (known != subagents_.end() && known->second.mtime == mtime) {
-            entry = known->second.entry;
+            entry = known->second.base;
         } else {
             std::ifstream in(file.path());
             const json meta = json::parse(in, nullptr, false);
@@ -1887,6 +1887,17 @@ void ClaudeSession::scanSubagents(Clock::time_point)
                          {"startedAt", std::chrono::duration_cast<std::chrono::seconds>(started.time_since_epoch()).count()}};
             }
         }
+        const json base = entry;
+        // A task notification said it ended (Claude Code writes no `finished`
+        // for TaskStop); its own transcript written since means a resume.
+        if (!entry.is_null()) {
+            if (const auto &ended = tail_.endedTasks(); ended.count(id)) {
+                std::error_code logError;
+                const auto moved = fs::last_write_time(dir / (prefix + id + suffix), logError);
+                if (logError || moved <= ended.at(id) + std::chrono::seconds(2))
+                    entry = nullptr;
+            }
+        }
         if (!entry.is_null() && mtime < created_) {
             std::error_code logError;
             const auto moved = fs::last_write_time(dir / (prefix + id + suffix), logError);
@@ -1895,7 +1906,7 @@ void ClaudeSession::scanSubagents(Clock::time_point)
         }
         if (known == subagents_.end() ? !entry.is_null() : known->second.entry != entry)
             news = true;
-        subagents_[id] = {mtime, entry};
+        subagents_[id] = {mtime, entry, base};
     }
     // Agents whose files are gone (and finished ones of a vanished folder)
     // are dropped; a running one that vanished ends.

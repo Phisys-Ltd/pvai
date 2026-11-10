@@ -2637,6 +2637,26 @@ esac
     writeFile(agentMeta, R"({"agentType":"build-runner","description":"Build it","requestShape":"background","finished":true})");
     check(!waitSession(a, "wterm", [&](const json &s) { return agents(s) == json::array(); }, 4000).empty(),
           "a finished subagent leaves the list");
+    // TaskStop writes no `finished`: the killed notification in the parent
+    // ends the agent, its own transcript written later resumes it.
+    {
+        const std::string killedMeta = home + "/elsewhere/run-2/subagents/agent-k9.meta.json";
+        const std::string killedLog = home + "/elsewhere/run-2/subagents/agent-k9.jsonl";
+        append(R"({"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>k9</task-id>\n<status>killed</status>\n</task-notification>"})");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        writeFile(killedLog, "{}\n");
+        writeFile(killedMeta, R"({"agentType":"build-runner","description":"Stopped","requestShape":"background"})");
+        std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+        term = waitSession(a, "wterm", [](const json &) { return true; }, 1000);
+        check(agents(term).empty(), "a subagent a killed notification ended is not listed: " + term.dump());
+        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+        writeFile(killedLog, "{}\n{}\n");
+        check(!waitSession(a, "wterm", [&](const json &s) { return agents(s).size() == 1 && agents(s)[0].value("id", "") == "k9"; }, 5000).empty(),
+              "written after the notification: running again");
+        std::remove(killedMeta.c_str());
+        std::remove(killedLog.c_str());
+        check(!waitSession(a, "wterm", [&](const json &s) { return agents(s).empty(); }, 4000).empty(), "gone with its files");
+    }
     { const json v = said(""); check(v == json(true), "and so is the turn a task notification started: " + v.dump()); }
     check(said("typed") == json(false), "a typed prompt ends that");
     check(lastSay.value("text", "") == "ok " + std::to_string(turn), "a typed turn without a 🔊 line: voice=false, the first sentence as text");

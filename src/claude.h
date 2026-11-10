@@ -224,6 +224,7 @@ private:
     struct Subagent {
         std::filesystem::file_time_type mtime;
         json entry;
+        json base; // the entry from the meta file alone, before a task notification or quiet time ended it
     };
     bool quiet() const;
     bool hasRunningSubagent() const;

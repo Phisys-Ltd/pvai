@@ -414,7 +414,9 @@ daemon knows every live one on its host.
   `<session>/subagents/agent-<id>.meta.json` next to the transcript: an
   agent runs until its meta file says `finished`. One left unfinished by
   an earlier process (a restart, a crash) is not counted once its own
-  transcript has not changed for 10 minutes.
+  transcript has not changed for 10 minutes. A `<task-notification>` for
+  the agent (killed, failed or completed) in the session's transcript also
+  ends it, unless the agent's transcript was written after that (a resume).
 
   Codex: the subagent threads of the thread (`parentThreadId`) that are
   `active` in the app server; a subagent thread is never a session of its
