@@ -1348,6 +1348,13 @@ static std::string boxAndFooter(const std::string &screen)
     return out.empty() ? std::string() : " [screen: " + oneLine(cut(out, 300), 320) + "]";
 }
 
+// The snapshot for a log (the wrapper's last 20 rows): blank rows around it
+// dropped, capped at 4 KiB.
+static std::string screenForLog(const std::string &screen)
+{
+    return cut(trim(screen, " \t\r\n"), 4096);
+}
+
 // The wrapper pressed Return three times and the box still held the text:
 // Claude Code never took it, and the wrapper has emptied the box (its
 // `draft` message, which came first, keeps the next prompt waiting for it).
@@ -1361,6 +1368,7 @@ void ClaudeSession::onSubmitted(bool ok, const std::string &why, const std::stri
         return;
     if (slashPending_) {
         host_.log(id_ + ": " + slashText_.substr(0, 40) + " stayed in the prompt box, cleared" + boxAndFooter(screen));
+        host_.log(id_ + ": screen when the Return was not taken:\n" + screenForLog(screen));
         slashPending_ = false;
         if (slashModel_)
             modelDone("failed", "did not run");
@@ -1382,6 +1390,7 @@ void ClaudeSession::onSubmitted(bool ok, const std::string &why, const std::stri
     // (a compaction it started first), and a second copy would be a second
     // turn. The owner sees the screen and decides.
     host_.log(id_ + ": the Return did not take for " + shown);
+    host_.log(id_ + ": screen when the Return was not taken:\n" + screenForLog(screen));
     notDelivered("Claude Code did not take the Return for:\n" + shown, false);
     attention("stuck", text.substr(0, 40));
 }
