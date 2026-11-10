@@ -72,6 +72,15 @@ std::string screenDialog(const Screen &screen);
 // other text with at least two; else empty.
 std::vector<std::pair<std::string, std::string>> surveyOptions(const std::string &text);
 
+// The same options with what a picker row adds ("1. Default ✔   Opus 5.5"):
+// the description after a run of two or more spaces, and whether a check
+// mark shows. `label` is the name alone.
+struct ScreenOption {
+    std::string id, label, description;
+    bool selected = false;
+};
+std::vector<ScreenOption> screenOptions(const std::string &text);
+
 // Claude Code's prompt box: the lines between the last two rules on the
 // screen, the first starting with "❯", or with "!" in shell mode (`shell`
 // set then: what is typed there runs as a command, no prompt may go in);

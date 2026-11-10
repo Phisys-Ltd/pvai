@@ -1047,6 +1047,16 @@ esac
         check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after the timeout");
     }
 
+    // A typed "/model <name>" ends like the app's switch: on Claude Code's output.
+    {
+        a.send({{"type", "prompt"}, {"ref", 77}, {"session", "wterm"}, {"text", "/model nonesuch"}});
+        check(wrapper.next("type").value("text", "") == "/model nonesuch", "a typed /model goes in");
+        std::ofstream(transcripts + "/running-1.jsonl", std::ios::app)
+            << userLine("<command-name>/model</command-name>") + userLine("<local-command-stdout>Model 'nonesuch' not found</local-command-stdout>");
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }, 3000).empty(),
+              "idle after a typed /model's output");
+    }
+
     // A wrapper that reports no version (before 0.5.52) takes no model switch: it is stale.
     {
         LineClient old;

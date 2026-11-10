@@ -267,6 +267,22 @@ bool turnRunning(const std::string &path, long long *runAt)
     return running || freshNote(noteAt);
 }
 
+// The prompt the owner submitted while a turn ran: Claude Code 2.1.x writes
+// no user line for it (and none later), only a queued_command attachment. A
+// task notification is the same attachment and no prompt.
+static bool queuedPrompt(const json &line, std::string &text)
+{
+    if (str(line, "type") != "attachment" || flag(line, "isSidechain") || isBookkeeping(line) || !line.contains("attachment")
+        || !line["attachment"].is_object())
+        return false;
+    const json &attachment = line["attachment"];
+    if (str(attachment, "type") != "queued_command" || str(attachment, "commandMode") != "prompt" || !attachment.contains("prompt")
+        || !attachment["prompt"].is_string())
+        return false;
+    text = stripPasteFrame(attachment["prompt"].get<std::string>());
+    return !text.empty() && (!isMachinePrompt(text) || isAgentMessage(text));
+}
+
 bool lastPromptSpoken(const std::string &path)
 {
     std::ifstream in(path, std::ios::binary);
@@ -280,9 +296,15 @@ bool lastPromptSpoken(const std::string &path)
         std::getline(in, line); // a partial first line
     bool spoken = false;
     while (std::getline(in, line)) {
-        if (skippable(line.data(), line.size()) || line.find("\"user\"") == std::string::npos)
+        if (skippable(line.data(), line.size())
+            || (line.find("\"user\"") == std::string::npos && line.find("queued_command") == std::string::npos))
             continue;
         const json entry = json::parse(line, nullptr, false);
+        if (std::string queued; entry.is_object() && queuedPrompt(entry, queued)) {
+            if (queued[0] != '/')
+                spoken = queued.rfind("\xF0\x9F\x8E\x99 ", 0) == 0;
+            continue;
+        }
         if (!entry.is_object() || str(entry, "type") != "user" || flag(entry, "isSidechain") || isBookkeeping(entry)
             || !entry.contains("message") || !entry["message"].is_object())
             continue;
@@ -535,6 +557,12 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
     // newer Claude Code versions, a user message in older ones. The summary
     // a compaction leaves is no prompt of the owner's.
     const bool localCommand = type == "system" && str(line, "subtype") == "local_command";
+    if (std::string queued; queuedPrompt(line, queued)) {
+        json entry = {{"kind", "prompt"}, {"text", cut(queued, kMaxText)}};
+        entry.update(json{{"id", str(line, "uuid")}, {"time", str(line, "timestamp")}});
+        out.push_back(std::move(entry));
+        return;
+    }
     if ((type != "user" && type != "assistant" && !localCommand) || flag(line, "isSidechain") || isBookkeeping(line))
         return;
     if (!localCommand && (!line.contains("message") || !line["message"].is_object()))

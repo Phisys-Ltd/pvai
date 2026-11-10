@@ -269,6 +269,23 @@ int main()
         check(so.size() == 3 && so[2] == std::make_pair(std::string("d"), std::string("Don't ask again")), "its keys y n d");
         check(pvai::surveyOptions("Pick one\n1: Bad").empty(), "other text has no survey options");
     }
+    // The /model picker: name, check mark and description in one row.
+    {
+        const std::string picker = "Select model\n\xE2\x9D\xAF 1. Default (recommended) \xE2\x9C\x94   Opus 5.5 \xC2\xB7 Most capable for complex work\n"
+                                   "  2. Sonnet   Sonnet 5.5 \xC2\xB7 Best for everyday tasks\n  3. Haiku \xE2\x9C\x93\n\nEnter to confirm";
+        const auto options = pvai::screenOptions(picker);
+        check(options.size() == 3 && options[0].id == "1" && options[0].label == "Default (recommended)" && options[0].selected
+                  && options[0].description == "Opus 5.5 \xC2\xB7 Most capable for complex work",
+              "the picker's first row: name, check mark, description");
+        check(options[1].label == "Sonnet" && !options[1].selected && options[1].description == "Sonnet 5.5 \xC2\xB7 Best for everyday tasks",
+              "the second row has no check mark");
+        check(options[2].label == "Haiku" && options[2].selected && options[2].description.empty(), "a check mark without a description");
+        const auto plain = pvai::screenOptions("Do it?\n\xE2\x9D\xAF 1. Yes\n  2. Yes, and don't ask again for foo (shift+tab)\n  3. No");
+        check(plain.size() == 3 && plain[1].label == "Yes, and don't ask again for foo (shift+tab)" && plain[1].description.empty()
+                  && !plain[1].selected,
+              "a permission dialog's rows stay whole");
+        check(pvai::surveyOptions(picker)[0].second == "Default (recommended)", "surveyOptions gives the name alone");
+    }
     // Claude Code's offer under the prompt box (auto mode setup): the select
     // under it takes Return and the digits.
     {

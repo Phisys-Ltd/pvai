@@ -302,7 +302,7 @@ daemon knows every live one on its host.
   "Enter to confirm · Esc to cancel"): numbered options and a footer in the
   last two lines under the box. Its select takes Return and the digits, so
   text typed for the box would answer it. `dialogInfo.options` lists the
-  digits (`id` `1`...`9`) for any `screen` dialog with two or more numbered rows. Claude Code: from its
+  digits (`id` `1`...`9`) for any `screen` dialog with two or more numbered rows. A numbered row of Claude Code's own pickers (`/model`: `❯ 1. Default (recommended) ✔   Opus 5.5 · Most capable`) is split at the first run of two or more spaces: `label` is the name (the check mark removed), and the options gain `description` (the rest of the row) and `selected: true` (the check mark shows), each only when present. Claude Code: from its
   `PermissionRequest` hook (tool name and input; `AskUserQuestion` makes a
   `question`, see "Claude Code's questions"), the words from the
   `Notification` that follows or comes first; an older Claude Code without that hook gets the last tool call
@@ -1281,7 +1281,7 @@ a second.
 
 | `kind` | fields | what it is |
 |---|---|---|
-| `prompt` | `text` | what the owner sent, typed or spoken (with its `🎙 `) |
+| `prompt` | `text` | what the owner sent, typed or spoken (with its `🎙 `); also one submitted while a turn runs, which Claude Code 2.1.x writes only as a `queued_command` attachment |
 | `text` | `text` | Claude's words, markdown (up to 64 KiB) |
 | `tool` | `tool`, `text`, `file` | a tool call; `text` is one line saying what it does; `file`, when present, names the file whose content the result shows (a `Read`, or a shell command that names exactly one file), so an app can colour it by its extension |
 | `result` | `tool`, `text`, `error` | what the tool returned, cut at 4 KiB |

@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -269,12 +270,24 @@ void ClaudeSession::claimKept()
     changed();
 }
 
+// "/model <something>" typed as a prompt (a bare /model opens the picker).
+static bool typedModel(const std::string &text)
+{
+    if (text.rfind("/model", 0) != 0 || text.size() < 8 || !std::isspace(static_cast<unsigned char>(text[6])))
+        return false;
+    return text.find_first_not_of(" \t\n", 6) != std::string::npos;
+}
+
 // A slash or shell command went in: it ends with its output.
 void ClaudeSession::markSlash(const Prompt &prompt)
 {
     drain();
     slashPending_ = true;
-    slashModel_ = prompt.modelSwitch;
+    // A typed "/model <name>" ends like the app's switch: on Claude Code's output.
+    const bool model = prompt.modelSwitch || typedModel(prompt.text);
+    slashModel_ = model;
+    if (model && !prompt.modelSwitch)
+        host_.log(id_ + ": typed /model recognised: " + prompt.text.substr(0, 60));
     slashShell_ = prompt.text[0] == '!';
     slashMark_ = localDone();
     slashSince_ = Clock::now();
@@ -283,7 +296,7 @@ void ClaudeSession::markSlash(const Prompt &prompt)
     compactMark_ = tail_.compactions();
     // A /model that goes in has 30 s to show its output (see the tick).
     modelAt_.reset();
-    if (prompt.modelSwitch)
+    if (model)
         modelAt_ = Clock::now() + kModelTimeout;
 }
 
@@ -341,6 +354,7 @@ std::string ClaudeSession::answer(const std::string &choice)
 {
     if (state_ != "waiting" || dialog_.empty())
         return "no-dialog";
+    host_.log(id_ + ": answer " + choice.substr(0, 40));
     if (dialog_ == "question" && dialogInfo_.is_object() && dialogInfo_.contains("questions")
         && (choice.rfind("option:", 0) == 0 || choice.rfind("text:", 0) == 0 || choice == "next"))
         return answerQuestion(choice);
@@ -515,6 +529,7 @@ std::string ClaudeSession::setModel(const std::string &model, const json &ref)
         return "busy";
     modelTarget_ = model;
     modelRef_ = ref;
+    host_.log(id_ + ": model switch requested: " + model.substr(0, 60));
     Prompt command{"/model " + model, false, json()};
     command.modelSwitch = true;
     prompt(command);
@@ -916,10 +931,16 @@ void ClaudeSession::modeDone(const std::string &state, const std::string &error)
 static json screenInfo(const std::string &text)
 {
     json info = dialogInfo("", text, "");
-    if (const auto options = surveyOptions(text); !options.empty()) {
+    if (const auto options = screenOptions(text); !options.empty()) {
         info["options"] = json::array();
-        for (const auto &[id, label] : options)
-            info["options"].push_back({{"id", id}, {"label", label}});
+        for (const auto &option : options) {
+            json entry = {{"id", option.id}, {"label", option.label}};
+            if (!option.description.empty())
+                entry["description"] = option.description;
+            if (option.selected)
+                entry["selected"] = true;
+            info["options"].push_back(std::move(entry));
+        }
     }
     return info;
 }
@@ -1434,6 +1455,7 @@ void ClaudeSession::tick(Clock::time_point now)
         modelAt_.reset();
         if (slashPending_ && slashModel_) {
             slashPending_ = false;
+            host_.log(id_ + ": /model output: no answer");
             modelDone("failed", "no answer");
             if (state_ == "busy") {
                 state_ = "idle";
@@ -1764,6 +1786,7 @@ void ClaudeSession::pollTranscript()
         slashPending_ = false;
         if (slashModel_) {
             const std::string &out = tail_.lastLocalOutput();
+            host_.log(id_ + ": /model output: " + out.substr(0, 120));
             if (out.empty() || out.rfind("Set model to", 0) == 0)
                 modelDone("done");
             else

@@ -620,6 +620,30 @@ bool numberedRow(const std::string &row, std::string *id = nullptr, std::string 
     return true;
 }
 
+// An option's row remainder split as Claude Code's pickers draw it: name,
+// an optional check mark, then a description after a run of two or more
+// spaces. Rows without such a run keep the whole remainder as the label.
+void splitOption(const std::string &rest, std::string &label, std::string &description, bool &selected)
+{
+    std::string head = rest;
+    description.clear();
+    if (const std::size_t gap = rest.find("  "); gap != std::string::npos) {
+        head = rest.substr(0, gap);
+        description = trim(rest.substr(gap), " ");
+    }
+    selected = false;
+    for (const char *mark : {"\xE2\x9C\x94", "\xE2\x9C\x93"}) {
+        const std::size_t n = std::strlen(mark);
+        const std::string t = trim(head, " ");
+        if (t.size() >= n && t.compare(t.size() - n, n, mark) == 0) {
+            head = t.substr(0, t.size() - n);
+            selected = true;
+            break;
+        }
+    }
+    label = trim(head, " ");
+}
+
 // An ask drawn under the prompt box, which stays (Claude Code's offers and
 // consent questions: "Teach auto mode about your environment?" with
 // "1. Yes / 2. Not now / 3. Don't show again", then "Enter to confirm · Esc
@@ -676,9 +700,9 @@ std::string askBelow(const Screen &screen, int top)
 
 } // namespace
 
-std::vector<std::pair<std::string, std::string>> surveyOptions(const std::string &text)
+std::vector<ScreenOption> screenOptions(const std::string &text)
 {
-    std::vector<std::pair<std::string, std::string>> out;
+    std::vector<ScreenOption> out;
     bool survey = false;
     for (const char *q : kSurveyQuestions)
         survey = survey || text.find(q) != std::string::npos;
@@ -688,8 +712,12 @@ std::vector<std::pair<std::string, std::string>> surveyOptions(const std::string
             std::size_t end = text.find('\n', from);
             if (end == std::string::npos)
                 end = text.size();
-            if (std::string id, label; numberedRow(text.substr(from, end - from), &id, &label))
-                out.push_back({id, label});
+            if (std::string id, rest; numberedRow(text.substr(from, end - from), &id, &rest)) {
+                ScreenOption option;
+                option.id = id;
+                splitOption(rest, option.label, option.description, option.selected);
+                out.push_back(std::move(option));
+            }
             from = end + 1;
         }
         if (out.size() < 2)
@@ -711,9 +739,17 @@ std::vector<std::pair<std::string, std::string>> surveyOptions(const std::string
                 starts.push_back(i);
         for (std::size_t k = 0; k < starts.size(); ++k) {
             const std::size_t to = k + 1 < starts.size() ? starts[k + 1] : row.size();
-            out.push_back({row.substr(starts[k], 1), trim(row.substr(starts[k] + 3, to - starts[k] - 3), " ")});
+            out.push_back({row.substr(starts[k], 1), trim(row.substr(starts[k] + 3, to - starts[k] - 3), " "), "", false});
         }
     }
+    return out;
+}
+
+std::vector<std::pair<std::string, std::string>> surveyOptions(const std::string &text)
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const auto &option : screenOptions(text))
+        out.push_back({option.id, option.label});
     return out;
 }
 

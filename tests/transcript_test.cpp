@@ -53,6 +53,23 @@ int main()
     for (const auto &e : entries)
         got += e.value("kind", "") + ":" + e.value("text", "") + "|";
     check(got == "command:! ssh pi5 uptime|output:up 3 days\nwarn\n|prompt:<div>mine</div>|", "the entries: " + got);
+    // A prompt submitted while a turn runs: only a queued_command attachment.
+    {
+        auto queued = [](int n, const std::string &prompt, const std::string &mode = "prompt") {
+            return pvai::json({{"type", "attachment"}, {"uuid", "q" + std::to_string(n)}, {"timestamp", "t" + std::to_string(n)},
+                               {"attachment", {{"type", "queued_command"}, {"prompt", prompt}, {"commandMode", mode}}}}).dump() + "\n";
+        };
+        const std::string file = home.path + "/steered.jsonl";
+        std::ofstream(file) << userLine(70, "first") << queued(71, "\xF0\x9F\x8E\x99 Bis jetzt auf 63.") << queued(72, "<task-notification>x</task-notification>")
+                            << queued(73, "<system-reminder>y</system-reminder>") << queued(74, "ls", "bash");
+        pvai::TranscriptTail t;
+        t.follow(file);
+        std::string seen;
+        for (const auto &e : t.poll())
+            seen += e.value("kind", "") + ":" + e.value("id", "") + ":" + e.value("time", "") + ":" + e.value("text", "") + "|";
+        check(seen == "prompt:u70::first|prompt:q71:t71:\xF0\x9F\x8E\x99 Bis jetzt auf 63.|", "a queued prompt is a prompt entry: " + seen);
+        check(pvai::lastPromptSpoken(file), "a queued 🎙 prompt counts as spoken");
+    }
     // The history still shows what another session handed in; a title does not take it.
     const std::string agentFile = home.path + "/agent.jsonl";
     std::ofstream(agentFile) << userLine(60, "[Message p1 from M4/w1]\nhi there") << userLine(61, "<task-notification>x</task-notification>");
