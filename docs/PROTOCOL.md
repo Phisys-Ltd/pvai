@@ -450,13 +450,18 @@ its answer ends the dialog. `answer` choices:
 
 - `option:<n>`: the n-th choice (from 1) of the current question. Single
   select: picked, on to the next question. Multi select: toggled, `selected`
-  lists the numbers that are on.
+  lists the numbers that are on. A choice may carry a `preview` (a string,
+  only when there is one); Claude Code then draws the question side by side
+  and a digit only moves its highlight, so the daemon adds Return (needs
+  a `pvai run` of 0.5.33 or later, else `not-supported`).
 - `next`: a multi-select question is done (Tab), on to the next.
 - `text:<words>`: the owner's own answer to a single-select question
   (Claude Code's "Type something": the field after the choices, the words,
   Return), at most 2000 bytes, no line breaks; needs a `pvai run` of
-  0.5.33 or later, else `not-supported`.
-- `allow` on the review submits; `deny` (Esc) cancels the whole dialog at
+  0.5.33 or later, else `not-supported`. Not on a question with previews:
+  it has no such field, `bad-choice`.
+- `allow` on a question picks its highlighted choice (Return); on the review
+  it submits; `deny` (Esc) cancels the whole dialog at
   any point, as `interrupt` does.
 - `key:NAME` as before, for anything else; the daemon does not follow it.
 

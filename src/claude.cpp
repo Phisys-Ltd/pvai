@@ -69,6 +69,18 @@ std::string toolText(const json &input)
     return input.dump();
 }
 
+// True when any choice of the question carries a preview: Claude Code then
+// draws it side by side, where a digit only moves the highlight.
+bool hasPreview(const json &question)
+{
+    if (!question.is_object() || !question.contains("options") || !question["options"].is_array())
+        return false;
+    for (const auto &option : question["options"])
+        if (option.is_object() && option.contains("preview"))
+            return true;
+    return false;
+}
+
 // AskUserQuestion's questions with their choices, as dialogInfo.questions.
 json questionsOf(const json &input)
 {
@@ -79,7 +91,13 @@ json questionsOf(const json &input)
         json options = json::array();
         if (question.is_object() && question.contains("options") && question["options"].is_array())
             for (const auto &option : question["options"])
-                options.push_back({{"label", str(option, "label")}, {"description", str(option, "description")}});
+            {
+                json entry = {{"label", str(option, "label")}, {"description", str(option, "description")}};
+                // A question with previews is drawn side by side; the app shows them.
+                if (option.is_object() && option.contains("preview") && option["preview"].is_string() && !option["preview"].get<std::string>().empty())
+                    entry["preview"] = option["preview"];
+                options.push_back(std::move(entry));
+            }
         const bool multi = question.is_object() && flag(question, "multiSelect");
         json entry = {{"question", str(question, "question")}, {"header", str(question, "header")},
                       {"multiSelect", multi}, {"options", options}};
@@ -384,6 +402,23 @@ std::string ClaudeSession::answer(const std::string &choice)
     }
     if (choice != "allow" && choice != "deny")
         return "bad-choice";
+    // A question dialog stays open (and ours) until its last answer: allow
+    // is Return on the highlighted choice, on the review "1" (Submit).
+    if (choice == "allow" && dialog_ == "question" && dialogInfo_.is_object() && dialogInfo_.contains("questions")
+        && dialogInfo_["questions"].is_array() && !dialogInfo_["questions"].empty()) {
+        const int count = static_cast<int>(dialogInfo_["questions"].size());
+        const bool review = count > 1 && dialogInfo_.value("current", 0) >= count;
+        if (review) {
+            wrapper_.send({{"type", "keys"}, {"data", "1"}});
+            dialog_.clear();
+            state_ = "busy";
+            changed();
+        } else {
+            wrapper_.send({{"type", "keys"}, {"data", "\r"}});
+            questionAnswered(true);
+        }
+        return {};
+    }
     if (dialog_ == "screen") {
         wrapper_.send({{"type", "keys"}, {"data", choice == "deny" ? "\x1b" : "\r"}});
         retryIfBlocked();
@@ -406,7 +441,8 @@ std::string ClaudeSession::answer(const std::string &choice)
 // Claude Code's question dialog: a digit picks a choice (single select:
 // on to the next question; multi select: toggles it), Tab goes on from a
 // multi-select question, the choice after the last opens a field for
-// typed words. With more than one question a review comes last, which
+// typed words. With previews (single select) a digit only moves the
+// highlight: the digit and Return go paced, and there is no typed answer. With more than one question a review comes last, which
 // `allow` submits and `deny` cancels.
 std::string ClaudeSession::answerQuestion(const std::string &choice)
 {
@@ -429,6 +465,15 @@ std::string ClaudeSession::answerQuestion(const std::string &choice)
         const std::string number = choice.substr(7);
         if (number.empty() || number.size() > 1 || number[0] < '1' || number[0] - '0' > options)
             return "bad-choice";
+        if (!multi && hasPreview(question)) {
+            // Side by side: the digit only moves the highlight, Return
+            // picks it. Paced, so Claude Code sees two keys, not one chunk.
+            if (!canPace_)
+                return "not-supported";
+            wrapper_.send({{"type", "paced"}, {"gapMs", 150}, {"keys", {number, "\r"}}});
+            questionAnswered(true);
+            return {};
+        }
         wrapper_.send({{"type", "keys"}, {"data", number}});
         if (multi) {
             json &selected = question["selected"];
@@ -446,7 +491,7 @@ std::string ClaudeSession::answerQuestion(const std::string &choice)
     }
     // text:<words>: the field after the choices, the words, Return.
     const std::string words = choice.substr(5);
-    if (multi || words.empty() || words.size() > 2000 || words.find_first_of("\r\n\x1b") != std::string::npos)
+    if (multi || hasPreview(question) || words.empty() || words.size() > 2000 || words.find_first_of("\r\n\x1b") != std::string::npos)
         return "bad-choice";
     if (!canPace_)
         return "not-supported";

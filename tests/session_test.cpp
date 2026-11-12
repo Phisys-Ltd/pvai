@@ -1855,9 +1855,33 @@ esac
         check(!waitSession(a, "wq", [](const json &s) { return sub(s, "dialogInfo").value("current", -1) == 2 && s.value("state", "") == "waiting"; }).empty(),
               "then the review");
         check(answer(65, "option:1") == "bad-choice", "the review takes allow or deny");
-        check(answer(66, "allow") == "answered" && wrapperKeys(qw) == "\r", "allow submits");
+        check(answer(66, "allow") == "answered" && wrapperKeys(qw) == "1", "allow on the review types 1 (Submit)");
         hook("wq", {{"hook_event_name", "Stop"}, {"session_id", "q-1"}, {"last_assistant_message", "Ok."}});
         check(!waitSession(a, "wq", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "the turn ends");
+
+        // Previews: side by side, a digit only moves the highlight, so the daemon adds Return.
+        hook("wq", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "q-1"}, {"prompt", "frag2"}});
+        const json pq = json::array(
+            {{{"question", "Which layout?"}, {"header", "Layout"}, {"multiSelect", false},
+              {"options", json::array({{{"label", "A"}, {"description", "a"}, {"preview", "+--+"}}, {{"label", "B"}, {"description", "b"}, {"preview", ""}}})}},
+             {{"question", "Which city?"}, {"header", "City"}, {"multiSelect", false},
+              {"options", json::array({{{"label", "Bern"}, {"description", ""}}, {{"label", "Zug"}, {"description", ""}}})}}});
+        hook("wq", {{"hook_event_name", "PermissionRequest"}, {"session_id", "q-1"}, {"tool_name", "AskUserQuestion"},
+                    {"tool_input", {{"questions", pq}}}});
+        const json pinfo = sub(waitSession(a, "wq", [](const json &s) { return s.value("dialog", json()) == "question"; }), "dialogInfo");
+        check(pinfo["questions"][0]["options"][0].value("preview", "") == "+--+" && !pinfo["questions"][0]["options"][1].contains("preview")
+                  && !pinfo["questions"][1]["options"][0].contains("preview"),
+              "preview kept only when non-empty: " + pinfo.dump());
+        check(answer(70, "text:frei") == "bad-choice", "no typed answer on a preview question");
+        check(answer(71, "option:2") == "answered", "option on a preview question");
+        check(qw.next("paced")["keys"] == json::array({"2", "\r"}), "paced: digit, Return");
+        check(!waitSession(a, "wq", [](const json &s) { return sub(s, "dialogInfo").value("current", -1) == 1; }).empty(), "on to the second question");
+        check(answer(72, "option:2") == "answered" && wrapperKeys(qw) == "2", "a plain question: the digit alone");
+        check(!waitSession(a, "wq", [](const json &s) { return sub(s, "dialogInfo").value("current", -1) == 2 && s.value("state", "") == "waiting"; }).empty(), "the review");
+        // allow on an open question is Return and keeps the dialog ours (no busy while it stands)
+        check(answer(73, "allow") == "answered" && wrapperKeys(qw) == "1", "review allow: 1");
+        hook("wq", {{"hook_event_name", "Stop"}, {"session_id", "q-1"}, {"last_assistant_message", "Ok."}});
+        check(!waitSession(a, "wq", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "the turn ends again");
     }
 
     // A wrapper that registers again after a daemon restart: busy when its
