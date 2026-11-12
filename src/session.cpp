@@ -207,6 +207,8 @@ std::vector<Prompt> Session::unsent() const
 bool Session::prompt(const Prompt &prompt)
 {
     queue_.push_back(prompt);
+    if (!prompt.agent)
+        held_ = false; // the owner sends a prompt: that is acting
     const bool typed = deliver();
     changed();
     return typed;
@@ -222,7 +224,7 @@ void Session::end()
 
 bool Session::deliver()
 {
-    if (state_ != "idle" || draft_ || queue_.empty() || !canSubmit())
+    if (state_ != "idle" || draft_ || held_ || queue_.empty() || !canSubmit())
         return false;
     const Prompt prompt = queue_.front();
     queue_.pop_front();

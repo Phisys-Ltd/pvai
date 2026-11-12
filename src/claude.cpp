@@ -421,6 +421,10 @@ std::string ClaudeSession::answer(const std::string &choice)
     }
     if (dialog_ == "screen") {
         wrapper_.send({{"type", "keys"}, {"data", choice == "deny" ? "\x1b" : "\r"}});
+        if (choice == "deny" && blockedByReturn_) { // the owner gives the stuck prompt up
+            dropStuck("denied");
+            return {};
+        }
         retryIfBlocked();
         return {};
     }
@@ -442,8 +446,9 @@ std::string ClaudeSession::answer(const std::string &choice)
 // on to the next question; multi select: toggles it), Tab goes on from a
 // multi-select question, the choice after the last opens a field for
 // typed words. With previews (single select) a digit only moves the
-// highlight: the digit and Return go paced, and there is no typed answer. With more than one question a review comes last, which
-// `allow` submits and `deny` cancels.
+// highlight: the digit and Return go paced, and there is no typed answer.
+// With more than one question a review comes last, which `allow` submits
+// and `deny` cancels.
 std::string ClaudeSession::answerQuestion(const std::string &choice)
 {
     json &questions = dialogInfo_["questions"];
@@ -526,6 +531,10 @@ void ClaudeSession::interrupt()
     host_.log(id_ + ": interrupt from the app (state " + state_ + (inFlight_ ? ", a prompt in flight" : "") + ")");
     wrapper_.send({{"type", "keys"}, {"data", "\x1b"}});
     if (dialog_ == "screen") { // Esc closes it; the screen says when
+        if (blockedByReturn_) { // the stuck prompt is given up, not typed again
+            dropStuck("interrupted");
+            return;
+        }
         retryIfBlocked();
         return;
     }
@@ -538,15 +547,28 @@ void ClaudeSession::interrupt()
 }
 
 // Only at a free prompt: a running turn or an open dialog would be cut
-// off, a draft lost. The wrapper ends Claude Code and starts it again with
+// off, a draft lost. The one dialog that may go is the screen of a Return
+// Claude Code ignored because it installed an update and waits for a restart. The wrapper ends Claude Code and starts it again with
 // `--resume`; SessionStart (source resume) makes the session idle again,
 // and what was queued goes in then.
 std::string ClaudeSession::restart()
 {
     if (!restartable())
         return "not-restartable";
-    if (state_ != "idle" || draft_)
+    if (!restartNow())
         return "busy";
+    // The stuck prompt waits for the new process, with its tries counted anew.
+    blocked_ = false;
+    blockedByReturn_ = false;
+    blockReason_.clear();
+    quietRetry_ = false;
+    retryAt_.reset();
+    retryOnPrompt_ = false;
+    dialog_.clear();
+    dialogInfo_ = nullptr;
+    held_ = false;
+    for (auto &queued : queue_)
+        queued.returnFailures = 0;
     wrapper_.send({{"type", "restart"}, {"resume", claudeSession_}});
     began_ = Clock::now();
     state_ = "starting";
@@ -594,6 +616,13 @@ void ClaudeSession::modelDone(const std::string &state, const std::string &error
     modelEvent(ref, model, state, error);
 }
 
+bool ClaudeSession::restartNow() const
+{
+    if (state_ == "idle" && !draft_)
+        return true;
+    return state_ == "waiting" && dialog_ == "screen" && blocked_ && blockedByReturn_ && blockReason_ == "update-installed";
+}
+
 // The wrapper empties the box; its `draft` and `screen` say when it is
 // free, and the queue goes on from there.
 std::string ClaudeSession::clear()
@@ -602,6 +631,7 @@ std::string ClaudeSession::clear()
         return "not-supported";
     if (!clearable())
         return "busy";
+    held_ = false; // the owner acts: the queue may be typed again
     wrapper_.send({{"type", "clear"}});
     retryIfBlocked();
     return {};
@@ -622,7 +652,7 @@ std::string DetachedClaudeSession::restart()
         return ClaudeSession::restart();
     if (!restartable())
         return "not-restartable";
-    if (state_ != "idle" || draft_)
+    if (!restartNow())
         return "busy";
     replacement_ = StartRequest{cwd(), label(), {}, claudeSession(), id()};
     host_.log(id() + ": restart replaces its pvai run " + (wrapperVersion().empty() ? std::string("(unversioned)") : wrapperVersion()));
@@ -700,9 +730,13 @@ void ClaudeSession::onHook(const json &event)
     const bool trust = dialog_ == "trust"; // answered in the terminal: the next hook says so
     if (name != "Notification" && name != "PermissionRequest")
         dialog_.clear();
+    if (name == "UserPromptSubmit" || name == "Stop" || name == "SessionStart" || name == "PreToolUse" || name == "PostToolUse")
+        held_ = false; // Claude Code works again: a queue held back after refused Returns may go on
     std::optional<Prompt> confirmed; // the prompt this hook confirms, when the daemon typed it
     if (name == "UserPromptSubmit" || name == "Stop" || name == "SessionStart") {
         blocked_ = false; // the prompt is Claude's again
+        blockedByReturn_ = false;
+        blockReason_.clear();
         quietRetry_ = false;
         retryAt_.reset();
         typedDeadline_.reset();
@@ -1087,6 +1121,8 @@ void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::st
             revealRetry(); // a real dialog stands: shown at once
         if (!text.empty() && member(dialogInfo_, "text") != json(text)) {
             dialogInfo_ = screenInfo(text);
+            if (!blockReason_.empty())
+                dialogInfo_["reason"] = blockReason_;
             changed();
         }
         // Never while a dialog (a session survey takes single keys) stands,
@@ -1261,7 +1297,7 @@ void ClaudeSession::lost(const Prompt &prompt, const std::string &why)
 
 // The prompt did not go in: in front of the queue again, and the session
 // waits on the screen until the prompt box is free.
-void ClaudeSession::notDelivered(const std::string &screen, bool retry, bool quiet)
+void ClaudeSession::notDelivered(const std::string &screen, bool retry, bool quiet, const std::string &reason)
 {
     // Its own prompt stands unsent in the box: say that, the lines above the
     // box are only the conversation and read as if it had gone.
@@ -1276,10 +1312,14 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry, bool qui
     typedDeadline_.reset();
     submitDeadline_.reset();
     turnOver();
+    const bool returnFailed = returnFailed_;
+    returnFailed_ = false;
     const bool asked = dialog_ == "screen" && !quietRetry_; // a hidden one was never shown
     quietRetry_ = quiet;
     quietGist_.clear();
     blocked_ = true;
+    blockedByReturn_ = returnFailed;
+    blockReason_ = reason;
     retryOnPrompt_ = retry;
     retryAt_.reset();
     if (retry) // the screen may not change: look again after a moment
@@ -1288,6 +1328,8 @@ void ClaudeSession::notDelivered(const std::string &screen, bool retry, bool qui
     state_ = "waiting";
     dialog_ = "screen";
     dialogInfo_ = screenInfo(screen);
+    if (!blockReason_.empty())
+        dialogInfo_["reason"] = blockReason_;
     if (!asked) {
         std::string first = stands.substr(0, stands.find('\n'));
         if (first.size() > 60)
@@ -1339,6 +1381,8 @@ void ClaudeSession::unblock()
 {
     quietRetry_ = false;
     blocked_ = false;
+    blockedByReturn_ = false;
+    blockReason_.clear();
     typedPauseUntil_.reset();
     retryAt_.reset();
     state_ = "idle";
@@ -1393,11 +1437,31 @@ static std::string boxAndFooter(const std::string &screen)
     return out.empty() ? std::string() : " [screen: " + oneLine(cut(out, 300), 320) + "]";
 }
 
-// The snapshot for a log (the wrapper's last 20 rows): blank rows around it
-// dropped, capped at 4 KiB.
-static std::string screenForLog(const std::string &screen)
+// A prompt whose Return Claude Code ignored is given up: `dropped` (the app
+// may offer a resend) and the session is idle again, the dialog closed. The
+// rest of the queue is held back (`held_`): a session that refuses Returns is
+// not typed into until the owner acts (clearInput, a prompt, restart) or a
+// hook shows Claude Code working. Without `fromQueue` the caller has taken
+// the prompt out and said it lost; else the queue's front is it.
+void ClaudeSession::dropStuck(const std::string &why, bool fromQueue)
 {
-    return cut(trim(screen, " \t\r\n"), 4096);
+    if (fromQueue && !queue_.empty()) {
+        const Prompt prompt = queue_.front();
+        queue_.pop_front();
+        lost(prompt, "the Return did not take, " + why);
+    }
+    blocked_ = false;
+    blockedByReturn_ = false;
+    blockReason_.clear();
+    quietRetry_ = false;
+    retryOnPrompt_ = false;
+    retryAt_.reset();
+    typedPauseUntil_.reset();
+    state_ = "idle";
+    dialog_.clear();
+    dialogInfo_ = nullptr;
+    held_ = true;
+    changed();
 }
 
 // The wrapper pressed Return three times and the box still held the text:
@@ -1413,7 +1477,6 @@ void ClaudeSession::onSubmitted(bool ok, const std::string &why, const std::stri
         return;
     if (slashPending_) {
         host_.log(id_ + ": " + slashText_.substr(0, 40) + " stayed in the prompt box, cleared" + boxAndFooter(screen));
-        host_.log(id_ + ": screen when the Return was not taken:\n" + screenForLog(screen));
         slashPending_ = false;
         if (slashModel_)
             modelDone("failed", "did not run");
@@ -1435,8 +1498,28 @@ void ClaudeSession::onSubmitted(bool ok, const std::string &why, const std::stri
     // (a compaction it started first), and a second copy would be a second
     // turn. The owner sees the screen and decides.
     host_.log(id_ + ": the Return did not take for " + shown);
-    host_.log(id_ + ": screen when the Return was not taken:\n" + screenForLog(screen));
-    notDelivered("Claude Code did not take the Return for:\n" + shown, false);
+    std::string reason;
+    if (screen.find("Restart to update") != std::string::npos) {
+        host_.log(id_ + ": Claude Code installed an update and needs a restart");
+        reason = "update-installed";
+    }
+    // One more try at most: a Claude Code that refuses Returns would be typed
+    // into over and over by every action of the owner.
+    if (++inFlight_->returnFailures >= 2) {
+        const Prompt prompt = *inFlight_;
+        inFlight_.reset();
+        queuedInClaude_ = false;
+        queuedUntil_.reset();
+        typedDeadline_.reset();
+        submitDeadline_.reset();
+        turnOver();
+        lost(prompt, "the Return did not take twice");
+        dropStuck("", false);
+        attention("stuck", text.substr(0, 40));
+        return;
+    }
+    returnFailed_ = true;
+    notDelivered("Claude Code did not take the Return for:\n" + shown, false, false, reason);
     attention("stuck", text.substr(0, 40));
 }
 

@@ -68,6 +68,7 @@ public:
     bool confirmsDelivery() const override { return verify_; }
 
 protected:
+    bool restartNow() const;
     void submit(const Prompt &prompt) override;
     void terminate();
     bool stopping_ = false; // `stop` asked for the end
@@ -92,7 +93,8 @@ private:
     void modeDone(const std::string &state, const std::string &error = {});
     void delivered();
     void dropQueued(const std::string &text);
-    void notDelivered(const std::string &screen, bool retry, bool quiet = false);
+    void notDelivered(const std::string &screen, bool retry, bool quiet = false, const std::string &reason = "");
+    void dropStuck(const std::string &why, bool fromQueue = true);
     void revealRetry();
     void lost(const Prompt &prompt, const std::string &why);
     void unblock();
@@ -189,6 +191,9 @@ private:
     std::optional<Clock::time_point> typedDeadline_;
     bool snapshotPending_ = false;
     bool blocked_ = false;
+    bool blockedByReturn_ = false; // blocked because Claude Code did not take a Return (the prompt was tried once)
+    bool returnFailed_ = false;
+    std::string blockReason_; // dialogInfo.reason of that screen dialog: "update-installed"
     bool quietRetry_ = false; // blocked by a failed typed check that is retried: the app sees busy, no dialog
     std::string quietGist_;
     Clock::time_point quietUntil_{};

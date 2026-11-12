@@ -28,6 +28,7 @@ struct Prompt {
     bool agent = false; // an agent message the owner released ([Message ...] first line)
     bool modelSwitch = false; // Claude Code's /model from setModel: its output tells the outcome
     int typedFailures = 0; // typed checks that failed for it in a row
+    int returnFailures = 0; // Returns Claude Code did not take for it: the second one drops it
 };
 
 struct StartRequest {
@@ -153,6 +154,7 @@ public:
 protected:
     // Types the oldest queued prompt when the session's prompt is free.
     bool deliver();
+    bool held_ = false; // a prompt was dropped after refused Returns: the queue is not typed until the owner acts or a hook shows work
     virtual bool canSubmit() const { return true; }
     virtual void submit(const Prompt &prompt) = 0;
 

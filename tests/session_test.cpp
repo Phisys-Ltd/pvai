@@ -1683,6 +1683,57 @@ esac
         hook("wstuck", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "stuck-1"}, {"prompt", "eins"}});
         hook("wstuck", {{"hook_event_name", "Stop"}, {"session_id", "stuck-1"}, {"last_assistant_message", "Eins."}});
         check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle again");
+        // (b2) the same prompt fails twice: dropped, not typed a third time;
+        // the prompt behind it is held back until Claude Code works again
+        a.send({{"type", "prompt"}, {"ref", 90}, {"session", "wstuck"}, {"text", "zwei"}});
+        check(sw.next("type").value("text", "") == "zwei", "a prompt is typed");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        sw.send({{"type", "submitted"}, {"ok", false}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("dialog", json()) == "screen"; }).empty(), "first failure: a screen dialog");
+        a.send({{"type", "prompt"}, {"ref", 91}, {"session", "wstuck"}, {"text", "danach"}});
+        a.send({{"type", "answer"}, {"ref", 92}, {"session", "wstuck"}, {"choice", "send"}});
+        check(sw.next("type").value("text", "") == "zwei", "answer send types it once more");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        sw.send({{"type", "submitted"}, {"ok", false}});
+        const json dropped2 = a.next("dropped", [](const json &m) { return m["prompts"][0].value("ref", 0) == 90; }, 3000);
+        check(!dropped2.empty() && dropped2["prompts"][0].value("text", "") == "zwei", "the second failure drops it: " + dropped2.dump());
+        json idle2 = waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle" && s.value("dialog", json()).is_null(); });
+        check(!idle2.empty() && idle2.value("queued", -1) == 1, "idle, no dialog, the next prompt waits: " + idle2.dump());
+        check(sw.next("type", {}, 2000).empty(), "nothing is typed: not zwei again, and danach is held back");
+        hook("wstuck", {{"hook_event_name", "Stop"}, {"session_id", "stuck-1"}, {"last_assistant_message", "x"}});
+        check(sw.next("type").value("text", "") == "danach", "a hook that shows Claude Code working releases the queue");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        hook("wstuck", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "stuck-1"}, {"prompt", "danach"}});
+        hook("wstuck", {{"hook_event_name", "Stop"}, {"session_id", "stuck-1"}, {"last_assistant_message", "Danach."}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle" && s.value("queued", -1) == 0; }).empty(), "idle, queue empty");
+        // (b3) interrupt on the failed-Return dialog drops the prompt
+        a.send({{"type", "prompt"}, {"ref", 93}, {"session", "wstuck"}, {"text", "vier"}});
+        check(sw.next("type").value("text", "") == "vier", "a prompt is typed");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        sw.send({{"type", "submitted"}, {"ok", false}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("dialog", json()) == "screen"; }).empty(), "a screen dialog");
+        a.send({{"type", "interrupt"}, {"ref", 94}, {"session", "wstuck"}});
+        check(!a.next("dropped", [](const json &m) { return m["prompts"][0].value("ref", 0) == 93; }, 3000).empty(), "interrupt drops the stuck prompt");
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle" && s.value("dialog", json()).is_null() && s.value("queued", -1) == 0; }).empty(),
+              "idle, dialog closed");
+        check(sw.next("type", {}, 1500).empty(), "and it is not typed again");
+        // (b4) the update notice: a reason in the dialog, restart accepted
+        a.send({{"type", "prompt"}, {"ref", 95}, {"session", "wstuck"}, {"text", "fuenf"}});
+        check(sw.next("type").value("text", "") == "fuenf", "a prompt is typed");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        sw.send({{"type", "submitted"}, {"ok", false}, {"screen", "\xE2\x9C\x94 Update installed \xC2\xB7 Restart to update\n\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\n\xE2\x9D\xAF fuenf\n\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80"}});
+        json upd = waitSession(a, "wstuck", [](const json &s) { return s.value("dialog", json()) == "screen"; });
+        check(!upd.empty() && upd["dialogInfo"].value("reason", "") == "update-installed", "the dialog says why: " + upd.dump());
+        check(readFile(daemonLog).find("installed an update and needs a restart") != std::string::npos, "the log says so");
+        a.send({{"type", "restart"}, {"ref", 96}, {"session", "wstuck"}});
+        check(!a.next("restarting", {}, 2000).empty(), "restart is accepted from that state");
+        check(!sw.next("restart", {}, 2000).empty(), "the wrapper restarts");
+        hook("wstuck", {{"hook_event_name", "SessionStart"}, {"session_id", "stuck-1"}, {"source", "resume"}, {"transcript_path", stuckTr}});
+        check(sw.next("type").value("text", "") == "fuenf", "the queued prompt goes in after the restart");
+        sw.send({{"type", "typed"}, {"ok", true}});
+        hook("wstuck", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "stuck-1"}, {"prompt", "fuenf"}});
+        hook("wstuck", {{"hook_event_name", "Stop"}, {"session_id", "stuck-1"}, {"last_assistant_message", "Fuenf."}});
+        check(!waitSession(a, "wstuck", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle again");
         a.send({{"type", "prompt"}, {"ref", 85}, {"session", "wstuck"}, {"text", "/context"}});
         check(sw.next("type").value("text", "") == "/context", "a command is typed");
         sw.send({{"type", "typed"}, {"ok", true}});

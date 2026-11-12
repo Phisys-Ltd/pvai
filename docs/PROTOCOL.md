@@ -192,7 +192,20 @@ daemon knows every live one on its host.
   prompt box (or the dialog's first lines), up to 4 lines and 300 bytes; when
   the prompt that did not go in stands unsent in the box (since 0.5.72) it
   is `The prompt stands in the box, not sent: ` and its first 60 characters
-  instead, and `dialogInfo.text` stays the screen. `answer` `send` types the first queued prompt without the free-box check
+  instead, and `dialogInfo.text` stays the screen. A prompt whose Return
+  Claude Code did not take (`submitted` with `ok: false`) is typed again at
+  most once, after an `answer` (`allow`, `send`) or `clearInput` (since next
+  version, 0.5.80; before, every action of the owner typed it again and
+  again). If the Return fails a second time the prompt is `dropped` (the app
+  may offer a resend) and never typed again, `stuck` is raised as before, and
+  the session is `idle` with the dialog closed. What is still queued then is
+  not typed until the owner acts (`clearInput`, a new `prompt`, `restart`) or
+  a hook shows Claude Code working. `interrupt` or `answer` `deny` on the
+  dialog of such a failed Return drops its prompt the same way, without a
+  second try. When the screen at that Return shows "Restart to update"
+  (Claude Code installed an update and ignores Returns until it restarts),
+  `dialogInfo.reason` is `update-installed` and `restart` is accepted from
+  that dialog; the queued prompt goes in after the restart. `answer` `send` types the first queued prompt without the free-box check
   (the owner sees that the prompt is free and the box was not recognised).
   Since 0.5.71 the wrapper still never presses Return into something that is
   not the paste: it refuses (`typed` `ok: false`) while a `screen` dialog
@@ -263,7 +276,7 @@ daemon knows every live one on its host.
   Claude Code has started) or `screen` (since 0.5.13: a dialog no hook
   reports, such as a picker or a notice to confirm, read off the
   terminal of a `pvai run` of 0.5.13 or later), else `null`.
-- `dialogInfo`: while `dialog` is set, what it is about, else `null`:
+- `dialogInfo`: while `dialog` is set, what it is about, else `null` (a `screen` dialog of a failed Return also has `reason: "update-installed"` since 0.5.80, see "Delivery"):
   ```json
   {"tool": "Bash", "text": "git push origin main", "description": "Push the branch",
    "message": "Claude needs your permission to use Bash"}
@@ -522,7 +535,7 @@ Daemon to app:
 | `projects` | `dirs: [path]` | most recently used first |
 | `browse` | `path`, `dirs: [name]`, `ok` | sorted, hidden ones left out; `ok: false` when `path` cannot be read |
 | `say` | `session`, `text`, `voice` | a turn ended; `text` is what to speak; `voice` tells whether the turn counts as spoken, or its answer has a 🔊 line (see "What gets spoken") |
-| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the last lines above the prompt box, or the dialog's first lines). Also `kind: "login"` (the assistant's login is gone or no longer works, for Claude Code, Codex and Kimi; see "Login problems"; `text` is a fixed sentence such as "Codex is not logged in.") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models"); since 0.5.50 `kind: "limited"`: a Claude Code session hit its usage limit, `text` is Claude Code's message (see "Usage limit"); since 0.5.63 `kind: "stuck"`: sent when the wrapper reports that Claude Code did not act on the Return (`submitted` with `ok: false`, see `register`): for a slash or shell command the box was emptied and the session is idle again; for a prompt it was typed a second time and failed again, and it waits at the front of the queue behind the `screen` dialog; `text` is the first 40 characters |
+| `attention` | `session`, `kind`, `text` | the session started waiting on a dialog; `kind` as `dialog`; `text` is Claude Code's notification message (for `trust`: the folder; for `screen`: the last lines above the prompt box, or the dialog's first lines). Also `kind: "login"` (the assistant's login is gone or no longer works, for Claude Code, Codex and Kimi; see "Login problems"; `text` is a fixed sentence such as "Codex is not logged in.") and, since 0.5.18, `kind: "ended"`: a Claude Code session the app started ended within 90 s or with an error, not by `stop`; `text` is the last lines its screen showed (up to 10, such as "command not found" or "Not logged in"), or the exit status; the session leaves `sessions` as usual. Since 0.5.34 also `kind: "model"`: the assistant changed the model on its own (see "Models"); since 0.5.50 `kind: "limited"`: a Claude Code session hit its usage limit, `text` is Claude Code's message (see "Usage limit"); since 0.5.63 `kind: "stuck"`: sent when the wrapper reports that Claude Code did not act on the Return (`submitted` with `ok: false`, see `register`): for a slash or shell command the box was emptied and the session is idle again; for a prompt the first failure leaves it at the front of the queue behind the `screen` dialog, and the second failure of the same prompt (since 0.5.80) drops it (`dropped`) and leaves the session `idle`; `text` is the first 40 characters |
 | `history` | `session`, `entries: [Entry]` | answer to `subscribe`, oldest first; sent again, to every subscriber, when the session moves to another transcript (`/clear`): the view starts over |
 | `usage` | `session`, `usage` | the session's `usage` changed (not sent for a change of `costUsd` alone) |
 | `conversations` | `assistant`, `cwd`, `conversations: [Conversation]` | answer to `conversations` |
@@ -1259,7 +1272,9 @@ new version by starting again; `restart` does that without losing the
 conversation or the tab:
 
 - Only a `restartable` session in `idle` without a `draft`; a running turn,
-  an open dialog or the owner's unsent words are refused with `busy`.
+  an open dialog or the owner's unsent words are refused with `busy`. The one
+  dialog that may be left is the `screen` of a failed Return with
+  `dialogInfo.reason` `update-installed` (since next version, 0.5.80).
 - The wrapper ends Claude Code (SIGHUP, after 5 s SIGKILL) and starts it
   again in a fresh pseudo-terminal of the same `pvai run`, with the same
   arguments except that `--continue` and `--resume [id]` give way to
