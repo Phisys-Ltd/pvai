@@ -1,3 +1,20 @@
+pvai (0.5.80-1) trixie; urgency=medium
+
+  * Claude Code questions with option previews are answered with the keys
+    Claude Code expects (digit plus Return), the review is submitted with 1,
+    and the previews are passed to the app; typed answers are refused on
+    preview questions.
+  * A prompt whose Return Claude Code does not take is typed again at most
+    once; a second failure, or an interrupt or deny on that dialog, drops it,
+    and the rest of the queue waits until the owner acts.
+  * When Claude Code has installed an update and ignores Returns ("Restart
+    to update"), the dialog says so (reason update-installed) and the session
+    can be restarted from it.
+  * An API error with an HTTP status other than 401 (a Cloudflare 403 page)
+    no longer counts as a login failure.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 13 Nov 2026 11:33:02 +0100
+
 pvai (0.5.79-1) trixie; urgency=medium
 
   * Subagents stopped with TaskStop no longer show as running: a killed,
