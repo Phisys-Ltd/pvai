@@ -910,7 +910,9 @@ sentence) and a `start` refuses what it knows is not logged in:
 - Claude Code: from the transcript, an assistant line with
   `isApiErrorMessage: true` and `error: "authentication_failed"` (or
   `apiError` `authentication_failed`/`authentication_error`, or
-  `apiErrorStatus: 401`) written in the last ten minutes; only these fields
+  `apiErrorStatus: 401`) written in the last ten minutes; since 0.5.80 a
+  numeric `apiErrorStatus` other than 401 (a Cloudflare 403 block page) is
+  none, whatever `error` says; only these fields
   count, never what the text says, so an answer that quotes "Please run
   /login" is none. From the screen: the footer, the rows under the prompt
   box's bottom rule, says `Not logged in · Run /login`; the wrapper reports

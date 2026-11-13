@@ -531,8 +531,12 @@ void TranscriptTail::take(const json &line, std::vector<json> &out)
         if (flag(line, "isApiErrorMessage")) {
             const json status = member(line, "apiErrorStatus");
             const std::string error = str(line, "error"), apiError = str(line, "apiError");
-            if (error == "authentication_failed" || apiError == "authentication_failed" || apiError == "authentication_error"
-                || (status.is_number() && status == 401)) {
+            // A numeric status other than 401 (a Cloudflare 403 page is written
+            // with error "authentication_failed" too) is no login problem.
+            const bool otherStatus = status.is_number() && status != 401;
+            if (!otherStatus
+                && (error == "authentication_failed" || apiError == "authentication_failed" || apiError == "authentication_error"
+                    || (status.is_number() && status == 401))) {
                 ++authFailures_;
                 authFailedAt_ = str(line, "timestamp");
             }

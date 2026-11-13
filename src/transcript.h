@@ -107,7 +107,8 @@ public:
     // them: an assistant line with `isApiErrorMessage` and an authentication
     // failure (`error` "authentication_failed", `apiErrorStatus` 401) counts in
     // authFailures(); any other assistant line of the conversation itself is a
-    // reply. Only these structured fields count, never the words of a text, so
+    // reply. A numeric `apiErrorStatus` other than 401 (a Cloudflare 403) is none.
+    // Only these structured fields count, never the words of a text, so
     // an answer that quotes the error is none.
     std::size_t authFailures() const { return authFailures_; }
     const std::string &authFailedAt() const { return authFailedAt_; }

@@ -347,6 +347,14 @@ int main()
         << R"({"type":"assistant","uuid":"a75","isApiErrorMessage":true,"apiErrorStatus":401,"message":{"content":[{"type":"text","text":"Unauthorized"}]}})" "\n";
     kinds();
     check(tail.authFailures() == 2 && tail.replies() == 1, "a limit is none; a 401 API error is one");
+    std::ofstream(auth, std::ios::app)
+        << R"({"type":"assistant","uuid":"a76","isApiErrorMessage":true,"error":"authentication_failed","apiErrorStatus":403,"message":{"content":[{"type":"text","text":"Please run /login · API Error: 403 Attention Required! | Cloudflare"}]}})" "\n";
+    kinds();
+    check(tail.authFailures() == 2, "a 403 Cloudflare block is no auth failure");
+    std::ofstream(auth, std::ios::app)
+        << R"({"type":"assistant","uuid":"a77","isApiErrorMessage":true,"error":"authentication_failed","apiErrorStatus":401,"message":{"content":[{"type":"text","text":"x"}]}})" "\n";
+    kinds();
+    check(tail.authFailures() == 3, "a 401 authentication_failed still counts");
 
     // A transcript is written by another program: null or wrongly typed
     // fields end a line's reading, never the daemon's.
