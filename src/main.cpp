@@ -61,6 +61,7 @@ const char *kUsage =
     "       pvai forget DIR ID                         delete an ended Claude Code conversation in DIR for good\n"
     "       pvai clear-input SESSION                   empty a session's prompt box (a draft, a shell command)\n"
     "       pvai stop SESSION                          end a session started with start\n"
+    "       pvai interrupt SESSION                     cancel the running turn or a hung request, the session stays (Esc)\n"
     "       pvai send [--voice] SESSION TEXT           type TEXT into a session (for tests)\n"
     "       pvai propose [--reply ID] HOST/SESSION [TEXT]\n"
     "                                                  suggest a message to another session; the owner releases it\n"
@@ -323,12 +324,12 @@ int localClient(const json &first, bool follow, bool startDaemon = false)
     const Talk talk = talkToDaemon(startDaemon, true, first, follow ? -1 : 3000, [&](Conn &, const json &message) {
         const std::string type = message.is_object() ? message.value("type", "") : "";
         const bool result = type == "accepted" || type == "answered" || type == "inputCleared" || type == "forgotten" || type == "started"
-                         || type == "stopping" || type == "rejected";
+                         || type == "stopping" || type == "interrupting" || type == "rejected";
         // A request prints its result only, not the welcome, sessions and
         // proposals the daemon sends every client first.
         if (follow || first.is_null() || result)
             std::cout << message.dump() << std::endl;
-        if (!follow && (type == "accepted" || type == "answered" || type == "inputCleared" || type == "forgotten" || type == "started" || type == "stopping")) {
+        if (!follow && (type == "accepted" || type == "answered" || type == "inputCleared" || type == "forgotten" || type == "started" || type == "stopping" || type == "interrupting")) {
             status = 0;
             return true;
         }
@@ -977,6 +978,8 @@ int main(int argc, char **argv)
             return localClient({{"type", "clearInput"}, {"ref", "cli"}, {"session", args[1]}}, false);
         if (verb == "stop" && args.size() == 2)
             return localClient({{"type", "stop"}, {"ref", "cli"}, {"session", args[1]}}, false);
+        if (verb == "interrupt" && args.size() == 2)
+            return localClient({{"type", "interrupt"}, {"ref", "cli"}, {"session", args[1]}}, false);
         if (verb == "daemon" && args.size() >= 2 && (args[1] == "stop" || args[1] == "restart")
             && (args.size() == 2 || (args.size() == 3 && args[2] == "--force")))
             return runDaemonControl(args[1] == "restart", args.size() == 3);

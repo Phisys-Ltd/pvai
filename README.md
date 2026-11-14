@@ -62,6 +62,7 @@ pvai pair                           # a link and QR code for one device, 10 minu
 pvai devices / pvai revoke <name>   # paired devices
 pvai answer <session> allow|deny     # the dialog it waits on
 pvai clear-input <session>           # empty its prompt box (a draft, a command left in shell mode)
+pvai interrupt <session>             # cancel the running turn or a hung request, the session stays (Esc; since 0.5.81)
 pvai forget <dir> <id>               # delete an ended Claude Code conversation for good
 pvai sessions                        # what runs on this host
 pvai watch                           # what an app would see, for checks
