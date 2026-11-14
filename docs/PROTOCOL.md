@@ -458,8 +458,12 @@ questions with their choices, and `answer` takes them:
 
 Claude Code shows one question at a time; `current` is its index, and
 equals the number of questions on the review that comes after the last
-of several ("Submit answers" / "Cancel"). A single question has no review:
-its answer ends the dialog. `answer` choices:
+of several ("Submit answers" / "Cancel"). Since 0.5.81 a single
+multi-select question has that review too (`current` becomes 1 after
+`next`; the dialog stays open and `allow` submits it; before, the daemon
+took Tab for the end and the session hung on the open review). A single
+single-select question has no review: its answer ends the dialog.
+`answer` choices:
 
 - `option:<n>`: the n-th choice (from 1) of the current question. Single
   select: picked, on to the next question. Multi select: toggled, `selected`

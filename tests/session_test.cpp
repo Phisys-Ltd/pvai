@@ -1933,6 +1933,26 @@ esac
         check(answer(73, "allow") == "answered" && wrapperKeys(qw) == "1", "review allow: 1");
         hook("wq", {{"hook_event_name", "Stop"}, {"session_id", "q-1"}, {"last_assistant_message", "Ok."}});
         check(!waitSession(a, "wq", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "the turn ends again");
+
+        // One multi-select question still has a review: Tab shows it, the dialog stays open until allow types 1.
+        hook("wq", {{"hook_event_name", "UserPromptSubmit"}, {"session_id", "q-1"}, {"prompt", "frag3"}});
+        const json mq = json::array(
+            {{{"question", "Which colors?"}, {"header", "Pick"}, {"multiSelect", true},
+              {"options", json::array({{{"label", "Red"}, {"description", ""}}, {{"label", "Green"}, {"description", ""}}})}}});
+        hook("wq", {{"hook_event_name", "PermissionRequest"}, {"session_id", "q-1"}, {"tool_name", "AskUserQuestion"},
+                    {"tool_input", {{"questions", mq}}}});
+        waitSession(a, "wq", [](const json &s) { return s.value("dialog", json()) == "question"; });
+        check(answer(80, "option:1") == "answered" && wrapperKeys(qw) == "1", "single multi: a digit toggles");
+        check(answer(81, "next") == "answered" && wrapperKeys(qw) == "\t", "single multi: next is Tab");
+        const json mrev = waitSession(a, "wq", [](const json &s) { return sub(s, "dialogInfo").value("current", -1) == 1; });
+        check(!mrev.empty() && mrev.value("dialog", json()) == "question" && mrev.value("state", "") == "waiting",
+              "single multi: the review keeps the dialog open: " + mrev.dump());
+        check(answer(82, "option:1") == "bad-choice", "single multi: no choice on the review");
+        check(answer(83, "allow") == "answered" && wrapperKeys(qw) == "1", "single multi: allow on the review types 1");
+        check(!waitSession(a, "wq", [](const json &s) { return s.value("state", "") == "busy" && s.value("dialog", json()).is_null(); }).empty(),
+              "single multi: busy after Submit");
+        hook("wq", {{"hook_event_name", "Stop"}, {"session_id", "q-1"}, {"last_assistant_message", "Ok."}});
+        check(!waitSession(a, "wq", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "single multi: the turn ends");
     }
 
     // A wrapper that registers again after a daemon restart: busy when its

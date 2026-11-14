@@ -69,6 +69,16 @@ std::string toolText(const json &input)
     return input.dump();
 }
 
+// Claude Code ends the dialog with a review ("Submit answers" / "Cancel")
+// after several questions, and also after a single multi-select question
+// (Tab leads there); a single single-select question is done with its digit.
+bool hasReview(const json &questions)
+{
+    if (!questions.is_array() || questions.empty())
+        return false;
+    return questions.size() > 1 || flag(questions[0], "multiSelect");
+}
+
 // True when any choice of the question carries a preview: Claude Code then
 // draws it side by side, where a digit only moves the highlight.
 bool hasPreview(const json &question)
@@ -407,7 +417,7 @@ std::string ClaudeSession::answer(const std::string &choice)
     if (choice == "allow" && dialog_ == "question" && dialogInfo_.is_object() && dialogInfo_.contains("questions")
         && dialogInfo_["questions"].is_array() && !dialogInfo_["questions"].empty()) {
         const int count = static_cast<int>(dialogInfo_["questions"].size());
-        const bool review = count > 1 && dialogInfo_.value("current", 0) >= count;
+        const bool review = hasReview(dialogInfo_["questions"]) && dialogInfo_.value("current", 0) >= count;
         if (review) {
             wrapper_.send({{"type", "keys"}, {"data", "1"}});
             dialog_.clear();
@@ -447,8 +457,10 @@ std::string ClaudeSession::answer(const std::string &choice)
 // multi-select question, the choice after the last opens a field for
 // typed words. With previews (single select) a digit only moves the
 // highlight: the digit and Return go paced, and there is no typed answer.
-// With more than one question a review comes last, which `allow` submits
-// and `deny` cancels.
+// A review comes last after more than one question and also after a single
+// multi-select question (Tab shows "Review your answers"; the dialog stays
+// open until `allow` types 1 there); `allow` submits it and `deny` cancels.
+// A single single-select question has no review: its answer ends the dialog.
 std::string ClaudeSession::answerQuestion(const std::string &choice)
 {
     json &questions = dialogInfo_["questions"];
@@ -506,13 +518,14 @@ std::string ClaudeSession::answerQuestion(const std::string &choice)
     return {};
 }
 
-// One question done: the next one, the review after the last of several;
-// a single question is done with its answer and the turn goes on.
+// One question done: the next one, the review after the last of several or
+// after a single multi-select question; a single single-select question is
+// done with its answer and the turn goes on.
 void ClaudeSession::questionAnswered(bool advance)
 {
     const int count = static_cast<int>(dialogInfo_["questions"].size());
     const int next = dialogInfo_.value("current", 0) + (advance ? 1 : 0);
-    if (next >= count && count == 1) {
+    if (next >= count && !hasReview(dialogInfo_["questions"])) {
         dialog_.clear();
         state_ = "busy";
     } else {
