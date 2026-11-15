@@ -335,7 +335,8 @@ int localClient(const json &first, bool follow, bool startDaemon = false, int wa
             return true;
         }
         // An effort switch answers when Claude Code has run it: done is 0, failed 1.
-        if (!follow && type == "effort" && message.value("ref", json()) == json("cli") && message.value("state", "") != "") {
+        if (!follow && type == "effort" && message.value("ref", json()) == json("cli") && message.value("session", "") == first.value("session", "")
+            && message.value("state", "") != "") {
             status = message.value("state", "") == "done" ? 0 : 1;
             return true;
         }
