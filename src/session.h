@@ -26,7 +26,7 @@ struct Prompt {
     bool voice = false;
     json ref; // the app's `ref`, for `delivered`
     bool agent = false; // an agent message the owner released ([Message ...] first line)
-    bool modelSwitch = false; // Claude Code's /model from setModel: its output tells the outcome
+    bool modelSwitch = false; // Claude Code's /model or /effort from setModel or setEffort: its output tells the outcome
     int typedFailures = 0; // typed checks that failed for it in a row
     int returnFailures = 0; // Returns Claude Code did not take for it: the second one drops it
 };
@@ -120,6 +120,12 @@ public:
     // Switches the session's model (one of its backend's `models`, or any
     // name the assistant takes); the result follows as a `model` event.
     virtual std::string setModel(const std::string &, const json &) { return "not-supported"; }
+    // The effort levels this session's assistant takes (its backend's
+    // `efforts`), empty when it has none.
+    virtual json efforts() const { return json::array(); }
+    // Switches the session's effort (one of `efforts`); the result follows
+    // as an `effort` event.
+    virtual std::string setEffort(const std::string &, const json &) { return "not-supported"; }
     virtual std::string stop() = 0;
     virtual void interrupt() = 0;
     // Ends the session's process and starts it again, going on with the
@@ -211,6 +217,7 @@ protected:
     }
     json usage_;             // context window, rate limits, model, cost, version
     json mode_;              // the permission mode's id, null when unknown
+    json effort_;            // the effort level, null when unknown
 
     // A mode change is done or failed (`error`): every app hears it.
     void modeEvent(const json &ref, const std::string &state, const std::string &error = {});
@@ -219,6 +226,10 @@ protected:
     // usage.model moved: the new one, and when the assistant changed it on
     // its own (a limit, a fallback), an `attention` of kind "model".
     void noteModel(const std::string &model, const std::string &why = {});
+    // An effort change is done or failed: every app hears it.
+    void effortEvent(const json &ref, const std::string &effort, const std::string &state, const std::string &error = {});
+    // The effort level moved (a switch, the owner's /effort, a thread's settings).
+    void noteEffort(const json &effort);
 
 private:
     bool ended_ = false;
@@ -272,6 +283,7 @@ public:
     virtual std::string title() const = 0; // for the app: "Claude Code"
     virtual json models() const = 0;       // what `start` can ask for
     virtual json modes() const { return json::array(); } // [{id, name}] a session's mode can be
+    virtual json efforts() const { return json::array(); } // the effort levels a session can be set to
     virtual bool available() const = 0;    // installed on this host, or sessions of it can come
     // `start` can start it: its program is on this host.
     virtual bool installedHere() const { return available(); }

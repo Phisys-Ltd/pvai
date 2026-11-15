@@ -312,8 +312,10 @@ void ClaudeSession::markSlash(const Prompt &prompt)
     drain();
     slashPending_ = true;
     // A typed "/model <name>" ends like the app's switch: on Claude Code's output.
-    const bool model = prompt.modelSwitch || typedModel(prompt.text);
+    const bool effort = prompt.modelSwitch && prompt.text.rfind("/effort ", 0) == 0;
+    const bool model = (prompt.modelSwitch && !effort) || typedModel(prompt.text);
     slashModel_ = model;
+    slashEffort_ = effort;
     if (model && !prompt.modelSwitch)
         host_.log(id_ + ": typed /model recognised: " + prompt.text.substr(0, 60));
     slashShell_ = prompt.text[0] == '!';
@@ -322,9 +324,9 @@ void ClaudeSession::markSlash(const Prompt &prompt)
     slashText_ = prompt.text;
     slashCompact_ = prompt.text == "/compact" || prompt.text.rfind("/compact ", 0) == 0;
     compactMark_ = tail_.compactions();
-    // A /model that goes in has 30 s to show its output (see the tick).
+    // A /model or /effort that goes in has 30 s to show its output (see the tick).
     modelAt_.reset();
-    if (model)
+    if (model || effort)
         modelAt_ = Clock::now() + kModelTimeout;
 }
 
@@ -593,6 +595,7 @@ std::string ClaudeSession::restart()
     limited_ = nullptr;
     stopCheck_.reset();
     modelDone("failed", "ended");
+    effortDone("failed", "ended");
     escapeChecks_.clear();
     submitDeadline_.reset();
     changed();
@@ -629,6 +632,37 @@ void ClaudeSession::modelDone(const std::string &state, const std::string &error
     modelEvent(ref, model, state, error);
 }
 
+// Claude Code's own /effort, queued the same way; the answer waits for its
+// output in the transcript ("Set effort level to ...").
+std::string ClaudeSession::setEffort(const std::string &effort, const json &ref)
+{
+    if (!effortTarget_.empty())
+        return "busy";
+    effortTarget_ = effort;
+    effortRef_ = ref;
+    host_.log(id_ + ": effort switch requested: " + effort.substr(0, 60));
+    Prompt command{"/effort " + effort, false, json()};
+    command.modelSwitch = true;
+    prompt(command);
+    return {};
+}
+
+void ClaudeSession::effortDone(const std::string &state, const std::string &error)
+{
+    if (effortTarget_.empty())
+        return;
+    const std::string effort = effortTarget_;
+    const json ref = effortRef_;
+    effortTarget_.clear();
+    effortRef_ = nullptr;
+    slashEffort_ = false;
+    if (!slashModel_)
+        modelAt_.reset();
+    if (state == "done")
+        noteEffort(effort);
+    effortEvent(ref, effort, state, error);
+}
+
 bool ClaudeSession::restartNow() const
 {
     if (state_ == "idle" && !draft_)
@@ -653,6 +687,7 @@ std::string ClaudeSession::clear()
 void ClaudeSession::terminate()
 {
     modelDone("failed", "ended");
+    effortDone("failed", "ended");
     wrapper_.send({{"type", "terminate"}});
 }
 
@@ -909,6 +944,9 @@ void ClaudeSession::onStatus(const json &status)
         oldWithoutCost.erase("costUsd");
     const bool news = withoutCost != oldWithoutCost;
     usage_ = usage;
+    // The status line carries the level in force: also the owner's own /effort.
+    if (const json level = pick(pick(status, "effort"), "level"); level.is_string())
+        noteEffort(level);
     if (news)
         usageChanged();
 }
@@ -1155,6 +1193,8 @@ void ClaudeSession::onScreen(const std::string &text, bool prompt, const std::st
                 slashPending_ = false;
                 if (slashModel_)
                     modelDone("done");
+                if (slashEffort_)
+                    effortDone("done");
                 state_ = "idle";
             }
             deliver();
@@ -1177,6 +1217,7 @@ void ClaudeSession::onExited(int status, const std::string &screen)
 {
     host_.log(id_ + ": claude exited with " + std::to_string(status));
     modelDone("failed", "ended");
+    effortDone("failed", "ended");
     if (!detached() || stopping_)
         return;
     if (status == 0 && Clock::now() - began_ > std::chrono::seconds(90))
@@ -1373,6 +1414,8 @@ void ClaudeSession::endSlash()
     slashPending_ = false;
     if (slashModel_)
         modelDone("failed", "interrupted");
+    if (slashEffort_)
+        effortDone("failed", "interrupted");
 }
 
 bool ClaudeSession::typedPause() const
@@ -1493,6 +1536,8 @@ void ClaudeSession::onSubmitted(bool ok, const std::string &why, const std::stri
         slashPending_ = false;
         if (slashModel_)
             modelDone("failed", "did not run");
+        if (slashEffort_)
+            effortDone("failed", "did not run");
         if (state_ == "busy") {
             state_ = "idle";
             turnOver();
@@ -1603,10 +1648,13 @@ void ClaudeSession::tick(Clock::time_point now)
         // The /model shows no output and no dialog the daemon knows of (an
         // old wrapper cannot say): it has failed, and the session is free.
         modelAt_.reset();
-        if (slashPending_ && slashModel_) {
+        if (slashPending_ && (slashModel_ || slashEffort_)) {
             slashPending_ = false;
-            host_.log(id_ + ": /model output: no answer");
-            modelDone("failed", "no answer");
+            host_.log(id_ + ": " + slashText_.substr(0, 40) + " output: no answer");
+            if (slashModel_)
+                modelDone("failed", "no answer");
+            if (slashEffort_)
+                effortDone("failed", "no answer");
             if (state_ == "busy") {
                 state_ = "idle";
                 turnOver();
@@ -1668,7 +1716,7 @@ std::optional<Clock::time_point> ClaudeSession::deadline() const
     if (quietRetry_)
         next = std::min(next, quietUntil_);
     if (idleScreenSince_) {
-        if (slashPending_ && !slashModel_)
+        if (slashPending_ && !slashModel_ && !slashEffort_)
             next = std::min(next, quietFrom() + screenQuiet(slashShell_ ? kShellQuiet : kSlashQuiet));
         if (limited_.is_object() && !member(limited_, "resetsAt").is_number())
             next = std::min(next, *idleScreenSince_ + screenQuiet(kLimitQuiet));
@@ -1762,6 +1810,8 @@ void ClaudeSession::runEscapeChecks(Clock::time_point now)
     slashPending_ = false;
     if (slashModel_ || cleared) // a kept queue still types the /model
         modelDone("failed", "interrupted");
+    if (slashEffort_ || cleared)
+        effortDone("failed", "interrupted");
     deliver();
     changed();
 }
@@ -1834,7 +1884,7 @@ Clock::time_point ClaudeSession::quietFrom() const
 // has its own timeout.)
 bool ClaudeSession::slashAbandoned(Clock::time_point now) const
 {
-    return slashPending_ && !slashModel_ && state_ == "busy" && !inFlight_ && idleScreenSince_
+    return slashPending_ && !slashModel_ && !slashEffort_ && state_ == "busy" && !inFlight_ && idleScreenSince_
         && now - quietFrom() >= screenQuiet(slashShell_ ? kShellQuiet : kSlashQuiet);
 }
 
@@ -1941,6 +1991,14 @@ void ClaudeSession::pollTranscript()
                 modelDone("done");
             else
                 modelDone("failed", out);
+        }
+        if (slashEffort_) {
+            const std::string &out = tail_.lastLocalOutput();
+            host_.log(id_ + ": /effort output: " + out.substr(0, 120));
+            if (out.empty() || out.rfind("Set effort level to", 0) == 0)
+                effortDone("done");
+            else
+                effortDone("failed", out);
         }
         if (state_ == "busy") {
             state_ = "idle";

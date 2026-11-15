@@ -13,6 +13,9 @@
 
 namespace pvai {
 
+// The levels of Claude Code's /effort that a session can be set to.
+inline json claudeEfforts() { return {"low", "medium", "high", "xhigh", "max"}; }
+
 // The oldest `pvai run` that answers `answer`, `clearInput`, `mode`, `model`
 // and `restart` as the daemon expects (0.5.44: the `key` class of `input`,
 // the screen after a prompt that was not typed). Typing works with any.
@@ -61,6 +64,8 @@ public:
                   std::optional<bool> working = std::nullopt);
     std::string setMode(const std::string &mode, const json &ref) override;
     std::string setModel(const std::string &model, const json &ref) override;
+    json efforts() const override { return claudeEfforts(); }
+    std::string setEffort(const std::string &effort, const json &ref) override;
     void onExited(int status, const std::string &screen);
     void onTyped(bool ok, const std::string &screen, const std::string &how = "");
     void onSubmitted(bool ok, const std::string &why = "", const std::string &screen = "");
@@ -112,6 +117,10 @@ private:
     // not with a Stop.
     bool slashPending_ = false;
     bool slashModel_ = false; // the pending slash command is the one setModel queued
+    bool slashEffort_ = false; // ... or the one setEffort queued
+    std::string effortTarget_;
+    json effortRef_;
+    void effortDone(const std::string &state, const std::string &error = {});
     std::string modelTarget_;
     json modelRef_;
     std::optional<Clock::time_point> modelAt_; // the /model in Claude Code is due its output by then
@@ -267,6 +276,7 @@ public:
     std::string name() const override { return "claude"; }
     std::string title() const override { return "Claude Code"; }
     json models() const override { return {"opus", "sonnet", "haiku", "fable"}; }
+    json efforts() const override { return claudeEfforts(); }
     // Sessions come from wrappers whatever the daemon's PATH says.
     bool available() const override { return true; }
     bool installedHere() const override { return !binary().empty(); }

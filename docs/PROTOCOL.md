@@ -356,6 +356,14 @@ daemon knows every live one on its host.
   on", "accept edits on", "auto mode on"), so that a Shift+Tab in the
   terminal shows at once. Codex: the thread's approval policy. Kimi: its
   ACP mode. A change sends a `sessions` update.
+- `effort` (since 0.5.82): the session's effort level, one of its
+  assistant's `efforts` (see "Effort"), `null` when not known or the
+  assistant has none. Claude Code: from the status line input
+  (`effort.level`, so the owner's own `/effort` in the terminal shows
+  too; Claude Code also reports `auto`, which is no `efforts` value).
+  Codex: the thread's reasoning effort (start, resume,
+  `thread/settings/updated`) and a switch. A change sends a `sessions`
+  update.
 - `claudeSession`: Claude Code's own session id once known, else `null`
   (always `null` for Codex). It survives a restart of the daemon (kept
   beside the wrapper's socket) once a hook has named it. With it the
@@ -498,6 +506,7 @@ App to daemon:
 | `forget` | `ref`, `assistant`, `cwd`, `id` | delete an ended conversation for good (see "Ended conversations") |
 | `update` | `ref` | update every assistant on this host to its latest version (see "Versions and updates") |
 | `model` | `ref`, `session`, `model` | (since 0.5.34) switch the session's model; a `model` event follows (see "Models") |
+| `effort` | `ref`, `session`, `effort` | (since 0.5.82, `welcome.effort`) switch the session's effort level to one of its assistant's `efforts`; an `effort` event follows (see "Effort") |
 | `mode` | `ref`, `session`, `mode` | (since 0.5.25) switch the session's permission mode to one of its assistant's `modes`; a `mode` event follows (see "Permission modes") |
 | `install` | `ref`, `assistant` | (since 0.5.24) install an assistant for the daemon's user, only on the owner's click (see "Install and login") |
 | `login` | `ref`, `assistant`, `method` | (since 0.5.24) log an assistant in on this host: a link and a code for the owner (see "Install and login"); `method: "token"` (Claude only, `welcome.tokenLogin`) runs `claude setup-token` instead, see "Claude token login" |
@@ -524,11 +533,11 @@ Daemon to app:
 
 | type | fields | meaning |
 |---|---|---|
-| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer; `tokenLogin: true`: it takes `login` with `method: "token"` and `set-token` |
+| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer; `tokenLogin: true`: it takes `login` with `method: "token"` and `set-token`; `effort: true` (since 0.5.82): it takes `effort`, an older daemon ignores the request without an answer |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (no login on the host, see "Login problems"), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `answer`, `clearInput`, `mode`, `model` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`; to `prompt` also `self-message` (its `from` is the target session itself) |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (no login on the host, see "Login problems"), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `effort`: `unknown-session`, `bad-effort` (not in the assistant's `efforts`), `not-supported` (the assistant has no `efforts`), `busy` (another effort switch is pending); to `answer`, `clearInput`, `mode`, `model`, `effort` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`; to `prompt` also `self-message` (its `from` is the target session itself) |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `renamed` | `ref`, `session`, `label` | the session carries `label` (trimmed) now; the `sessions` list follows |
@@ -550,6 +559,7 @@ Daemon to app:
 | `token-set` | `ref`, `assistant` | answer to `set-token`: the token is stored (it is never sent back); `rejected` otherwise |
 | `logout` | `ref`, `assistant`, `state`, `text`, `error` | a logout's progress, to every app: `state` `running`, then `done` or `failed` (`error` why, also `timed out`); `text` the last line of output |
 | `model` | `ref`, `session`, `model`, `state`, `error` | a model change ended, to every app: `done` or `failed` (see "Models"); `rejected` before (`unknown-session`, `bad-model`, `not-supported`) |
+| `effort` | `ref`, `session`, `effort`, `state`, `error` | (since 0.5.82) an effort change ended, to every app: `done` or `failed` (see "Effort"); `rejected` before (`unknown-session`, `bad-effort`, `not-supported`, `busy`, `stale-wrapper`) |
 | `mode` | `ref`, `session`, `state`, `mode`, `error` | a mode change ended, to every app: `state` `done` (`mode` the new one) or `failed` (`error`: `unavailable`, the mode is not in this session's cycle; `no change on the screen`; Kimi's own words); `rejected` before (`unknown-session`, `unknown-mode`, `not-supported`, `busy`) |
 | `assistants` | `assistants`, `installed` | (since 0.5.24) `welcome.assistants` and `welcome.installed` again, to every app, when an install, a login or a logout changed them |
 | `proposals` | `proposals: [Proposal]` | the agent messages waiting for the owner, sent after `welcome` and after every change (see "Agent messages") |
@@ -864,6 +874,11 @@ order the app should offer them:
  {"name": "kimi", "title": "Kimi Code", "models": ["<a Kimi model>"], "installed": true, "loggedIn": false}]
 ```
 
+Since 0.5.82 an assistant that has an effort setting also lists
+`efforts`, the levels `effort` takes (see "Effort"; Claude Code
+`["low", "medium", "high", "xhigh", "max"]`, Codex `["minimal", "low",
+"medium", "high", "xhigh"]`); Kimi has none and omits the field.
+
 `name` is what `start.assistant`, `conversations.assistant` and
 `Session.assistant` carry; `title` is for people; `models` are the values
 `start` takes as `args: ["--model", m]` (Claude Code's aliases; Codex's
@@ -1046,6 +1061,35 @@ where the assistant says so, the apps get `{"type": "attention", "session",
 "kind": "model", "text": "<old> → <new> (<reason>)"}`: Codex's
 `model/rerouted` (a limit, a capacity or safety reason). Claude Code's
 fallback shows in `usage.model` only (its status line).
+
+## Effort
+
+Since 0.5.82 (`welcome.effort: true`) `{"type": "effort", "ref",
+"session", "effort"}` switches a running session's effort level (how
+hard the assistant thinks); `effort` is one of the session's assistant's
+`welcome.assistants[].efforts`, else `rejected` with `bad-effort`
+(`not-supported` for an assistant that lists none, Kimi). The answer is
+`{"type": "effort", "ref", "session", "effort", "state": "done" |
+"failed", "error"?}` to every app; `Session.effort` shows what runs, with
+a `sessions` update when it changes.
+
+- As for models: a second switch while one is pending is `rejected` with
+  `busy`; a wrapper that reports no version or one older than 0.5.44
+  rejects it with `stale-wrapper`; a `/effort` that shows no output within
+  30 s after it went in fails with `error` `no answer` and the session is
+  idle again.
+- Claude Code: its own `/effort <level>`, queued like a prompt (it goes in
+  when the prompt is free); `done` once its output in the transcript is
+  `Set effort level to <level> ...`, `failed` with Claude Code's message
+  otherwise (e.g. `Invalid argument: ...`). Note that Claude Code saves
+  the level as the owner's default for new sessions (`modelSettings` in
+  `~/.claude/settings.json`), except `max`, which holds for the session
+  only (its output says "(this session only)").
+- Codex: with the next turn (`turn/start` `effort`), holding from there;
+  `done` at once and `Session.effort` is the new level. The levels are the
+  ones Codex's app server has advertised (`model/list`
+  `supportedReasoningEfforts`); a model that does not take one fails the
+  turn as any rejected `turn/start`.
 
 ## Usage limit
 

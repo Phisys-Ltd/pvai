@@ -228,7 +228,7 @@ protected:
             writeNow({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32600}, {"message", "thread/start refused"}}}});
         else if (method == "thread/start")
             reply(id, {{"thread", thread("t-new", params.value("cwd", ""))}, {"approvalPolicy", "on-request"},
-                       {"sandbox", {{"type", "workspaceWrite"}, {"networkAccess", false}}}, {"model", "gpt-test"}});
+                       {"sandbox", {{"type", "workspaceWrite"}, {"networkAccess", false}}}, {"model", "gpt-test"}, {"reasoningEffort", "medium"}});
         else if (method == "thread/list") {
             ++threadListCalls;
             const bool archived = params.value("archived", false);
@@ -437,6 +437,9 @@ esac
               && assistants[2].contains("loggedIn") && assistants[2]["loggedIn"].is_null()
               && assistants[0].value("installed", false) && assistants[1].value("installed", false) && assistants[2].value("installed", false),
           "welcome lists the assistants as objects: " + assistants.dump());
+    check(welcome.value("effort", false) && assistants[0].value("efforts", json()) == json({"low", "medium", "high", "xhigh", "max"})
+              && assistants[1].value("efforts", json()) == json({"minimal", "low", "medium", "high", "xhigh"}) && !assistants[2].contains("efforts"),
+          "welcome announces effort and lists the levels of Claude Code and Codex: " + welcome.dump());
     check(welcome.value("installed", json()) == json({{"claude", "1.0.0"}, {"codex", "5.5.5"}, {"kimi", "2.4.1"}}),
           "welcome.installed: " + welcome.value("installed", json()).dump());
 
@@ -660,21 +663,30 @@ esac
     check(codexModel.value("state", "") == "done" && codexModel.value("model", "") == "gpt-other", "a Codex model is set: " + codexModel.dump());
     a.send({{"type", "model"}, {"ref", 62}, {"session", "t-new"}, {"model", "gpt other; rm"}});
     check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 62; }).value("reason", "") == "bad-model", "a bad model name");
+    check(fresh.value("effort", json()) == "medium", "Session.effort from thread/start: " + fresh.dump());
+    a.send({{"type", "effort"}, {"ref", 63}, {"session", "t-new"}, {"effort", "high"}});
+    const json codexEffort = a.next("effort", [](const json &m) { return m.value("ref", 0) == 63; });
+    check(codexEffort.value("state", "") == "done" && codexEffort.value("effort", "") == "high", "a Codex effort is set: " + codexEffort.dump());
+    check(!waitSession(a, "t-new", [](const json &s) { return s.value("effort", json()) == "high"; }).empty(), "and Session.effort follows");
+    a.send({{"type", "effort"}, {"ref", 64}, {"session", "t-new"}, {"effort", "max"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 64; }).value("reason", "") == "bad-effort", "an effort Codex does not list");
     a.send({{"type", "prompt"}, {"ref", 3}, {"session", "t-new"}, {"text", "hello"}});
     check(a.next("accepted").value("delivery", "") == "typed", "the prompt goes in");
     check(!codex.call("turn/start", [](const json &p) {
               return p.dump().find("hello") != std::string::npos && p.value("approvalPolicy", "") == "never"
-                  && p.value("sandboxPolicy", json()) == json({{"type", "dangerFullAccess"}}) && p.value("model", "") == "gpt-other";
+                  && p.value("sandboxPolicy", json()) == json({{"type", "dangerFullAccess"}}) && p.value("model", "") == "gpt-other"
+                  && p.value("effort", "") == "high";
           }).is_null(),
-          "as turn/start, with approval policy and sandbox of the mode and the model");
+          "as turn/start, with approval policy and sandbox of the mode, the model and the effort");
     codex.send({{"method", "model/rerouted"},
                 {"params", {{"threadId", "t-new"}, {"turnId", "u1"}, {"fromModel", "gpt-other"}, {"toModel", "gpt-small"}, {"reason", "highRiskCyberActivity"}}}});
     const json rerouted = a.next("attention", [](const json &m) { return m.value("kind", "") == "model"; });
     check(rerouted.value("text", "").find("gpt-small") != std::string::npos, "Codex rerouting the model is an attention: " + rerouted.dump());
     check(!waitSession(a, "t-new", [](const json &s) { return sub(s, "usage").value("model", "") == "gpt-small"; }).empty(), "and usage.model follows");
     codex.send({{"method", "thread/settings/updated"},
-                {"params", {{"threadId", "t-new"}, {"threadSettings", {{"approvalPolicy", "on-request"}, {"sandboxPolicy", {{"type", "readOnly"}}}, {"model", "gpt-small"}}}}}});
-    check(!waitSession(a, "t-new", [](const json &s) { return s.value("mode", "") == "read-only"; }).empty(), "settings updates move the mode");
+                {"params", {{"threadId", "t-new"}, {"threadSettings", {{"approvalPolicy", "on-request"}, {"sandboxPolicy", {{"type", "readOnly"}}}, {"model", "gpt-small"}, {"effort", "low"}}}}}});
+    check(!waitSession(a, "t-new", [](const json &s) { return s.value("mode", "") == "read-only" && s.value("effort", json()) == "low"; }).empty(),
+          "settings updates move the mode and the effort");
     codex.send({{"method", "turn/started"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u1"}}}}}});
     codex.send({{"method", "item/completed"},
                 {"params", {{"threadId", "t-new"}, {"item", {{"type", "agentMessage"}, {"id", "i2"}, {"text", "Answer.\n\xF0\x9F\x94\x8A Spoken."}}}}}});
@@ -1037,6 +1049,48 @@ esac
         check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after the queued switch");
     }
 
+    // An effort switch waits for what Claude Code answers to /effort, like the model switch.
+    {
+        {
+            LineClient status;
+            status.send({{"type", "status"}, {"id", "wterm"}, {"status", {{"version", "1.0.0"}, {"model", {{"display_name", "Opus"}}}, {"effort", {{"level", "medium"}}}}}});
+        }
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("effort", json()) == "medium"; }).empty(), "Session.effort from the status line");
+        a.send({{"type", "effort"}, {"ref", 90}, {"session", "wterm"}, {"effort", "bogus"}});
+        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 90; }).value("reason", "") == "bad-effort", "an unknown level is bad-effort");
+        a.send({{"type", "effort"}, {"ref", 91}, {"session", "wterm"}, {"effort", "high"}});
+        check(wrapper.next("type").value("text", "") == "/effort high", "a Claude Code effort switch types /effort");
+        a.send({{"type", "effort"}, {"ref", 92}, {"session", "wterm"}, {"effort", "low"}});
+        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 92; }).value("reason", "") == "busy", "a second effort switch is busy");
+        check(a.next("effort", [](const json &m) { return m.value("ref", 0) == 91; }, 700).empty(), "no answer before Claude Code answers");
+        const std::string running = transcripts + "/running-1.jsonl";
+        auto append = [&](const std::string &text) { std::ofstream(running, std::ios::app) << text; };
+        append(userLine("<command-name>/effort</command-name>")
+               + userLine("<local-command-stdout>Set effort level to high (saved as your default for new sessions): Comprehensive implementation</local-command-stdout>"));
+        const json set = a.next("effort", [](const json &m) { return m.value("ref", 0) == 91; }, 3000);
+        check(set.value("state", "") == "done" && set.value("effort", "") == "high", "Set effort level to ... is done: " + set.dump());
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("effort", json()) == "high" && s.value("state", "") == "idle"; }).empty(),
+              "Session.effort is the new level and the session idle");
+        a.send({{"type", "effort"}, {"ref", 93}, {"session", "wterm"}, {"effort", "max"}});
+        check(wrapper.next("type").value("text", "") == "/effort max", "the next effort switch goes in");
+        append(userLine("<command-name>/effort</command-name>") + userLine("<local-command-stdout>Invalid argument: max. Valid options are: low, medium</local-command-stdout>"));
+        const json failed = a.next("effort", [](const json &m) { return m.value("ref", 0) == 93; }, 3000);
+        check(failed.value("state", "") == "failed" && failed.value("error", "").rfind("Invalid argument", 0) == 0, "Claude Code's refusal is failed: " + failed.dump());
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("effort", json()) == "high" && s.value("state", "") == "idle"; }).empty(),
+              "a failed switch keeps the level");
+        // The owner's own /effort moves it through the status line.
+        {
+            LineClient status;
+            status.send({{"type", "status"}, {"id", "wterm"}, {"status", {{"version", "1.0.0"}, {"model", {{"display_name", "Opus"}}}, {"effort", {{"level", "xhigh"}}}}}});
+        }
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("effort", json()) == "xhigh"; }).empty(), "the status line moves Session.effort");
+        a.send({{"type", "effort"}, {"ref", 94}, {"session", "wterm"}, {"effort", "low"}});
+        check(wrapper.next("type").value("text", "") == "/effort low", "an effort switch for the timeout goes in");
+        const json timedOut = a.next("effort", [](const json &m) { return m.value("ref", 0) == 94; }, 33000);
+        check(timedOut.value("state", "") == "failed" && timedOut.value("error", "") == "no answer", "an /effort with no output fails after 30 s: " + timedOut.dump());
+        check(!waitSession(a, "wterm", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle after the timeout");
+    }
+
     // A /model that shows no output and no dialog fails after 30 s, and the session is free.
     {
         a.send({{"type", "model"}, {"ref", 75}, {"session", "wterm"}, {"model", "opus"}});
@@ -1065,6 +1119,9 @@ esac
         a.send({{"type", "model"}, {"ref", 76}, {"session", "wold"}, {"model", "opus"}});
         check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 76; }).value("reason", "") == "stale-wrapper",
               "a model switch through an unversioned wrapper is stale-wrapper");
+        a.send({{"type", "effort"}, {"ref", 77}, {"session", "wold"}, {"effort", "high"}});
+        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 77; }).value("reason", "") == "stale-wrapper",
+              "an effort switch through an unversioned wrapper is stale-wrapper");
     }
 
     // A Claude Code started from a shell command of this one inherits pvai's

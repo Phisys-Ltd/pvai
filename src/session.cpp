@@ -71,6 +71,23 @@ void Session::noteModel(const std::string &model, const std::string &why)
     changed();
 }
 
+void Session::effortEvent(const json &ref, const std::string &effort, const std::string &state, const std::string &error)
+{
+    json event = {{"type", "effort"}, {"ref", ref}, {"session", id_}, {"state", state}, {"effort", effort}};
+    if (!error.empty())
+        event["error"] = error;
+    host_.broadcast(event);
+}
+
+void Session::noteEffort(const json &effort)
+{
+    const json next = effort.is_string() && !effort.get<std::string>().empty() ? effort : json();
+    if (next == effort_)
+        return;
+    effort_ = next;
+    changed();
+}
+
 void Session::modeEvent(const json &ref, const std::string &state, const std::string &error)
 {
     json event = {{"type", "mode"}, {"ref", ref}, {"session", id_}, {"state", state}, {"mode", mode_}};
@@ -191,6 +208,7 @@ json Session::describe() const
             {"dialogInfo", dialog_.empty() || !dialogInfo_.is_object() ? json() : dialogInfo_},
             {"usage", usage_},
             {"mode", mode_},
+            {"effort", effort_},
             {"claudeSession", nullptr},
             {"wrapperVersion", nullptr}};
 }
@@ -306,8 +324,11 @@ Backend::Backend(Host &host)
 
 json Backend::describe() const
 {
-    return {{"name", name()}, {"title", title()}, {"models", models()}, {"modes", modes()}, {"installed", installedHere()},
-            {"loggedIn", loggedIn_}, {"account", accountName_}};
+    json entry = {{"name", name()}, {"title", title()}, {"models", models()}, {"modes", modes()}, {"installed", installedHere()},
+                  {"loggedIn", loggedIn_}, {"account", accountName_}};
+    if (const json levels = efforts(); !levels.empty())
+        entry["efforts"] = levels;
+    return entry;
 }
 
 void Backend::refreshVersion(std::function<void()> done)

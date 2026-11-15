@@ -773,7 +773,7 @@ private:
         }
         return {{"type", "welcome"}, {"host", hostName()}, {"user", userName()}, {"version", kVersion},
                 {"assistants", assistants}, {"installed", installed}, {"conversations", true},
-                {"peers", true}, {"forget", true}, {"model", true}, {"logout", true}, {"rename", true}, {"tokenLogin", true}};
+                {"peers", true}, {"forget", true}, {"model", true}, {"effort", true}, {"logout", true}, {"rename", true}, {"tokenLogin", true}};
     }
 
     void handle(Peer *peer, const json &message)
@@ -1167,6 +1167,16 @@ private:
                      return std::string("bad-model");
                  return s.setModel(model, ref);
              }},
+            {"effort", nullptr,
+             [](Session &s, const json &m, const json &ref) {
+                 const std::string effort = m.value("effort", "");
+                 const json levels = s.efforts();
+                 if (levels.empty())
+                     return std::string("not-supported");
+                 if (std::find(levels.begin(), levels.end(), json(effort)) == levels.end())
+                     return std::string("bad-effort");
+                 return s.setEffort(effort, ref);
+             }},
             {"answer", "answered", [](Session &s, const json &m, const json &) { return s.answer(m.value("choice", "")); }},
             {"stop", "stopping", [](Session &s, const json &, const json &) { return s.stop(); }},
             {"interrupt", "interrupting",
@@ -1189,12 +1199,12 @@ private:
         if (!session)
             return reject(peer, ref, id, "unknown-session");
         // A wrapper older than kMinWrapperVersion types prompts, no more.
-        static const std::set<std::string> needsWrapper = {"answer", "clearInput", "mode", "model", "restart"};
+        static const std::set<std::string> needsWrapper = {"answer", "clearInput", "mode", "model", "effort", "restart"};
         if (needsWrapper.count(command.type) && session->wrapperTooOld())
             return reject(peer, ref, id, "stale-wrapper");
         // Without a version the wrapper cannot show a /model's dialog: a model
         // change goes through a restart of the session instead.
-        if (std::string(command.type) == "model" && session->wrapperUnversioned())
+        if ((std::string(command.type) == "model" || std::string(command.type) == "effort") && session->wrapperUnversioned())
             return reject(peer, ref, id, "stale-wrapper");
         if (const std::string reason = command.run(*session, message, ref); !reason.empty())
             return reject(peer, ref, id, reason);

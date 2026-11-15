@@ -15,6 +15,11 @@ namespace pvai {
 
 class CodexBackend;
 
+// The reasoning efforts Codex's app server takes. Its protocol only says "a
+// value the model advertises" (model/list supportedReasoningEfforts); these
+// are the levels it has advertised.
+inline json codexEfforts() { return {"minimal", "low", "medium", "high", "xhigh"}; }
+
 class CodexSession : public BufferedSession {
 public:
     CodexSession(Host &host, CodexBackend &backend, const json &thread, bool detached);
@@ -32,9 +37,11 @@ public:
     std::string answer(const std::string &choice) override;
     std::string setMode(const std::string &mode, const json &ref) override;
     std::string setModel(const std::string &model, const json &ref) override;
+    json efforts() const override { return codexEfforts(); }
+    std::string setEffort(const std::string &effort, const json &ref) override;
     // The thread's settings (thread/start and resume answers, settings
     // updates): its mode from approval policy and sandbox, its model.
-    void setSettings(const json &approval, const json &sandbox, const json &model);
+    void setSettings(const json &approval, const json &sandbox, const json &model, const json &effort = json());
     std::string stop() override;
     void interrupt() override;
 
@@ -74,6 +81,7 @@ private:
     std::string approval_;     // a new approval policy for the next turn/start
     json sandbox_;             // a new sandbox policy for it
     std::string model_;        // a new model for it
+    std::string nextEffort_;  // a new reasoning effort for it
 };
 
 class CodexBackend : public RpcBackend {
@@ -83,6 +91,7 @@ public:
     std::string name() const override { return "codex"; }
     std::string title() const override { return "Codex"; }
     json models() const override { return models_; }
+    json efforts() const override { return codexEfforts(); }
     json modes() const override;
     void refreshLogin(std::function<void(bool changed)> done) override;
     void authChanged(const std::string &kind, bool ok) override;

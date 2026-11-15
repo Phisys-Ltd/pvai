@@ -62,6 +62,7 @@ const char *kUsage =
     "       pvai clear-input SESSION                   empty a session's prompt box (a draft, a shell command)\n"
     "       pvai stop SESSION                          end a session started with start\n"
     "       pvai interrupt SESSION                     cancel the running turn or a hung request, the session stays (Esc)\n"
+    "       pvai effort SESSION LEVEL                  set the session's effort level (Claude Code low..max, Codex minimal..xhigh)\n"
     "       pvai send [--voice] SESSION TEXT           type TEXT into a session (for tests)\n"
     "       pvai propose [--reply ID] HOST/SESSION [TEXT]\n"
     "                                                  suggest a message to another session; the owner releases it\n"
@@ -318,19 +319,24 @@ Talk talkToDaemon(bool startDaemon, bool hello, const json &first, int timeoutMs
     }
 }
 
-int localClient(const json &first, bool follow, bool startDaemon = false)
+int localClient(const json &first, bool follow, bool startDaemon = false, int waitMs = 3000)
 {
     int status = 1;
-    const Talk talk = talkToDaemon(startDaemon, true, first, follow ? -1 : 3000, [&](Conn &, const json &message) {
+    const Talk talk = talkToDaemon(startDaemon, true, first, follow ? -1 : waitMs, [&](Conn &, const json &message) {
         const std::string type = message.is_object() ? message.value("type", "") : "";
         const bool result = type == "accepted" || type == "answered" || type == "inputCleared" || type == "forgotten" || type == "started"
-                         || type == "stopping" || type == "interrupting" || type == "rejected";
+                         || type == "stopping" || type == "interrupting" || type == "rejected" || type == "effort";
         // A request prints its result only, not the welcome, sessions and
         // proposals the daemon sends every client first.
         if (follow || first.is_null() || result)
             std::cout << message.dump() << std::endl;
         if (!follow && (type == "accepted" || type == "answered" || type == "inputCleared" || type == "forgotten" || type == "started" || type == "stopping" || type == "interrupting")) {
             status = 0;
+            return true;
+        }
+        // An effort switch answers when Claude Code has run it: done is 0, failed 1.
+        if (!follow && type == "effort" && message.value("ref", json()) == json("cli") && message.value("state", "") != "") {
+            status = message.value("state", "") == "done" ? 0 : 1;
             return true;
         }
         if (!follow && (type == "rejected" || (type == "sessions" && first.is_null()))) {
@@ -980,6 +986,8 @@ int main(int argc, char **argv)
             return localClient({{"type", "stop"}, {"ref", "cli"}, {"session", args[1]}}, false);
         if (verb == "interrupt" && args.size() == 2)
             return localClient({{"type", "interrupt"}, {"ref", "cli"}, {"session", args[1]}}, false);
+        if (verb == "effort" && args.size() == 3)
+            return localClient({{"type", "effort"}, {"ref", "cli"}, {"session", args[1]}, {"effort", args[2]}}, false, false, 35000);
         if (verb == "daemon" && args.size() >= 2 && (args[1] == "stop" || args[1] == "restart")
             && (args.size() == 2 || (args.size() == 3 && args[2] == "--force")))
             return runDaemonControl(args[1] == "restart", args.size() == 3);

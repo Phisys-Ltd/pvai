@@ -225,6 +225,10 @@ void CodexSession::submit(const Prompt &prompt)
         params["model"] = model_;
         model_.clear();
     }
+    if (!compact && !nextEffort_.empty()) {
+        params["effort"] = nextEffort_;
+        nextEffort_.clear();
+    }
     backend_.call(compact ? "thread/compact/start" : "turn/start", params,
                   [&host, id, text](const json &, const json &error) {
                       auto *self = dynamic_cast<CodexSession *>(host.session(id));
@@ -313,7 +317,7 @@ constexpr CodexPreset kCodexPresets[] = {
 
 } // namespace
 
-void CodexSession::setSettings(const json &approval, const json &sandbox, const json &model)
+void CodexSession::setSettings(const json &approval, const json &sandbox, const json &model, const json &effort)
 {
     // Another combination (a granular policy, untrusted, an external
     // sandbox) is none of the presets: no mode.
@@ -330,6 +334,8 @@ void CodexSession::setSettings(const json &approval, const json &sandbox, const 
     }
     if (model.is_string())
         noteModel(model.get<std::string>());
+    if (effort.is_string())
+        noteEffort(effort);
 }
 
 // A preset goes with the next turn/start, approval policy and sandbox
@@ -355,6 +361,15 @@ std::string CodexSession::setModel(const std::string &model, const json &ref)
     model_ = model;
     noteModel(model);
     modelEvent(ref, model, "done");
+    return {};
+}
+
+// The reasoning effort goes with the next turn/start as well.
+std::string CodexSession::setEffort(const std::string &effort, const json &ref)
+{
+    nextEffort_ = effort;
+    noteEffort(effort);
+    effortEvent(ref, effort, "done");
     return {};
 }
 
@@ -530,7 +545,7 @@ void CodexSession::onNotification(const std::string &method, const json &params)
         noteModel(str(params, "toModel"), str(params, "reason").empty() ? "rerouted" : str(params, "reason"));
     } else if (method == "thread/settings/updated") {
         const json settings = member(params, "threadSettings");
-        setSettings(member(settings, "approvalPolicy"), member(settings, "sandboxPolicy"), member(settings, "model"));
+        setSettings(member(settings, "approvalPolicy"), member(settings, "sandboxPolicy"), member(settings, "model"), member(settings, "effort"));
     } else if (method == "turn/started") {
         turnId_ = str(member(params, "turn"), "id");
         turnPending_ = false;
@@ -1038,7 +1053,7 @@ void CodexBackend::adopt(const std::string &id)
             return;
         if (member(result["thread"], "parentThreadId").is_null()) {
             if (CodexSession *session = addSession(result["thread"], false))
-                session->setSettings(member(result, "approvalPolicy"), member(result, "sandbox"), member(result, "model"));
+                session->setSettings(member(result, "approvalPolicy"), member(result, "sandbox"), member(result, "model"), member(result, "reasoningEffort"));
         } else
             noteSubagent(result["thread"]);
     });
@@ -1163,7 +1178,7 @@ void CodexBackend::start(const StartRequest &request, Started done)
             return done({}, failure);
         }
         session->setLabel(label);
-        session->setSettings(member(result, "approvalPolicy"), member(result, "sandbox"), member(result, "model"));
+        session->setSettings(member(result, "approvalPolicy"), member(result, "sandbox"), member(result, "model"), member(result, "reasoningEffort"));
         done(session->id(), {});
     };
     if (request.resume.empty()) {
