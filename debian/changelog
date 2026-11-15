@@ -1,3 +1,13 @@
+pvai (0.5.82-1) trixie; urgency=medium
+
+  * Per-session effort switch: new `effort` request, `Session.effort`,
+    `welcome.effort` and `assistants[].efforts`. Claude Code runs its
+    /effort command, Codex passes the level with turn/start.
+  * New command `pvai effort SESSION LEVEL`, the CLI side of the daemon's
+    `effort` request.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 16 Nov 2026 00:35:46 +0100
+
 pvai (0.5.81-1) trixie; urgency=medium
 
   * A Claude Code question dialog with a single multi-select question has a
