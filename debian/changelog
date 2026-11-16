@@ -1,3 +1,9 @@
+pvai (0.5.84-1) trixie; urgency=medium
+
+  * Inbox paths are canonical (realpath), so uploads work when HOME sits behind a symlink, as on macOS (/tmp -> /private/tmp).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 16 Nov 2026 23:31:22 +0100
+
 pvai (0.5.83-1) trixie; urgency=medium
 
   * File upload over a separate connection: new `upload` request,
