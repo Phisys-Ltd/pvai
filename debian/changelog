@@ -1,3 +1,15 @@
+pvai (0.5.83-1) trixie; urgency=medium
+
+  * File upload over a separate connection: new `upload` request,
+    `uploaded` event and `welcome.upload`. Files land in the inbox
+    ~/.cache/pvai/inbox after size and sha256 checks, and the inbox is
+    cleaned up.
+  * `prompt` takes `files`: Claude Code gets the paths (with --add-dir on
+    the inbox), Codex gets them as localImage.
+  * New command `pvai upload SESSION FILE`.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 16 Nov 2026 17:42:37 +0100
+
 pvai (0.5.82-1) trixie; urgency=medium
 
   * Per-session effort switch: new `effort` request, `Session.effort`,
