@@ -200,7 +200,7 @@ int main(int argc, char **argv)
     LineClient app;
     app.send(hello());
     const json welcome = app.next("welcome");
-    check(welcome.value("upload", json()) == json({{"maxFile", 52428800}, {"maxSession", 104857600}}), "welcome.upload: " + welcome.dump());
+    check(welcome.value("upload", json()) == json({{"maxFile", 52428800}, {"maxSession", 104857600}, {"maxProposal", 104857600}, {"maxOutbox", 209715200}}), "welcome.upload: " + welcome.dump());
 
     auto wrapper = std::make_unique<LineClient>();
     wrapper->send({{"type", "register"}, {"version", kVersion}, {"id", "wup"}, {"cwd", "/x"}, {"label", "up"}});

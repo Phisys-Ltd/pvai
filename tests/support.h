@@ -233,6 +233,32 @@ public:
         }
     }
 
+    // Raw bytes after a line (a download's file): up to `n`, fewer at the end
+    // of the connection or after `ms` without a byte.
+    std::string readRaw(std::size_t n, int ms = 5000)
+    {
+        while (buffer_.size() < n) {
+            pollfd p{fd_, POLLIN, 0};
+            char chunk[65536];
+            ssize_t got = 0;
+            if (::poll(&p, 1, ms) <= 0 || (got = ::read(fd_, chunk, sizeof chunk)) <= 0)
+                break;
+            buffer_.append(chunk, static_cast<std::size_t>(got));
+        }
+        const std::string out = buffer_.substr(0, std::min(n, buffer_.size()));
+        buffer_.erase(0, out.size());
+        return out;
+    }
+    // Whether the other end has closed (nothing more to read, within `ms`).
+    bool atEnd(int ms = 3000)
+    {
+        if (!buffer_.empty())
+            return false;
+        pollfd p{fd_, POLLIN, 0};
+        char chunk[1];
+        return ::poll(&p, 1, ms) > 0 && ::read(fd_, chunk, 1) == 0;
+    }
+
 private:
     int fd_ = -1;
     std::string buffer_;

@@ -527,7 +527,8 @@ App to daemon:
 | `subscribe` | `session`, `limit` | follow that session's conversation: `history` with up to `limit` (default 200) of the last entries, then `entry` for each new one |
 | `unsubscribe` | `session` | stop following it |
 | `dismiss` | `ref`, `proposal` | the owner sent or dropped that agent message; the daemon forgets it |
-| `propose` | `ref`, `to`, `text`, `from` | from `pvai propose` only, on loopback (ignored over TLS): an agent message for the owner to release (see "Agent messages"); answered with `proposed` (`ref`, `id`, `apps`, optional `warning`, `seenAt`) or `rejected` |
+| `download` | `ref`, `proposal`, `file` | (since 0.6.0, `welcome.proposalFiles`) on a connection of its own, after its `hello`: fetch one file of a proposal; answered with a `download` header line and exactly `size` raw bytes, or with `rejected`, then the connection closes (see "Files") |
+| `propose` | `ref`, `to`, `text`, `from`, `files`, `replyTo` | from `pvai propose` only, on loopback (ignored over TLS): an agent message for the owner to release, `files` (since 0.6.0, optional) an array of up to 32 absolute paths to offer with it (see "Agent messages"); answered with `proposed` (`ref`, `id`, `apps`, optional `warning`, `seenAt`) or `rejected` |
 | `peers` | `self`, `peers: [Peer]` | the sessions on other hosts that agents here may write to, as the app knows them; the whole list each time, sent after `welcome` and after every change (see "Peers") |
 | `ping` | | keepalive |
 
@@ -535,12 +536,12 @@ Daemon to app:
 
 | type | fields | meaning |
 |---|---|---|
-| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer; `tokenLogin: true`: it takes `login` with `method: "token"` and `set-token`; `effort: true` (since 0.5.82): it takes `effort`, an older daemon ignores the request without an answer; `upload: {maxFile, maxSession}` (since 0.5.83): it takes `upload` (see "Files"), `maxFile` and `maxSession` are the limits in bytes (52428800 and 104857600) |
+| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer; `tokenLogin: true`: it takes `login` with `method: "token"` and `set-token`; `effort: true` (since 0.5.82): it takes `effort`, an older daemon ignores the request without an answer; `upload: {maxFile, maxSession}` (since 0.5.83): it takes `upload` (see "Files"), `maxFile` and `maxSession` are the limits in bytes (52428800 and 104857600); `upload.maxProposal` and `upload.maxOutbox` (since 0.6.0, 104857600 and 209715200): the limits for the files of one proposal and of all open proposals together; `proposalFiles: true` (since 0.6.0): `propose` takes `files`, proposals carry `files` and the daemon takes `download` (see "Agent messages" and "Files") |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `uploaded` | `ref`, `session`, `path`, `name`, `size` | (since 0.5.83) a file is in the session's inbox: `path` absolute, `name` the stored file name; sent on the upload connection and to every app on its main connection (see "Files") |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (no login on the host, see "Login problems"), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `effort`: `unknown-session`, `bad-effort` (not in the assistant's `efforts`), `not-supported` (the assistant has no `efforts`), `busy` (another effort switch is pending); to `answer`, `clearInput`, `mode`, `model`, `effort` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`; to `prompt` also `self-message` (its `from` is the target session itself) and, since 0.5.83, `bad-file` (a `files` entry is not a regular file in this session's inbox, or `files` is no array of at most 32 paths); to `upload` (since 0.5.83, on its own connection, with `ref` and `session` as sent): `unknown-session`, `bad-request` (a field is missing or of the wrong type, `sha256` is no 64 hex digits), `too-large` (`size` over `welcome.upload.maxFile`), `quota` (the session's inbox would hold more than `welcome.upload.maxSession`), `checksum`, `bad-name` (nothing is left of `name` after sanitising), `short` (the connection ended, or sent nothing for 60 s, before `size` bytes came), `write-failed` (the disk refused) |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (no login on the host, see "Login problems"), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `effort`: `unknown-session`, `bad-effort` (not in the assistant's `efforts`), `not-supported` (the assistant has no `efforts`), `busy` (another effort switch is pending); to `answer`, `clearInput`, `mode`, `model`, `effort` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty` (no text and no files), `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`, and since 0.6.0 `bad-file` (`files` is no array of at most 32 strings, or a path is not absolute, missing, no regular file after following links, unreadable, or its copy failed), `too-large` (a file over 50 MiB, or the files together over `welcome.upload.maxProposal`), `quota` (the open proposals together would hold more than `welcome.upload.maxOutbox`); to `download` (since 0.6.0, on its own connection, with `ref`, `proposal` and `file` as sent): `unknown-proposal`, `unknown-file`, `bad-request` (`proposal` or `file` is missing or no string), `read-failed` (the copy cannot be opened); to `prompt` also `self-message` (its `from` is the target session itself) and, since 0.5.83, `bad-file` (a `files` entry is not a regular file in this session's inbox, or `files` is no array of at most 32 paths); to `upload` (since 0.5.83, on its own connection, with `ref` and `session` as sent): `unknown-session`, `bad-request` (a field is missing or of the wrong type, `sha256` is no 64 hex digits), `too-large` (`size` over `welcome.upload.maxFile`), `quota` (the session's inbox would hold more than `welcome.upload.maxSession`), `checksum`, `bad-name` (nothing is left of `name` after sanitising), `short` (the connection ended, or sent nothing for 60 s, before `size` bytes came), `write-failed` (the disk refused) |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `renamed` | `ref`, `session`, `label` | the session carries `label` (trimmed) now; the `sessions` list follows |
@@ -584,8 +585,11 @@ interactive use, and no agent can steer the others.
 
 The flow:
 
-1. The agent runs `pvai propose [--reply ID] TO TEXT` (or the text on
-   stdin) in its session. `TO` is `host/session`: `host` is the target
+1. The agent runs `pvai propose [--reply ID] TO [--file PATH]... [TEXT]` (or
+   the text on stdin) in its session. `--file` (since 0.6.0) is repeatable,
+   before or after `TO`; the CLI makes every path absolute. The text may be
+   left out when there is at least one file (stdin is then read only for a
+   `TEXT` of `-`; without files it is read when `TEXT` is left out, as before). `TO` is `host/session`: `host` is the target
    daemon's short hostname (`welcome.host`; `PVAI_HOST` in the environment
    overrides the machine's name, the tests use it), `session` a session id or a
    label. A host alone is no target (before this change it meant
@@ -596,7 +600,8 @@ The flow:
    `--reply ID` names the proposal this one answers (the id in the first
    line of the message being answered).
 2. `pvai propose` hands it to its own daemon over loopback:
-   `{"type": "propose", "ref", "to", "text", "from", "replyTo"}`, where `from` is
+   `{"type": "propose", "ref", "to", "text", "from", "replyTo", "files"}`
+   (`files`, since 0.6.0: absolute paths, see below), where `from` is
    `PVAI_ID` from the environment (set by `pvai run`), else `CODEX_THREAD_ID`
    (Codex sets it for the commands of a thread; the thread id is the session
    id; empty in a Kimi session, then only the host is known) and `replyTo` optional. A label
@@ -610,7 +615,8 @@ The flow:
    and, since 0.5.69, optionally a `warning` (see "Peers"; the proposal is made and queued all the same)
    or `rejected` (`empty`, `too-long` over 32 KiB, `bad-target`,
    `ambiguous-target`, `no-session` (`to` is a host alone), `bad-reply`
-   (`replyTo` is not a proposal id: `p` and hex digits), `too-many`). `TO` is a bad target unless `host` is 1 to 64 letters,
+   (`replyTo` is not a proposal id: `p` and hex digits), `too-many`, and
+   for files `bad-file`, `too-large`, `quota`, see below). `TO` is a bad target unless `host` is 1 to 64 letters,
    digits, `-`, `.` or `_`, and `session`, when given, 1 to 128 bytes
    without control characters.
    The CLI prints that the message waits for the owner and returns at
@@ -619,8 +625,15 @@ The flow:
    connected app:
    ```json
    {"id": "p3f9a01c2", "from": "w8bb65867", "fromLabel": "phi-claude-voice",
-    "to": "taifun/wd718313b", "text": "...", "replyTo": "p77aa0b1e", "at": 1793300000}
+    "to": "taifun/wd718313b", "text": "...", "replyTo": "p77aa0b1e", "at": 1793300000,
+    "files": [{"id": "f1", "name": "report.pdf", "size": 48213, "sha256": "<64 hex digits>",
+               "source": "/home/u/work/report.pdf"}]}
    ```
+   `files` (since 0.6.0) is always there, `[]` for a proposal without files
+   (an older daemon omits it: the app treats a missing `files` as empty).
+   The ids are `f1`, `f2`, ... in the order given; `name` is the sanitised
+   base name (the rules of the inbox, see "Files"), `source` the absolute
+   path the agent named.
    `replyTo` (since 0.5.19) is the proposal it answers, else `null`: the
    app can show a message under the one it answers, and see which got no
    answer.
@@ -657,6 +670,47 @@ The flow:
    `text` alone.
    Then the app sends `dismiss` to the sender's daemon. *Drop* sends only
    `dismiss`.
+
+**Files with a proposal (since 0.6.0, `welcome.proposalFiles`).** An agent
+can offer files: `pvai propose` sends `files`, an array of absolute paths.
+Before it keeps the proposal the daemon checks everything and refuses the
+whole proposal otherwise: at most 32 files; each a regular file after
+following links and readable (`bad-file` for a missing, non-regular or
+unreadable one, or `files` not an array of strings); each at most 50 MiB
+and all of the proposal at most `welcome.upload.maxProposal` (100 MiB):
+`too-large`; the files of all open proposals together at most
+`welcome.upload.maxOutbox` (200 MiB): `quota`. It then copies each file in
+chunks (synchronously, at these sizes) into
+`~/.cache/pvai/outbox/PROPOSALID/NN-NAME` (directories 0700, files 0600;
+`NN` the position from 01, `NAME` the sanitised base name, `file` when
+nothing is left of it) and computes the SHA-256 while copying. If a copy
+fails the whole directory is removed and the proposal is `rejected` with
+`bad-file` (`too-large` when a file grew past the limit meanwhile). The copy
+is what is offered: a change to the original after the propose changes
+nothing. A file the agent can read is a file the owner may be shown, keys
+included, which is why the app shows each file's `source` prominently and
+nothing leaves the sender's host before the owner releases it.
+
+The app gets a file from the sender's daemon by a download connection (see
+"Files"). The outbox directory of a proposal is deleted on `dismiss` (*Send*
+or *Drop*), when the proposal expires after 24 hours, and when its propose
+is rejected; the daemon empties the whole outbox when it starts (proposals
+live in memory only) and its hourly pass removes outbox directories that
+belong to no open proposal.
+
+**Release with files (app side).** On *Send* the app, for each file of the
+proposal: downloads it from the sender's daemon (download connection),
+uploads the bytes to the target session's daemon on an upload connection
+(`uploaded.path`), and then sends the normal `prompt` to the target with
+`files` (the uploaded paths), `from`, `fromLabel`, `proposal` and
+`replyTo`, and last `dismiss` to the sender's daemon. If a download or
+upload fails the app sends no `prompt` and no `dismiss`; the proposal stays
+(and the owner can try again). The target daemon types the `[Message ...]`
+line first, then the text, then the paths as for any prompt with files
+(see "Files"); a prompt with `from` and files but no text is the
+`[Message ...]` line, a blank line and the paths, so it never starts with a
+path. The card shows each file's name, size, a thumbnail for pictures and
+its `source` path.
 
 Answers go the same way, as a new proposal from the other side. Nothing
 here waits or blocks: a proposal the owner never releases simply expires.
@@ -1188,13 +1242,53 @@ Code, Kimi) or sent as text. A `dropped` prompt does not carry its `files`,
 and a prompt kept for a conversation (see "Kept prompts") loses its files
 with the session's inbox; a kept prompt with nothing but files is not kept.
 
-**Cleanup.** The inbox directory of a session is deleted when the session
+**Cleanup.** (The outbox of proposals has its own rules, see "Agent messages".) The inbox directory of a session is deleted when the session
 ends (it leaves `sessions`; not for a restart that keeps the id). The daemon
 also looks at the inbox when it starts and then once an hour: files older
 than 24 hours (by modification time) and empty session directories go; from
 the first hourly pass on, so do the directories of sessions that are not live
 (at the start the sessions have not all come back yet, so only age counts
 then).
+
+**Download connection (since 0.6.0, `welcome.proposalFiles`).** The app
+fetches a file of a proposal (see "Agent messages") from the sender's
+daemon on a connection of its own, the same way as an upload: loopback with
+the token, an ssh forward or TLS with the client certificate, starting with
+`hello`. Only a peer that passed `hello` is served, exactly as for
+`upload`: a `download` before `hello` is refused as any request before it
+(`error` `auth`, the connection closes). Then it sends one line:
+
+```
+{"type": "download", "ref": "d1", "proposal": "p3f9a01c2", "file": "f1"}
+```
+
+Answer, then the connection closes:
+
+- `{"type": "download", "ref", "proposal", "file", "name", "size", "sha256"}`
+  and straight after that line exactly `size` raw bytes (no line framing:
+  the bytes may hold anything). `name` is the sanitised name without the
+  `NN-` prefix.
+- `{"type": "rejected", "ref", "proposal", "file", "reason"}` with
+  `unknown-proposal`, `unknown-file`, `bad-request` (`proposal` or `file`
+  missing or no string) or `read-failed` (the copy cannot be read).
+  `proposal` and `file` are `null` when they were no strings.
+
+The daemon sends `welcome`, `sessions` and `proposals` after the `hello`, as
+on any connection. Once the `download` line is in, the connection counts as
+no app: no broadcasts, no keepalive; whatever the peer sends after the line
+is dropped. The daemon streams the file without blocking its loop: it reads
+one 64 KiB chunk at a time and writes it as the socket takes it (`POLLOUT`),
+so a 100 MiB file is never in memory. A peer that takes no byte for 60 s is
+dead and the connection is closed (`PVAI_UPLOAD_IDLE` seconds overrides this
+for tests, as for uploads). The file is read from a descriptor opened at the
+request: a proposal dismissed while the transfer runs still finishes it, and
+a download after the `dismiss` is `unknown-proposal`. The app checks `size`
+and `sha256` itself. Several downloads of one proposal may run at once.
+
+`pvai download PROPOSAL FILE OUTPATH` does one on the daemon's Unix socket
+(for tests and debugging): it writes the file, prints the header line and
+exits 0 when size and SHA-256 match, 1 otherwise (a `rejected` line is
+printed too).
 
 From the command line, `pvai upload SESSION FILE` does a whole upload on the
 daemon's Unix socket, prints the answer line and exits 0 for `uploaded`, 1

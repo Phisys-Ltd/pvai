@@ -67,8 +67,10 @@ const char *kUsage =
     "       pvai effort SESSION LEVEL                  set the session's effort level (Claude Code low..max, Codex minimal..xhigh)\n"
     "       pvai upload SESSION FILE                   put a file into a session's inbox (for tests); prints the answer\n"
     "       pvai send [--voice] SESSION TEXT           type TEXT into a session (for tests)\n"
-    "       pvai propose [--reply ID] HOST/SESSION [TEXT]\n"
-    "                                                  suggest a message to another session; the owner releases it\n"
+    "       pvai download PROPOSAL FILE OUTPATH        fetch a proposal's file from the outbox (for tests); prints the header\n"
+    "       pvai propose [--reply ID] HOST/SESSION [--file PATH]... [TEXT|-]\n"
+    "                                                  suggest a message (and files) to another session; the owner releases it\n"
+    "                                                  TEXT comes from stdin when it is omitted without --file, or is `-`\n"
     "       pvai peers                                 list the sessions propose can reach, also on other hosts\n"
     "       pvai install claude|codex|kimi             install an assistant for this user (as the app can)\n"
     "       pvai login claude|codex|kimi               log it in: shows a link and a code\n"
@@ -378,7 +380,8 @@ static std::string agoText(long long seconds)
 }
 
 // An agent message for the owner to release in the app; never waits for it.
-int runPropose(const std::string &to, std::string text, bool fromStdin, const std::string &replyTo)
+int runPropose(const std::string &to, std::string text, bool fromStdin, const std::string &replyTo,
+               const std::vector<std::string> &files)
 {
     // A host alone is no target: the message needs a session to land in.
     if (to.find('/') == std::string::npos) {
@@ -390,6 +393,19 @@ int runPropose(const std::string &to, std::string text, bool fromStdin, const st
     if (fromStdin)
         text.assign(std::istreambuf_iterator<char>(std::cin), {});
     json propose = {{"type", "propose"}, {"ref", "cli"}, {"to", to}, {"text", text}, {"from", callerSessionId()}};
+    if (!files.empty()) {
+        json list = json::array();
+        for (const auto &file : files) {
+            std::error_code ec;
+            const std::filesystem::path absolute = std::filesystem::absolute(file, ec);
+            if (ec) {
+                std::fprintf(stderr, "pvai: not proposed: cannot resolve %s\n", file.c_str());
+                return 1;
+            }
+            list.push_back(absolute.lexically_normal().string());
+        }
+        propose["files"] = list;
+    }
     if (!replyTo.empty())
         propose["replyTo"] = replyTo;
     int status = 1;
@@ -422,6 +438,9 @@ int runPropose(const std::string &to, std::string text, bool fromStdin, const st
             std::fprintf(stderr, "pvai: not proposed: %s%s\n", reason.c_str(),
                          reason == "ambiguous-target" ? " (several sessions have that label: use the id, see pvai peers)"
                          : reason == "no-session"     ? " (the target needs HOST/SESSION, not a host alone; see pvai peers)"
+                         : reason == "bad-file"       ? " (a file is missing, no regular file, unreadable, or there are over 32)"
+                         : reason == "too-large"      ? " (a file is over 50 MiB or the files together over 100 MiB)"
+                         : reason == "quota"          ? " (the open proposals hold too many files; wait for the owner to release them)"
                                                       : "");
             return true;
         }
@@ -858,6 +877,85 @@ int runUpload(const std::string &session, const std::string &file)
     }
 }
 
+// pvai download: the app's download connection (PROTOCOL.md, "Files") on the
+// daemon's Unix socket; the file goes to OUTPATH, the header line is printed,
+// 0 when the size and the SHA-256 match.
+int runDownload(const std::string &proposal, const std::string &file, const std::string &outPath)
+{
+    const int fd = openDaemon(false);
+    if (fd < 0)
+        return noDaemon();
+    const json hello = {{"type", "hello"}, {"client", "pvai-download"}, {"version", kVersion}};
+    const json line = {{"type", "download"}, {"ref", "cli"}, {"proposal", proposal}, {"file", file}};
+    if (!writeAll(fd, Conn::line(hello)) || !writeAll(fd, Conn::line(line))) {
+        ::close(fd);
+        return std::fprintf(stderr, "pvai: the daemon closed the connection\n"), 1;
+    }
+    std::string buffer;
+    char chunk[65536];
+    json header;
+    // The header: the first `download` or `rejected` (the welcome comes first).
+    for (;;) {
+        bool found = false;
+        for (auto end = buffer.find('\n'); end != std::string::npos && !found; end = buffer.find('\n')) {
+            const json message = json::parse(buffer.substr(0, end), nullptr, false);
+            buffer.erase(0, end + 1);
+            const std::string type = message.is_object() ? message.value("type", "") : "";
+            if (type == "rejected") {
+                std::cout << message.dump() << std::endl;
+                ::close(fd);
+                return 1;
+            }
+            if (type == "download") {
+                header = message;
+                found = true;
+            }
+        }
+        if (found)
+            break;
+        pollfd p{fd, POLLIN, 0};
+        ssize_t n = 0;
+        if (::poll(&p, 1, 70000) <= 0 || (n = ::read(fd, chunk, sizeof chunk)) <= 0) {
+            std::fprintf(stderr, "pvai: no answer from the daemon\n");
+            ::close(fd);
+            return 1;
+        }
+        buffer.append(chunk, static_cast<std::size_t>(n));
+    }
+    const unsigned long long size = header.value("size", 0ull);
+    const int out = ::open(outPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (out < 0) {
+        ::close(fd);
+        return std::fprintf(stderr, "pvai: cannot write %s\n", outPath.c_str()), 1;
+    }
+    unsigned long long got = 0;
+    bool ok = true;
+    auto take = [&](const char *data, std::size_t n) {
+        const unsigned long long use = std::min<unsigned long long>(n, size - got);
+        ok = ok && writeAll(out, data, static_cast<std::size_t>(use));
+        got += use;
+    };
+    if (!buffer.empty())
+        take(buffer.data(), buffer.size());
+    while (ok && got < size) {
+        pollfd p{fd, POLLIN, 0};
+        ssize_t n = 0;
+        if (::poll(&p, 1, 70000) <= 0 || (n = ::read(fd, chunk, sizeof chunk)) <= 0)
+            break;
+        take(chunk, static_cast<std::size_t>(n));
+    }
+    ::close(out);
+    ::close(fd);
+    std::cout << header.dump() << std::endl;
+    if (!ok || got != size)
+        return std::fprintf(stderr, "pvai: the file is short (%llu of %llu bytes)\n", got, size), 1;
+    if (fileSha256(outPath) != header.value("sha256", "")) {
+        std::fprintf(stderr, "pvai: the checksum does not match\n");
+        return 1;
+    }
+    return 0;
+}
+
 int runCodex(const std::vector<std::string> &args)
 {
     const std::string codex = codexBinary();
@@ -1059,6 +1157,8 @@ int main(int argc, char **argv)
             return localClient({{"type", "interrupt"}, {"ref", "cli"}, {"session", args[1]}}, false);
         if (verb == "upload" && args.size() == 3)
             return runUpload(args[1], args[2]);
+        if (verb == "download" && args.size() == 4)
+            return runDownload(args[1], args[2], args[3]);
         if (verb == "effort" && args.size() == 3)
             return localClient({{"type", "effort"}, {"ref", "cli"}, {"session", args[1]}, {"effort", args[2]}}, false, false, 35000);
         if (verb == "daemon" && args.size() >= 2 && (args[1] == "stop" || args[1] == "restart")
@@ -1104,14 +1204,30 @@ int main(int argc, char **argv)
                                 {"text", args[at + 1]}, {"voice", voice}}, false);
         }
         if (verb == "propose") {
-            std::size_t at = 1;
+            // --reply ID and --file PATH (repeatable) anywhere; then HOST/SESSION and an optional TEXT.
             std::string replyTo;
-            if (args.size() > 2 && args[1] == "--reply") {
-                replyTo = args[2];
-                at = 3;
+            std::vector<std::string> files, positional;
+            bool bad = false;
+            for (std::size_t i = 1; i < args.size(); ++i) {
+                if ((args[i] == "--reply" || args[i] == "--file") && i + 1 < args.size()) {
+                    const bool reply = args[i] == "--reply";
+                    const std::string &value = args[++i];
+                    if (reply)
+                        replyTo = value;
+                    else
+                        files.push_back(value);
+                }
+                else if (args[i].rfind("--", 0) == 0 && args[i] != "--")
+                    bad = true;
+                else
+                    positional.push_back(args[i]);
             }
-            if (args.size() == at + 1 || args.size() == at + 2)
-                return runPropose(args[at], args.size() == at + 2 ? args[at + 1] : "", args.size() == at + 1, replyTo);
+            if (!bad && (positional.size() == 1 || positional.size() == 2)) {
+                // Without a text, stdin is the text; with files it is only read for "-".
+                const bool hasText = positional.size() == 2 && !(positional[1] == "-");
+                const bool stdinText = positional.size() == 1 ? files.empty() : positional[1] == "-";
+                return runPropose(positional[0], hasText ? positional[1] : "", stdinText, replyTo, files);
+            }
         }
         if ((verb == "install" || verb == "login") && args.size() == 2)
             return runSetup(verb, args[1]);

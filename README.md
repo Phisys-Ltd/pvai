@@ -70,6 +70,8 @@ pvai sessions                        # what runs on this host
 pvai watch                           # what an app would see, for checks
 pvai send --voice <session> "text"   # a prompt without the app
 pvai propose <host>/<session> "text" # a message to another session, released by the owner in the app
+pvai propose <host>/<session> --file /abs/or/relative/path [--file ...] ["text"]  # the same with files (since 0.6.0)
+pvai download <proposal> <file> <outpath>  # fetch a proposal's file from the daemon's outbox (tests, debugging; since 0.6.0)
 pvai peers                           # the sessions it can go to, also on other hosts (from the app)
 ```
 

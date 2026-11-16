@@ -12,7 +12,9 @@
 #include <climits>
 #include <cstdlib>
 #include <ctime>
+#include <cstdio>
 #include <filesystem>
+#include <vector>
 
 namespace pvai {
 
@@ -271,6 +273,135 @@ void InboxUpload::abort()
     if (!part_.empty())
         ::unlink(part_.c_str());
     part_.clear();
+}
+
+// ---- The outbox ----
+
+std::string outboxRoot()
+{
+    const std::string path = homeDir() + "/.cache/pvai/outbox";
+    std::error_code ec;
+    fs::create_directories(path, ec);
+    ::chmod(path.c_str(), 0700);
+    char real[PATH_MAX];
+    return ::realpath(path.c_str(), real) ? std::string(real) : path;
+}
+
+std::string outboxDir(const std::string &proposal)
+{
+    return goodId(proposal) ? outboxRoot() + "/" + proposal : std::string();
+}
+
+void removeOutbox(const std::string &proposal)
+{
+    const std::string dir = outboxDir(proposal);
+    if (dir.empty())
+        return;
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
+void clearOutbox()
+{
+    std::error_code ec;
+    std::vector<fs::path> entries;
+    for (fs::directory_iterator it(outboxRoot(), ec), end; !ec && it != end; it.increment(ec))
+        entries.push_back(it->path());
+    for (const auto &entry : entries)
+        fs::remove_all(entry, ec);
+}
+
+void cleanOutbox(const std::set<std::string> &live)
+{
+    std::error_code ec;
+    std::vector<fs::path> entries;
+    for (fs::directory_iterator it(outboxRoot(), ec), end; !ec && it != end; it.increment(ec))
+        if (!live.count(it->path().filename().string()))
+            entries.push_back(it->path());
+    for (const auto &entry : entries)
+        fs::remove_all(entry, ec);
+}
+
+std::string checkOutboxSource(const std::string &path, unsigned long long &size)
+{
+    if (path.empty() || path[0] != '/' || path.find('\0') != std::string::npos)
+        return "bad-file";
+    struct stat st;
+    if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || ::access(path.c_str(), R_OK) != 0)
+        return "bad-file";
+    size = static_cast<unsigned long long>(st.st_size);
+    return {};
+}
+
+std::string copyToOutbox(const std::string &proposal, std::size_t index, const std::string &source,
+                         unsigned long long maxFile, OutboxFile &out)
+{
+    const std::string dir = outboxDir(proposal);
+    if (dir.empty())
+        return "bad-file";
+    makePrivateDir(outboxRoot());
+    makePrivateDir(dir);
+    std::string name = sanitizeUploadName(source);
+    if (name.empty())
+        name = "file";
+    char prefix[16];
+    std::snprintf(prefix, sizeof prefix, "%02zu-", index);
+    const std::string path = dir + "/" + prefix + name;
+    const int in = ::open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOCTTY);
+    if (in < 0)
+        return "bad-file";
+    struct stat st;
+    if (::fstat(in, &st) != 0 || !S_ISREG(st.st_mode)) {
+        ::close(in);
+        return "bad-file";
+    }
+    const int dst = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (dst < 0) {
+        ::close(in);
+        return "bad-file";
+    }
+    EVP_MD_CTX *md = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(md, EVP_sha256(), nullptr);
+    std::string reason;
+    unsigned long long total = 0;
+    char chunk[65536];
+    for (;;) {
+        const ssize_t n = ::read(in, chunk, sizeof chunk);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n < 0) {
+            reason = "bad-file";
+            break;
+        }
+        if (n == 0)
+            break;
+        total += static_cast<unsigned long long>(n);
+        if (total > maxFile) {
+            reason = "too-large";
+            break;
+        }
+        if (!writeAll(dst, chunk, static_cast<std::size_t>(n))) {
+            reason = "bad-file";
+            break;
+        }
+        EVP_DigestUpdate(md, chunk, static_cast<std::size_t>(n));
+    }
+    ::close(in);
+    if (::close(dst) != 0 && reason.empty())
+        reason = "bad-file";
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int length = 0;
+    EVP_DigestFinal_ex(md, digest, &length);
+    EVP_MD_CTX_free(md);
+    if (!reason.empty()) {
+        ::unlink(path.c_str());
+        return reason;
+    }
+    out.name = name;
+    out.size = total;
+    out.sha256 = hexOf(digest, length);
+    out.path = path;
+    return {};
 }
 
 } // namespace pvai

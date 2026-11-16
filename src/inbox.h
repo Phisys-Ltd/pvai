@@ -67,4 +67,36 @@ private:
     EVP_MD_CTX *md_ = nullptr;
 };
 
+// ---- The outbox: files an agent offered with a proposal ----
+// ~/.cache/pvai/outbox/PROPOSALID/NN-NAME, directories 0700, files 0600
+// (docs/PROTOCOL.md, "Agent messages"). The proposals live in memory only, so
+// the daemon empties the outbox at its start.
+
+constexpr std::size_t kMaxProposalFiles = 32;                            // files of one proposal
+constexpr unsigned long long kMaxProposalBytes = 100ull * 1024 * 1024;   // one proposal's files together
+constexpr unsigned long long kMaxOutboxBytes = 200ull * 1024 * 1024;     // all open proposals' files together
+
+std::string outboxRoot(); // ~/.cache/pvai/outbox, created, canonical
+std::string outboxDir(const std::string &proposal); // empty for an id that is no path component
+void removeOutbox(const std::string &proposal);
+void clearOutbox();                                    // every proposal directory
+void cleanOutbox(const std::set<std::string> &live);  // the directories of proposals that are not in `live`
+
+// One copied file.
+struct OutboxFile {
+    std::string name;   // the sanitised base name, without the NN- prefix
+    unsigned long long size = 0;
+    std::string sha256;
+    std::string path;   // the copy
+};
+
+// Whether `path` is an absolute path to a regular file (links followed) that
+// can be read: its size in `size`, or "bad-file".
+std::string checkOutboxSource(const std::string &path, unsigned long long &size);
+// Copies the source (the INDEX-th file, from 1) into the proposal's
+// directory in chunks and hashes it on the way. "bad-file" when it cannot be
+// read or written, "too-large" when it grew over `maxFile` meanwhile.
+std::string copyToOutbox(const std::string &proposal, std::size_t index, const std::string &source,
+                         unsigned long long maxFile, OutboxFile &out);
+
 } // namespace pvai

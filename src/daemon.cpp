@@ -62,6 +62,24 @@ struct UploadState {
     unsigned long long drain = 0;      // bytes still to read and drop after a refusal
 };
 
+// A download connection after its `download` line (PROTOCOL.md, "Files"): the
+// daemon writes one file of a proposal to it in chunks and closes it. The file
+// is read from a descriptor opened at the request, so a dismissal in between
+// does not cut the transfer.
+struct DownloadState {
+    int fd = -1;
+    unsigned long long remaining = 0;
+    std::chrono::steady_clock::time_point progress = std::chrono::steady_clock::now(); // the last time bytes left
+    DownloadState() = default;
+    DownloadState(const DownloadState &) = delete;
+    DownloadState &operator=(const DownloadState &) = delete;
+    ~DownloadState()
+    {
+        if (fd >= 0)
+            ::close(fd);
+    }
+};
+
 // Process: an assistant's own process that pvai started in a terminal
 // (`pvai codex`); its connection lasts as long as the process.
 enum class Kind { Unknown, Wrapper, App, Process };
@@ -85,6 +103,10 @@ struct Peer {
     std::string assistant;              // processes: whose
     std::set<std::string> subscriptions; // apps: sessions whose transcript they follow
     std::unique_ptr<UploadState> upload; // set once the connection sent `upload`: not an app any more
+    std::unique_ptr<DownloadState> download; // the same for `download`
+
+    // A connection that left the app protocol: no broadcasts, no keepalive.
+    bool detached() const { return upload || download; }
 };
 
 constexpr int kDirectPort = 7471;
@@ -109,6 +131,33 @@ std::chrono::seconds uploadIdle()
         return std::chrono::seconds(seconds > 0 ? seconds : 60);
     }();
     return idle;
+}
+
+// A download connection whose peer takes no byte for this long is dead (the
+// same 60 s, and the same override, as an upload's idle time).
+std::chrono::seconds downloadIdle() { return uploadIdle(); }
+
+// The proposal limits (PROTOCOL.md, "Agent messages"); PVAI_PROPOSAL_LIMITS
+// "FILE,PROPOSAL,OUTBOX" in bytes overrides them, for tests.
+struct ProposalLimits {
+    unsigned long long file = kMaxUploadFile, proposal = kMaxProposalBytes, outbox = kMaxOutboxBytes;
+};
+
+const ProposalLimits &proposalLimits()
+{
+    static const ProposalLimits limits = [] {
+        ProposalLimits l;
+        if (const char *text = std::getenv("PVAI_PROPOSAL_LIMITS")) {
+            unsigned long long a = 0, b = 0, c = 0;
+            if (std::sscanf(text, "%llu,%llu,%llu", &a, &b, &c) == 3) {
+                l.file = a;
+                l.proposal = b;
+                l.outbox = c;
+            }
+        }
+        return l;
+    }();
+    return limits;
 }
 
 std::chrono::seconds inboxSweepEvery()
@@ -145,6 +194,16 @@ struct KeptPrompt {
 constexpr auto kKeptLife = std::chrono::hours(24);
 constexpr std::size_t kMaxKeptPerConversation = 16, kMaxKept = 64;
 
+// A file offered with a proposal: a copy in the outbox.
+struct ProposalFile {
+    std::string id; // f1, f2, ...
+    std::string name;
+    unsigned long long size = 0;
+    std::string sha256;
+    std::string source; // where it was, as the agent gave it
+    std::string path;   // the copy in the outbox
+};
+
 struct Proposal {
     std::string id;
     std::string from; // the sender's session id, empty from a Codex thread
@@ -154,6 +213,7 @@ struct Proposal {
     std::string replyTo; // the proposal this one answers, or empty
     long long at = 0; // Unix time
     Clock::time_point expires;
+    std::vector<ProposalFile> files;
 };
 
 constexpr std::size_t kMaxProposals = 16;
@@ -232,6 +292,7 @@ public:
         // What an earlier run left: old files and empty directories. Sessions
         // of other runs may not have come back yet, so no directory is judged by its session.
         cleanInbox(nullptr, kInboxLife);
+        clearOutbox(); // proposals live in memory only: no copy outlives the daemon
         nextSweep_ = Clock::now() + inboxSweepEvery();
     }
 
@@ -271,7 +332,8 @@ public:
                 fds.push_back({h.accept->fd(), h.accept->events(), 0});
             const std::size_t firstPeer = fds.size();
             for (const auto &peer : peers_)
-                fds.push_back({peer->conn->fd(), static_cast<short>(POLLIN | (peer->conn->wantsWrite() ? POLLOUT : 0)), 0});
+                fds.push_back({peer->conn->fd(),
+                               static_cast<short>(POLLIN | (peer->conn->wantsWrite() || (peer->download && peer->download->remaining > 0) ? POLLOUT : 0)), 0});
             if (::poll(fds.data(), fds.size(), nextTimeout()) < 0 && errno != EINTR)
                 return 1;
             const auto now = Clock::now();
@@ -347,7 +409,7 @@ public:
     {
         std::string wire;
         for (auto &peer : peers_)
-            if (peer->kind == Kind::App && !peer->upload) {
+            if (peer->kind == Kind::App && !peer->detached()) {
                 if (wire.empty())
                     wire = Conn::line(message);
                 peer->conn->sendRaw(wire);
@@ -451,7 +513,7 @@ private:
         json message;
         // One line at a time: an `upload` line ends line framing, and the
         // bytes after it (already buffered or still to come) are the file.
-        while (!peer->conn->closing() && !peer->upload && peer->conn->next(message, tooLong)) {
+        while (!peer->conn->closing() && !peer->detached() && peer->conn->next(message, tooLong)) {
             any = true;
             try {
                 handle(peer, message);
@@ -474,6 +536,13 @@ private:
             peer->lastReceived = Clock::now();
         if (peer->upload) {
             serviceUpload(peer, open);
+        } else if (peer->download) {
+            // Whatever the peer sends after its request is dropped.
+            peer->conn->takeBuffered();
+            if (!open)
+                dead_.push_back(peer);
+            else if (!peer->conn->closing())
+                pumpDownload(peer);
         } else if (!open || tooLong || peer->conn->overlong()) {
             dead_.push_back(peer);
         }
@@ -567,6 +636,81 @@ private:
         dead_.push_back(peer);
     }
 
+    // ---- Downloads (PROTOCOL.md, "Files"): one file of a proposal ----
+
+    // Moves the file to the socket as far as the socket takes it, never more
+    // than one chunk ahead of it: nothing but a chunk is in memory.
+    void pumpDownload(Peer *peer)
+    {
+        DownloadState &down = *peer->download;
+        constexpr std::size_t kChunk = 65536;
+        for (;;) {
+            while (down.remaining > 0 && peer->conn->pending() < kChunk) {
+                char buffer[kChunk];
+                const ssize_t n = ::read(down.fd, buffer, static_cast<std::size_t>(std::min<unsigned long long>(sizeof buffer, down.remaining)));
+                if (n < 0 && errno == EINTR)
+                    continue;
+                if (n <= 0) {
+                    // The copy got shorter than said: the header is out, so only the end of the connection tells.
+                    logLine("download: the file ended early");
+                    dead_.push_back(peer);
+                    return;
+                }
+                peer->conn->sendRaw(std::string(buffer, static_cast<std::size_t>(n)));
+                down.remaining -= static_cast<unsigned long long>(n);
+            }
+            const std::size_t before = peer->conn->pending();
+            if (!peer->conn->flush()) {
+                dead_.push_back(peer);
+                return;
+            }
+            if (peer->conn->pending() < before)
+                down.progress = Clock::now();
+            if (peer->conn->pending() > 0)
+                return; // the socket is full: POLLOUT brings us back
+            if (down.remaining == 0) {
+                peer->conn->closeAfterFlush();
+                return;
+            }
+        }
+    }
+
+    void onDownload(Peer *peer, const json &message)
+    {
+        peer->download = std::make_unique<DownloadState>();
+        DownloadState &down = *peer->download;
+        const json ref = message.value("ref", json());
+        const bool goodRequest = message.contains("proposal") && message["proposal"].is_string() && message.contains("file")
+            && message["file"].is_string();
+        const json proposalId = goodRequest ? message["proposal"] : json();
+        const json fileId = goodRequest ? message["file"] : json();
+        auto fail = [&](const char *reason) {
+            logLine(std::string("download rejected: ") + reason);
+            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"proposal", proposalId}, {"file", fileId}, {"reason", reason}});
+            peer->conn->closeAfterFlush();
+        };
+        if (!goodRequest)
+            return fail("bad-request");
+        const auto proposal = std::find_if(proposals_.begin(), proposals_.end(),
+                                           [&](const Proposal &p) { return p.id == proposalId.get<std::string>(); });
+        if (proposal == proposals_.end())
+            return fail("unknown-proposal");
+        const auto file = std::find_if(proposal->files.begin(), proposal->files.end(),
+                                       [&](const ProposalFile &f) { return f.id == fileId.get<std::string>(); });
+        if (file == proposal->files.end())
+            return fail("unknown-file");
+        struct stat st;
+        down.fd = ::open(file->path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (down.fd < 0 || ::fstat(down.fd, &st) != 0 || !S_ISREG(st.st_mode) || static_cast<unsigned long long>(st.st_size) != file->size)
+            return fail("read-failed");
+        down.remaining = file->size;
+        down.progress = Clock::now();
+        logLine("download of " + proposal->id + "/" + file->id + ": " + std::to_string(file->size) + " bytes");
+        peer->conn->send({{"type", "download"}, {"ref", ref}, {"proposal", proposal->id}, {"file", file->id},
+                          {"name", file->name}, {"size", file->size}, {"sha256", file->sha256}});
+        // The first chunk goes in service(), when the socket is known to take it.
+    }
+
     void onUpload(Peer *peer, const json &message)
     {
         peer->upload = std::make_unique<UploadState>();
@@ -605,6 +749,10 @@ private:
         for (Session *s : sessions())
             live.insert(s->id());
         cleanInbox(&live, kInboxLife);
+        std::set<std::string> open;
+        for (const auto &p : proposals_)
+            open.insert(p.id);
+        cleanOutbox(open);
     }
 
     void reap()
@@ -956,7 +1104,9 @@ private:
         return {{"type", "welcome"}, {"host", hostName()}, {"user", userName()}, {"version", kVersion},
                 {"assistants", assistants}, {"installed", installed}, {"conversations", true},
                 {"peers", true}, {"forget", true}, {"model", true}, {"effort", true}, {"logout", true}, {"rename", true}, {"tokenLogin", true},
-                {"upload", {{"maxFile", kMaxUploadFile}, {"maxSession", kMaxUploadSession}}}};
+                {"upload", {{"maxFile", kMaxUploadFile}, {"maxSession", kMaxUploadSession},
+                            {"maxProposal", proposalLimits().proposal}, {"maxOutbox", proposalLimits().outbox}}},
+                {"proposalFiles", true}};
     }
 
     void handle(Peer *peer, const json &message)
@@ -1091,6 +1241,8 @@ private:
             onPrompt(peer, message);
         else if (type == "upload")
             onUpload(peer, message);
+        else if (type == "download")
+            onDownload(peer, message);
         else if (type == "dismiss")
             onDismiss(peer, message);
         else if (type == "propose" && !peer->ssl)
@@ -1496,7 +1648,8 @@ private:
                 return reject(peer, ref, id, "self-message");
         }
         const std::string header = fromLine(message);
-        Prompt prompt{header + text, message.value("voice", false), ref};
+        // With files and no text the header stands alone: the paths follow it, never lead.
+        Prompt prompt{text.empty() ? trim(header) : header + text, message.value("voice", false), ref};
         prompt.agent = !header.empty();
         prompt.files = std::move(files);
         const bool typed = session->prompt(std::move(prompt));
@@ -1603,7 +1756,19 @@ private:
         auto reject = [&](const char *reason) {
             peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", reason}});
         };
-        if (text.empty())
+        // `files`: absolute paths, checked here; the copies come after the other checks.
+        std::vector<std::string> sources;
+        if (message.contains("files") && !message["files"].is_null()) {
+            const json &list = message["files"];
+            if (!list.is_array() || list.size() > kMaxProposalFiles)
+                return reject("bad-file");
+            for (const auto &entry : list) {
+                if (!entry.is_string())
+                    return reject("bad-file");
+                sources.push_back(entry.get<std::string>());
+            }
+        }
+        if (text.empty() && sources.empty())
             return reject("empty");
         if (text.size() > kMaxPrompt)
             return reject("too-long");
@@ -1623,15 +1788,47 @@ private:
         std::erase_if(recent, [&](const Clock::time_point &t) { return now - t >= std::chrono::minutes(1); });
         if (proposals_.size() >= kMaxProposals || recent.size() >= kProposalsPerMinute)
             return reject("too-many");
+        const ProposalLimits &limits = proposalLimits();
+        unsigned long long total = 0;
+        for (const auto &source : sources) {
+            unsigned long long size = 0;
+            if (checkOutboxSource(source, size) != "")
+                return reject("bad-file");
+            if (size > limits.file)
+                return reject("too-large");
+            total += size;
+        }
+        if (total > limits.proposal)
+            return reject("too-large");
+        unsigned long long held = 0;
+        for (const auto &other : proposals_)
+            for (const auto &f : other.files)
+                held += f.size;
+        if (held + total > limits.outbox)
+            return reject("quota");
         recent.push_back(now);
         Proposal proposal{"p" + randomHex(4), from, {}, to, text, replyTo, static_cast<long long>(std::time(nullptr)),
-                          now + kProposalLife};
+                          now + kProposalLife, {}};
+        // The copies: a failure takes the whole proposal directory with it.
+        unsigned long long copied = 0;
+        for (std::size_t i = 0; i < sources.size(); ++i) {
+            OutboxFile copy;
+            std::string reason = copyToOutbox(proposal.id, i + 1, sources[i], limits.file, copy);
+            if (reason.empty() && (copied += copy.size) > limits.proposal)
+                reason = "too-large";
+            if (!reason.empty()) {
+                removeOutbox(proposal.id);
+                recent.pop_back();
+                return reject(reason == "too-large" ? "too-large" : "bad-file");
+            }
+            proposal.files.push_back({"f" + std::to_string(i + 1), copy.name, copy.size, copy.sha256, sources[i], copy.path});
+        }
         if (const Session *sender = session(from))
             proposal.fromLabel = sender->label();
         proposals_.push_back(proposal);
         int apps = 0;
         for (const auto &other : peers_)
-            if (other->kind == Kind::App && !other->upload && other->client != "pvai")
+            if (other->kind == Kind::App && !other->detached() && other->client != "pvai")
                 ++apps;
         long long seenAt = 0;
         const std::string warning = targetWarning(to, seenAt);
@@ -1724,16 +1921,23 @@ private:
     void onDismiss(Peer *peer, const json &message)
     {
         const std::string id = message.value("proposal", "");
-        if (std::erase_if(proposals_, [&](const Proposal &p) { return p.id == id; }))
+        if (std::erase_if(proposals_, [&](const Proposal &p) { return p.id == id; })) {
+            removeOutbox(id); // a download already streaming goes on from its open descriptor
             broadcast(proposalsMessage());
+        }
         peer->conn->send({{"type", "dismissed"}, {"ref", message.value("ref", json())}, {"proposal", id}});
     }
 
     void expireProposals()
     {
         const auto now = Clock::now();
-        if (std::erase_if(proposals_, [&](const Proposal &p) { return now >= p.expires; }))
+        const std::vector<Proposal> before = proposals_;
+        if (std::erase_if(proposals_, [&](const Proposal &p) { return now >= p.expires; })) {
+            for (const auto &p : before)
+                if (now >= p.expires)
+                    removeOutbox(p.id);
             broadcast(proposalsMessage());
+        }
         std::erase_if(proposalTimes_, [&](const auto &entry) {
             return entry.second.empty() || now - entry.second.back() >= std::chrono::minutes(1);
         });
@@ -1742,9 +1946,13 @@ private:
     json proposalsMessage() const
     {
         json list = json::array();
-        for (const auto &p : proposals_)
+        for (const auto &p : proposals_) {
+            json files = json::array();
+            for (const auto &f : p.files)
+                files.push_back({{"id", f.id}, {"name", f.name}, {"size", f.size}, {"sha256", f.sha256}, {"source", f.source}});
             list.push_back({{"id", p.id}, {"from", p.from}, {"fromLabel", p.fromLabel}, {"to", p.to}, {"text", p.text},
-                            {"replyTo", p.replyTo.empty() ? json() : json(p.replyTo)}, {"at", p.at}});
+                            {"replyTo", p.replyTo.empty() ? json() : json(p.replyTo)}, {"at", p.at}, {"files", files}});
+        }
         return {{"type", "proposals"}, {"proposals", list}};
     }
 
@@ -2163,6 +2371,9 @@ private:
                     dead_.push_back(peer.get());
             } else if (peer->upload && !peer->conn->closing() && now - peer->lastReceived >= uploadIdle()) {
                 uploadEnded(peer.get(), "short"); // nothing came for too long
+            } else if (peer->download && !peer->conn->closing() && now - peer->download->progress >= downloadIdle()) {
+                logLine("download: no progress, the peer is gone");
+                dead_.push_back(peer.get()); // 60 s without a byte leaving
             } else if (silent(*peer, now) || peer->conn->pending() > kMaxOut) {
                 logLine((peer->address.empty() ? std::string("a peer") : peer->address) + ": dropped, "
                         + (peer->conn->pending() > kMaxOut ? "too much unsent" : "silent"));
@@ -2181,7 +2392,7 @@ private:
     // (CLI, hooks, wrappers, processes) may wait as long as they like.
     static bool silent(const Peer &peer, Clock::time_point now)
     {
-        return peer.tcp && peer.kind == Kind::App && !peer.upload && now - peer.lastReceived >= kAppSilence;
+        return peer.tcp && peer.kind == Kind::App && !peer.detached() && now - peer.lastReceived >= kAppSilence;
     }
 
     std::optional<Clock::time_point> directDeadline() const
@@ -2198,6 +2409,8 @@ private:
                 take(*peer->deadline);
             else if (peer->upload)
                 take(peer->lastReceived + uploadIdle());
+            else if (peer->download)
+                take(peer->download->progress + downloadIdle());
             else if (peer->tcp && peer->kind == Kind::App)
                 take(peer->lastReceived + kAppSilence);
         if (window_)
