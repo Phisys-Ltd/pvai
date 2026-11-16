@@ -25,6 +25,7 @@ struct Prompt {
     std::string text;
     bool voice = false;
     json ref; // the app's `ref`, for `delivered`
+    std::vector<std::string> files; // uploaded files (paths in the session's inbox) that go with it
     bool agent = false; // an agent message the owner released ([Message ...] first line)
     bool modelSwitch = false; // Claude Code's /model or /effort from setModel or setEffort: its output tells the outcome
     int typedFailures = 0; // typed checks that failed for it in a row

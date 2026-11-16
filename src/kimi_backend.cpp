@@ -132,7 +132,7 @@ void KimiSession::submit(const Prompt &prompt)
     state_ = "busy";
     turnRunning_ = true;
     answer_.clear();
-    const std::string text = (prompt.voice ? kMicMark : "") + prompt.text;
+    const std::string text = (prompt.voice ? kMicMark : "") + withFiles(prompt.text, prompt.files);
     promptVoice(text);
     json blocks = json::array({{{"type", "text"}, {"text", text}}});
     // The 🔊 convention goes with the first prompt as embedded context: it

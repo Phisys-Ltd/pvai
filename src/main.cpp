@@ -1,5 +1,6 @@
 #include "codex.h"
 #include "common.h"
+#include "inbox.h"
 #include "pairing.h"
 #include "run.h"
 #include "service.h"
@@ -14,6 +15,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <climits>
 #include <cstdlib>
@@ -63,6 +65,7 @@ const char *kUsage =
     "       pvai stop SESSION                          end a session started with start\n"
     "       pvai interrupt SESSION                     cancel the running turn or a hung request, the session stays (Esc)\n"
     "       pvai effort SESSION LEVEL                  set the session's effort level (Claude Code low..max, Codex minimal..xhigh)\n"
+    "       pvai upload SESSION FILE                   put a file into a session's inbox (for tests); prints the answer\n"
     "       pvai send [--voice] SESSION TEXT           type TEXT into a session (for tests)\n"
     "       pvai propose [--reply ID] HOST/SESSION [TEXT]\n"
     "                                                  suggest a message to another session; the owner releases it\n"
@@ -789,6 +792,72 @@ int runRevoke(const std::string &which)
 
 // The Codex TUI, on Codex's shared app server whatever their versions, so
 // the daemon sees its thread. No wrapper: the app server is the interface.
+// Claude Code may read the files the app uploads (`--add-dir`, the whole
+// inbox so that no prompt asks). The option goes last, before a `--` if there
+// is one: it takes every argument after it as another directory, a prompt
+// among them. Not for one of Claude Code's own subcommands.
+void addInboxDir(std::vector<std::string> &command)
+{
+    static const std::set<std::string> subcommands = {"agents", "auth", "doctor", "install", "mcp", "plugin", "plugins",
+                                                      "setup-token", "update", "upgrade", "config", "migrate-installer"};
+    if (command.size() > 1 && subcommands.count(command[1]))
+        return;
+    std::error_code ec;
+    std::filesystem::create_directories(inboxRoot(), ec);
+    ::chmod(inboxRoot().c_str(), 0700);
+    const auto separator = std::find(command.begin() + 1, command.end(), "--");
+    command.insert(separator, {"--add-dir", inboxRoot()});
+}
+
+// pvai upload: the app's upload connection (PROTOCOL.md, "Files") on the
+// daemon's Unix socket; prints the answer line, 0 for `uploaded`.
+int runUpload(const std::string &session, const std::string &file)
+{
+    struct stat st;
+    if (::stat(file.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+        std::fprintf(stderr, "pvai: %s is no file\n", file.c_str());
+        return 1;
+    }
+    const std::string sum = fileSha256(file);
+    const int in = ::open(file.c_str(), O_RDONLY | O_CLOEXEC);
+    const int fd = openDaemon(false);
+    if (sum.empty() || in < 0)
+        return std::fprintf(stderr, "pvai: cannot read %s\n", file.c_str()), 1;
+    if (fd < 0)
+        return noDaemon();
+    const std::string name = std::filesystem::path(file).filename().string();
+    const json hello = {{"type", "hello"}, {"client", "pvai-upload"}, {"version", kVersion}};
+    const json line = {{"type", "upload"}, {"ref", "cli"}, {"session", session}, {"name", name},
+                       {"size", static_cast<unsigned long long>(st.st_size)}, {"sha256", sum}};
+    bool sent = writeAll(fd, Conn::line(hello)) && writeAll(fd, Conn::line(line));
+    char chunk[65536];
+    for (ssize_t n; sent && (n = ::read(in, chunk, sizeof chunk)) > 0;)
+        sent = writeAll(fd, chunk, static_cast<std::size_t>(n));
+    ::close(in);
+    // The answer: the first `uploaded` or `rejected` (the welcome comes first).
+    std::string buffer;
+    for (;;) {
+        for (auto end = buffer.find('\n'); end != std::string::npos; end = buffer.find('\n')) {
+            const json message = json::parse(buffer.substr(0, end), nullptr, false);
+            buffer.erase(0, end + 1);
+            const std::string type = message.is_object() ? message.value("type", "") : "";
+            if (type == "uploaded" || type == "rejected") {
+                std::cout << message.dump() << std::endl;
+                ::close(fd);
+                return type == "uploaded" ? 0 : 1;
+            }
+        }
+        pollfd p{fd, POLLIN, 0};
+        ssize_t n = 0;
+        if (::poll(&p, 1, 70000) <= 0 || (n = ::read(fd, chunk, sizeof chunk)) <= 0) {
+            std::fprintf(stderr, "pvai: no answer from the daemon%s\n", sent ? "" : " (it closed the connection)");
+            ::close(fd);
+            return 1;
+        }
+        buffer.append(chunk, static_cast<std::size_t>(n));
+    }
+}
+
 int runCodex(const std::vector<std::string> &args)
 {
     const std::string codex = codexBinary();
@@ -939,6 +1008,7 @@ int main(int argc, char **argv)
             if (program == "claude") {
                 installHooks(true);
                 markOnboardingDone();
+                addInboxDir(options.command);
             }
             return runWrapper(options);
         }
@@ -987,6 +1057,8 @@ int main(int argc, char **argv)
             return localClient({{"type", "stop"}, {"ref", "cli"}, {"session", args[1]}}, false);
         if (verb == "interrupt" && args.size() == 2)
             return localClient({{"type", "interrupt"}, {"ref", "cli"}, {"session", args[1]}}, false);
+        if (verb == "upload" && args.size() == 3)
+            return runUpload(args[1], args[2]);
         if (verb == "effort" && args.size() == 3)
             return localClient({{"type", "effort"}, {"ref", "cli"}, {"session", args[1]}, {"effort", args[2]}}, false, false, 35000);
         if (verb == "daemon" && args.size() >= 2 && (args[1] == "stop" || args[1] == "restart")

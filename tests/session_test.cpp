@@ -694,6 +694,30 @@ esac
     json say = a.next("say", [](const json &m) { return m.value("session", "") == "t-new"; });
     check(say.value("text", "") == "Spoken." && say.value("voice", false), "the turn's 🔊 line is said, voice=true though the prompt was typed: " + say.dump());
 
+    // Uploaded files (PROTOCOL.md, "Files"): a picture goes in as a localImage item, any other file as a path
+    // after the text; only files of the session's own inbox are taken.
+    {
+        const std::string inbox = home + "/.cache/pvai/inbox/t-new";
+        writeFile(inbox + "/20261116-101530-shot.PNG", "png");
+        writeFile(inbox + "/20261116-101530-notes.txt", "notes");
+        a.drain();
+        a.send({{"type", "prompt"}, {"ref", 300}, {"session", "t-new"}, {"text", "see"},
+                {"files", {inbox + "/20261116-101530-shot.PNG", inbox + "/20261116-101530-notes.txt"}}});
+        check(a.next("accepted", [](const json &m) { return m.value("ref", 0) == 300; }).value("delivery", "") == "typed",
+              "codex: a prompt with files is accepted");
+        const json turn = codex.call("turn/start", [&](const json &p) { return p.dump().find("localImage") != std::string::npos; });
+        const json input = turn.value("params", json::object()).value("input", json::array());
+        check(input == json::array({{{"type", "text"}, {"text", "see\n\n" + inbox + "/20261116-101530-notes.txt"}, {"text_elements", json::array()}},
+                                    {{"type", "localImage"}, {"path", inbox + "/20261116-101530-shot.PNG"}}}),
+              "codex: turn/start has the text with the other file's path and a localImage item: " + input.dump());
+        codex.send({{"method", "turn/started"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u9"}}}}}});
+        codex.send({{"method", "turn/completed"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u9"}, {"status", "completed"}}}}}});
+        check(!waitSession(a, "t-new", [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "codex: idle again after it");
+        a.send({{"type", "prompt"}, {"ref", 301}, {"session", "t-new"}, {"text", "x"}, {"files", {"/etc/passwd"}}});
+        check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 301; }).value("reason", "") == "bad-file",
+              "codex: a file outside the inbox is bad-file");
+    }
+
     // Failed turns are visible: a text entry, `say`, and for a login problem the "login" attention, once per incident.
     {
         a.drain();
@@ -3072,7 +3096,11 @@ esac
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         args = readFile(bin + "/claude.args");
     }
-    check(args == "--model opus --continue\n--model opus --resume sess-1\n", "the same arguments, --continue gives way to --resume: " + args);
+    // pvai run adds --add-dir (the inbox, for uploaded files) last; a resume goes after it.
+    const std::string addDir = "--add-dir " + home + "/.cache/pvai/inbox";
+    check(args == "--model opus --continue " + addDir + "\n--model opus " + addDir + " --resume sess-1\n",
+          "the same arguments plus --add-dir, --continue gives way to --resume: " + args);
+    check(fs::is_directory(home + "/.cache/pvai/inbox"), "pvai run creates the inbox root");
     hook(fresh2, {{"hook_event_name", "SessionStart"}, {"session_id", "sess-1"}, {"source", "resume"}});
     check(!waitSession(a, fresh2, [](const json &s) { return s.value("state", "") == "idle"; }).empty(), "idle again with the same id");
     a.send({{"type", "stop"}, {"ref", 22}, {"session", fresh2}});

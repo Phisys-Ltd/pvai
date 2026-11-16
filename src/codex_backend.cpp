@@ -200,7 +200,11 @@ bool CodexSession::canSubmit() const
 
 void CodexSession::submit(const Prompt &prompt)
 {
-    const std::string text = (prompt.voice ? kMicMark : "") + prompt.text;
+    // Pictures go in as localImage items, other uploaded files as paths after the text.
+    std::vector<std::string> pictures, others;
+    for (const auto &path : prompt.files)
+        (isImagePath(path) ? pictures : others).push_back(path);
+    const std::string text = (prompt.voice ? kMicMark : "") + withFiles(prompt.text, others);
     state_ = "busy";
     turnPending_ = true;
     promptVoice(text);
@@ -209,8 +213,15 @@ void CodexSession::submit(const Prompt &prompt)
     // Codex's slash commands live in its TUI; /compact has a call of its own
     // and runs as a turn like a prompt.
     const bool compact = prompt.text == "/compact";
-    json params = compact ? json{{"threadId", id}}
-                          : json{{"threadId", id}, {"input", {{{"type", "text"}, {"text", text}, {"text_elements", json::array()}}}}};
+    json params = json{{"threadId", id}};
+    if (!compact) {
+        json input = json::array();
+        if (!text.empty() || pictures.empty())
+            input.push_back({{"type", "text"}, {"text", text}, {"text_elements", json::array()}});
+        for (const auto &path : pictures)
+            input.push_back({{"type", "localImage"}, {"path", path}});
+        params["input"] = input;
+    }
     // A mode or model set since the last turn: it holds for this one and
     // the ones after.
     if (!compact && !approval_.empty()) {

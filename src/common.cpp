@@ -695,35 +695,57 @@ void Conn::sendRaw(const std::string &line)
     out_ += line;
 }
 
-bool Conn::readMessages(std::vector<json> &messages)
+bool Conn::fill()
 {
     char buffer[16384];
-    bool open = true;
     for (;;) {
         const long n = stream_->read(buffer, sizeof buffer);
         if (n == Stream::kWouldBlock)
-            break;
-        if (n <= 0) {
-            open = false; // the lines before the end still count
-            break;
-        }
+            return true;
+        if (n <= 0)
+            return false; // the lines before the end still count
         in_.append(buffer, static_cast<std::size_t>(n));
         if (in_.size() > maxLine_ + sizeof buffer)
-            break; // too much at once; the check below ends it
+            return true; // too much at once; overlong() ends it
     }
-    std::size_t start = 0;
-    for (std::size_t end; (end = in_.find('\n', start)) != std::string::npos; start = end + 1) {
-        if (end - start > maxLine_)
+}
+
+bool Conn::next(json &message, bool &tooLong)
+{
+    for (;;) {
+        const std::size_t end = in_.find('\n');
+        if (end == std::string::npos)
             return false;
-        const std::string line = in_.substr(start, end - start);
+        if (end > maxLine_) {
+            tooLong = true;
+            return false;
+        }
+        const std::string line = in_.substr(0, end);
+        in_.erase(0, end + 1);
         if (line.find_first_not_of(" \t\r") == std::string::npos)
             continue;
-        messages.push_back(json::parse(line, nullptr, false));
-        if (messages.back().is_discarded())
-            messages.back() = nullptr;
+        message = json::parse(line, nullptr, false);
+        if (message.is_discarded())
+            message = nullptr;
+        return true;
     }
-    in_.erase(0, start);
-    return open && in_.size() <= maxLine_;
+}
+
+std::string Conn::takeBuffered()
+{
+    std::string out = std::move(in_);
+    in_.clear();
+    return out;
+}
+
+bool Conn::readMessages(std::vector<json> &messages)
+{
+    const bool open = fill();
+    bool tooLong = false;
+    json message;
+    while (next(message, tooLong))
+        messages.push_back(std::move(message));
+    return open && !tooLong && !overlong();
 }
 
 bool Conn::flush()

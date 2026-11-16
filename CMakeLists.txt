@@ -33,6 +33,7 @@ add_library(pvai_core STATIC
     src/setup.cpp
     src/service.cpp
     src/hook.cpp
+    src/inbox.cpp
     src/pairing.cpp
     src/tls.cpp
     src/transcript.cpp
@@ -69,6 +70,8 @@ if(BUILD_TESTING)
     add_test(NAME peers COMMAND pvai-peers-test $<TARGET_FILE:pvai>)
     pvai_test(pvai-session-test tests/session_test.cpp)
     add_test(NAME sessions COMMAND pvai-session-test $<TARGET_FILE:pvai>)
+    pvai_test(pvai-upload-test tests/upload_test.cpp)
+    add_test(NAME upload COMMAND pvai-upload-test $<TARGET_FILE:pvai>)
     pvai_test(pvai-screen-test tests/screen_test.cpp)
     add_test(NAME screen COMMAND pvai-screen-test)
     pvai_test(pvai-transcript-test tests/transcript_test.cpp)

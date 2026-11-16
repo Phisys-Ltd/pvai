@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace pvai {
 
@@ -47,6 +48,12 @@ long long unixTime(const std::string &stamp);
 int compareVersions(std::string_view a, std::string_view b);
 // The first of `keys` that holds a string in `object`, if it is an object.
 std::optional<std::string> firstString(const json &object, std::initializer_list<const char *> keys);
+// `text` with the paths of uploaded files after it: a blank line, then one
+// path per line (quoted when it holds a space or a quote). A prompt of files
+// only starts with the line "Attached:".
+std::string withFiles(const std::string &text, const std::vector<std::string> &paths);
+// A picture Codex takes as input (png, jpg, jpeg, gif, webp by extension).
+bool isImagePath(const std::string &path);
 // The "question" of every entry of `holder["questions"]`, one per line.
 std::string questionOf(const json &holder);
 

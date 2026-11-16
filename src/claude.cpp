@@ -330,8 +330,17 @@ void ClaudeSession::markSlash(const Prompt &prompt)
         modelAt_ = Clock::now() + kModelTimeout;
 }
 
-void ClaudeSession::submit(const Prompt &prompt)
+void ClaudeSession::submit(const Prompt &original)
 {
+    // Uploaded files go in as paths after the text (not into a slash or shell
+    // command); the typed prompt is the whole text, a retry types it as it is.
+    Prompt prompt = original;
+    if (!prompt.files.empty()) {
+        const bool command = !prompt.text.empty() && (prompt.text[0] == '/' || prompt.text[0] == '!');
+        if (!command)
+            prompt.text = withFiles(prompt.text, prompt.files);
+        prompt.files.clear();
+    }
     // A slash command or a shell command (!): no UserPromptSubmit, it ends
     // with its output in the transcript.
     const bool slash = prompt.text[0] == '/' || prompt.text[0] == '!';

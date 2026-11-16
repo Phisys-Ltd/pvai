@@ -23,7 +23,8 @@ this file; a change lands here first, then in both implementations.
   (1, 2, 5, 10 s, then every 10 s). The daemon drops a TCP or direct app
   connection that has sent nothing for 60 s, one that has not sent `hello`
   within 10 s, and one with more than 4 MB of unsent output. Local unix-socket
-  peers (CLI, hooks, wrappers) are never dropped for silence.
+  peers (CLI, hooks, wrappers) are never dropped for silence. An upload
+  connection (see "Files") is not an app: it has its own 60 s of silence.
 
 ## Direct access (draft)
 
@@ -500,7 +501,8 @@ App to daemon:
 | type | fields | meaning |
 |---|---|---|
 | `hello` | `token`, `client`, `version` | first line on every connection; `token` only on loopback (see "Direct access") |
-| `prompt` | `ref`, `session`, `text`, `voice`, `from`, `fromLabel` | type `text` into that session; `ref` is the app's id for the answer; `voice: true` when the text was spoken; `from` and `fromLabel` only for an agent message the owner released (see "Agent messages") |
+| `prompt` | `ref`, `session`, `text`, `voice`, `files`, `from`, `fromLabel` | type `text` into that session; `ref` is the app's id for the answer; `voice: true` when the text was spoken; `files` (since 0.5.83, optional) paths of files uploaded for this session, `text` may then be empty (see "Files"); `from` and `fromLabel` only for an agent message the owner released (see "Agent messages") |
+| `upload` | `ref`, `session`, `name`, `size`, `sha256` | (since 0.5.83, `welcome.upload`) on a connection of its own, after its `hello`: one line, then exactly `size` raw bytes; answered with `uploaded` or `rejected` on that connection, which then closes (see "Files") |
 | `start` | `ref`, `cwd`, `label`, `args`, `assistant`, `resume` | start a session in `cwd` (absolute) without a terminal; `label` optional; `assistant` one of `welcome.assistants` (default `claude`); `args` optional strings: extra arguments for `claude`; for Codex and Kimi only `-m`/`--model <model>` is read; `resume` optional: an id from `conversations`, to go on with that conversation instead of a new one (see "Ended conversations") |
 | `conversations` | `assistant`, `cwd` | the ended conversations of that assistant in `cwd` (see "Ended conversations") |
 | `forget` | `ref`, `assistant`, `cwd`, `id` | delete an ended conversation for good (see "Ended conversations") |
@@ -533,11 +535,12 @@ Daemon to app:
 
 | type | fields | meaning |
 |---|---|---|
-| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer; `tokenLogin: true`: it takes `login` with `method: "token"` and `set-token`; `effort: true` (since 0.5.82): it takes `effort`, an older daemon ignores the request without an answer |
+| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer; `tokenLogin: true`: it takes `login` with `method: "token"` and `set-token`; `effort: true` (since 0.5.82): it takes `effort`, an older daemon ignores the request without an answer; `upload: {maxFile, maxSession}` (since 0.5.83): it takes `upload` (see "Files"), `maxFile` and `maxSession` are the limits in bytes (52428800 and 104857600) |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
+| `uploaded` | `ref`, `session`, `path`, `name`, `size` | (since 0.5.83) a file is in the session's inbox: `path` absolute, `name` the stored file name; sent on the upload connection and to every app on its main connection (see "Files") |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (no login on the host, see "Login problems"), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `effort`: `unknown-session`, `bad-effort` (not in the assistant's `efforts`), `not-supported` (the assistant has no `efforts`), `busy` (another effort switch is pending); to `answer`, `clearInput`, `mode`, `model`, `effort` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`; to `prompt` also `self-message` (its `from` is the target session itself) |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (no login on the host, see "Login problems"), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `effort`: `unknown-session`, `bad-effort` (not in the assistant's `efforts`), `not-supported` (the assistant has no `efforts`), `busy` (another effort switch is pending); to `answer`, `clearInput`, `mode`, `model`, `effort` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty`, `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`; to `prompt` also `self-message` (its `from` is the target session itself) and, since 0.5.83, `bad-file` (a `files` entry is not a regular file in this session's inbox, or `files` is no array of at most 32 paths); to `upload` (since 0.5.83, on its own connection, with `ref` and `session` as sent): `unknown-session`, `bad-request` (a field is missing or of the wrong type, `sha256` is no 64 hex digits), `too-large` (`size` over `welcome.upload.maxFile`), `quota` (the session's inbox would hold more than `welcome.upload.maxSession`), `checksum`, `bad-name` (nothing is left of `name` after sanitising), `short` (the connection ended, or sent nothing for 60 s, before `size` bytes came), `write-failed` (the disk refused) |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `renamed` | `ref`, `session`, `label` | the session carries `label` (trimmed) now; the `sessions` list follows |
@@ -1090,6 +1093,107 @@ a `sessions` update when it changes.
   ones Codex's app server has advertised (`model/list`
   `supportedReasoningEfforts`); a model that does not take one fails the
   turn as any rejected `turn/start`.
+
+## Files
+
+Since 0.5.83 (`welcome.upload`) the app can put files into a session, for
+instance by drag and drop. The file travels on a short-lived connection of
+its own, so that a large file never holds up the main connection; the
+prompt that uses it is the ordinary `prompt` with `files`.
+
+**Upload connection.** The app opens a new connection to the same place as
+its main connection (the loopback port or ssh forward, or the TLS direct
+access port) and starts as always with `hello` (the token on loopback, none
+over TLS, where the client certificate is the login). Then it sends one
+line and, straight after it, the file:
+
+```
+{"type": "upload", "ref": "u1", "session": "w1a2b", "name": "report.pdf", "size": 48213, "sha256": "<64 lowercase hex digits>"}
+<exactly size raw bytes>
+```
+
+From the end of that line the connection is no longer framed by lines:
+the next `size` bytes are the file, whatever they hold (they may start in
+the same packet as the line). The daemon reads them as they come and
+writes them to disk, without waiting for the whole file; nothing else is
+read from the connection, and bytes after the `size`th are ignored. It
+answers with one line and closes the connection:
+
+- `{"type": "uploaded", "ref", "session", "path", "name", "size"}`: the file is stored; `path` is absolute,
+  `name` the file name as stored. The same message goes to every app on its
+  main connection (so a second window sees it too).
+- `{"type": "rejected", "ref", "session", "reason"}` with one of:
+  `unknown-session` (no live session of that id), `bad-request` (a field is
+  missing or has the wrong type, `sha256` is not 64 hex digits),
+  `too-large` (`size` over `maxFile`, 50 MiB), `quota` (with this file the
+  session's inbox would hold more than `maxSession`, 100 MiB, counting the
+  files already in it), `checksum` (the bytes are not those of `sha256`),
+  `bad-name`, `short` (the connection ended or was silent for 60 s before
+  `size` bytes came; the daemon answers a connection that only half-closed
+  its sending side), `write-failed` (the disk refused). Nothing is kept of a
+  failed upload. A rejection that is known before the bytes (all but `checksum`,
+  `short` and a `write-failed` in the middle) is sent at once; the daemon then
+  reads and drops up to 16 MiB of what the app still sends before it closes,
+  so that the answer is not lost in a reset. An app that gets it may stop
+  sending and close.
+
+The daemon sends `welcome`, `sessions` and `proposals` on the upload
+connection after its `hello`, as on any connection; the app ignores them.
+Once the `upload` line is in, the connection counts as no app: it gets no
+broadcast (no `sessions`, `say`, ...), and the keepalive does not apply, only
+the 60 s of silence. A connection that sends `upload` before `hello` is
+refused as any other request before `hello`.
+
+**Storage.** `~/.cache/pvai/inbox/SESSIONID/` of the daemon's user, the
+directories mode 0700, the files 0600. The bytes go to `NAME.part`, the size
+and the SHA-256 are checked when they are all there, and the file takes its
+name by a rename (a link, then the unlink of the `.part`, so that nothing is
+overwritten); a half-written file never has its final name. The stored name
+is the timestamp `YYYYMMDD-HHMMSS-` (the daemon's local time) and the
+sanitised `name`: only what follows the last `/` or `\`, control characters
+dropped, every `..` made `.`, leading dots and spaces dropped, at most 120
+bytes (the extension is kept, a multi-byte character is never cut). A name
+that is taken gets a counter before its extension
+(`20261116-101530-report-2.pdf`). Spaces and other characters stay, so a
+path can hold them.
+
+**In a prompt.** `prompt.files` is an array of up to 32 paths, taken from
+`uploaded.path`. Each must be, after resolving links (`realpath`), a regular
+file inside that session's own inbox directory; anything else rejects the
+whole prompt with `bad-file`. A prompt may have files and an empty `text`.
+How an assistant gets them:
+
+- Claude Code: the paths are appended to the typed text, after a blank
+  line, one per line; a path with a space, a quote or a backslash is put
+  in double quotes with `"` and `\` escaped. A prompt of files only starts
+  with the line `Attached:` (a path must not start the prompt: a leading `/`
+  would read as a slash command). A slash or shell command (`/...`, `!...`)
+  is typed as it is, its files are dropped. `pvai run` starts Claude Code
+  with `--add-dir ~/.cache/pvai/inbox` (the inbox root, created when it is
+  missing; placed after the other arguments, before a `--`), so it may read
+  them without asking.
+- Codex: pictures (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, any case) go
+  into `turn/start` `input` as items `{"type": "localImage", "path"}` after
+  the text item; other files are appended to the text as for Claude Code.
+  A text item is left out when there is nothing to say.
+- Kimi: the paths are appended to the text.
+
+The `delivered`, `dropped` and history texts show what was typed (Claude
+Code, Kimi) or sent as text. A `dropped` prompt does not carry its `files`,
+and a prompt kept for a conversation (see "Kept prompts") loses its files
+with the session's inbox; a kept prompt with nothing but files is not kept.
+
+**Cleanup.** The inbox directory of a session is deleted when the session
+ends (it leaves `sessions`; not for a restart that keeps the id). The daemon
+also looks at the inbox when it starts and then once an hour: files older
+than 24 hours (by modification time) and empty session directories go; from
+the first hourly pass on, so do the directories of sessions that are not live
+(at the start the sessions have not all come back yet, so only age counts
+then).
+
+From the command line, `pvai upload SESSION FILE` does a whole upload on the
+daemon's Unix socket, prints the answer line and exits 0 for `uploaded`, 1
+for anything else.
 
 ## Usage limit
 

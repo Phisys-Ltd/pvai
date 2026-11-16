@@ -176,6 +176,19 @@ public:
         (void)::write(fd_, line.data(), line.size());
     }
 
+    // Bytes as they are (a file after an `upload` line).
+    void sendRaw(const std::string &data)
+    {
+        for (std::size_t at = 0; at < data.size();) {
+            const ssize_t n = ::write(fd_, data.data() + at, data.size() - at);
+            if (n <= 0)
+                return;
+            at += static_cast<std::size_t>(n);
+        }
+    }
+    // No more bytes from here; the answer can still be read.
+    void shutdownWrite() { ::shutdown(fd_, SHUT_WR); }
+
     // The next message within `ms`; an empty object after (so that a
     // missing answer fails a check instead of the test).
     json next(int ms = 2000)

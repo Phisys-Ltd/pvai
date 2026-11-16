@@ -13,6 +13,7 @@
 #include "codex_backend.h"
 #include "kimi_backend.h"
 #include "common.h"
+#include "inbox.h"
 #include "pairing.h"
 #include "setup.h"
 #include "session.h"
@@ -51,6 +52,16 @@ namespace pvai {
 
 namespace {
 
+// An upload connection after its `upload` line (PROTOCOL.md, "Files"): what
+// follows on it is the file's bytes, not lines.
+struct UploadState {
+    json ref;
+    std::string session;
+    unsigned long long size = 0;
+    std::unique_ptr<InboxUpload> file; // null once refused: the rest is only read and dropped
+    unsigned long long drain = 0;      // bytes still to read and drop after a refusal
+};
+
 // Process: an assistant's own process that pvai started in a terminal
 // (`pvai codex`); its connection lasts as long as the process.
 enum class Kind { Unknown, Wrapper, App, Process };
@@ -73,6 +84,7 @@ struct Peer {
     std::string sessionId;              // wrappers
     std::string assistant;              // processes: whose
     std::set<std::string> subscriptions; // apps: sessions whose transcript they follow
+    std::unique_ptr<UploadState> upload; // set once the connection sent `upload`: not an app any more
 };
 
 constexpr int kDirectPort = 7471;
@@ -82,6 +94,32 @@ constexpr auto kPreAuth = std::chrono::seconds(10);
 constexpr auto kAppSilence = std::chrono::seconds(60);
 constexpr std::size_t kMaxOut = 4 * 1024 * 1024; // unsent bytes of one peer
 constexpr std::size_t kMaxHandshakes = 32;
+// After a refused upload at most this much of the rest is read and dropped, so
+// that the answer is not lost in a reset; then the connection closes.
+constexpr unsigned long long kMaxDrain = 16ull * 1024 * 1024;
+constexpr auto kInboxSweep = std::chrono::hours(1);
+
+// An upload connection that sends nothing for this long is short (60 s;
+// PVAI_UPLOAD_IDLE seconds overrides it, for tests).
+std::chrono::seconds uploadIdle()
+{
+    static const std::chrono::seconds idle = [] {
+        const char *text = std::getenv("PVAI_UPLOAD_IDLE");
+        const long seconds = text ? std::atol(text) : 0;
+        return std::chrono::seconds(seconds > 0 ? seconds : 60);
+    }();
+    return idle;
+}
+
+std::chrono::seconds inboxSweepEvery()
+{
+    static const std::chrono::seconds every = [] {
+        const char *text = std::getenv("PVAI_INBOX_SWEEP");
+        const long seconds = text ? std::atol(text) : 0;
+        return seconds > 0 ? std::chrono::seconds(seconds) : std::chrono::duration_cast<std::chrono::seconds>(kInboxSweep);
+    }();
+    return every;
+}
 
 struct Handshake {
     std::unique_ptr<TlsAccept> accept;
@@ -191,6 +229,10 @@ public:
                                          [this](const std::string &name, const std::string &kind, bool ok) { setupFinished(name, kind, ok); });
         loadListen();
         refreshVersions();
+        // What an earlier run left: old files and empty directories. Sessions
+        // of other runs may not have come back yet, so no directory is judged by its session.
+        cleanInbox(nullptr, kInboxLife);
+        nextSweep_ = Clock::now() + inboxSweepEvery();
     }
 
     // One step of the loop that reads what other programs wrote (a transcript,
@@ -276,6 +318,7 @@ public:
             expireProposals();
             expireKept();
             sweepSessions();
+            sweepInbox();
             reap();
             if (sessionsDirty_) {
                 sessionsDirty_ = false;
@@ -304,7 +347,7 @@ public:
     {
         std::string wire;
         for (auto &peer : peers_)
-            if (peer->kind == Kind::App) {
+            if (peer->kind == Kind::App && !peer->upload) {
                 if (wire.empty())
                     wire = Conn::line(message);
                 peer->conn->sendRaw(wire);
@@ -402,14 +445,14 @@ private:
 
     void service(Peer *peer)
     {
-        std::vector<json> messages;
-        if (!peer->conn->readMessages(messages))
-            dead_.push_back(peer);
-        if (!messages.empty())
-            peer->lastReceived = Clock::now();
-        for (const auto &message : messages) {
-            if (peer->conn->closing())
-                break;
+        bool open = peer->conn->fill();
+        bool tooLong = false;
+        bool any = false;
+        json message;
+        // One line at a time: an `upload` line ends line framing, and the
+        // bytes after it (already buffered or still to come) are the file.
+        while (!peer->conn->closing() && !peer->upload && peer->conn->next(message, tooLong)) {
+            any = true;
             try {
                 handle(peer, message);
             } catch (const json::exception &e) {
@@ -427,12 +470,141 @@ private:
                 break;
             }
         }
+        if (any)
+            peer->lastReceived = Clock::now();
+        if (peer->upload) {
+            serviceUpload(peer, open);
+        } else if (!open || tooLong || peer->conn->overlong()) {
+            dead_.push_back(peer);
+        }
         if (peer->pairing.empty() && peer->kind != Kind::Unknown)
             peer->deadline.reset();
         if (!peer->conn->flush())
             dead_.push_back(peer);
         else if (peer->conn->closing() && !peer->conn->wantsWrite())
             dead_.push_back(peer);
+    }
+
+    // ---- Uploads (PROTOCOL.md, "Files") ----
+
+    void uploadFail(Peer *peer, const std::string &reason, unsigned long long drain)
+    {
+        UploadState &up = *peer->upload;
+        logLine("upload to " + (up.session.empty() ? std::string("?") : up.session) + " rejected: " + reason);
+        up.file.reset(); // the .part goes
+        peer->conn->send({{"type", "rejected"}, {"ref", up.ref}, {"session", up.session}, {"reason", reason}});
+        up.drain = std::min(drain, kMaxDrain);
+        if (up.drain == 0)
+            peer->conn->closeAfterFlush();
+    }
+
+    void uploadDone(Peer *peer)
+    {
+        UploadState &up = *peer->upload;
+        const std::string reason = up.file->finish();
+        if (!reason.empty())
+            return uploadFail(peer, reason, 0);
+        const json done = {{"type", "uploaded"}, {"ref", up.ref}, {"session", up.session}, {"path", up.file->path()},
+                           {"name", up.file->name()}, {"size", up.size}};
+        logLine("upload to " + up.session + ": " + std::to_string(up.size) + " bytes stored");
+        peer->conn->send(done);
+        peer->conn->closeAfterFlush();
+        broadcast(done); // the upload connection itself is no app
+        up.file.reset();
+    }
+
+    // Bytes of the file, or of what is dropped after a refusal.
+    void uploadBytes(Peer *peer, const char *data, std::size_t size)
+    {
+        UploadState &up = *peer->upload;
+        if (peer->conn->closing())
+            return;
+        if (!up.file) {
+            up.drain -= std::min<unsigned long long>(up.drain, size);
+            if (up.drain == 0)
+                peer->conn->closeAfterFlush();
+            return;
+        }
+        const unsigned long long take = std::min<unsigned long long>(size, up.size - up.file->received());
+        if (take > 0 && !up.file->write(data, take))
+            return uploadFail(peer, "write-failed", up.size - up.file->received());
+        if (up.file->received() == up.size)
+            uploadDone(peer);
+    }
+
+    // Reads what is there; `open` is false when the peer's end is closed.
+    void serviceUpload(Peer *peer, bool open)
+    {
+        UploadState &up = *peer->upload;
+        const std::string buffered = peer->conn->takeBuffered();
+        if (!buffered.empty()) {
+            peer->lastReceived = Clock::now();
+            uploadBytes(peer, buffered.data(), buffered.size());
+        }
+        char chunk[65536];
+        while (open && !peer->conn->closing()) {
+            const unsigned long long wanted = up.file ? up.size - up.file->received() : up.drain;
+            const long n = peer->conn->readRaw(chunk, static_cast<std::size_t>(std::min<unsigned long long>(sizeof chunk, wanted)));
+            if (n == Stream::kWouldBlock)
+                break;
+            if (n <= 0) {
+                open = false;
+                break;
+            }
+            peer->lastReceived = Clock::now();
+            uploadBytes(peer, chunk, static_cast<std::size_t>(n));
+        }
+        if (!open && !peer->conn->closing())
+            uploadEnded(peer, "short"); // the connection ended before the last byte
+    }
+
+    // An upload that cannot go on: the answer is tried once, the connection goes.
+    void uploadEnded(Peer *peer, const std::string &reason)
+    {
+        if (peer->upload->file)
+            uploadFail(peer, reason, 0);
+        peer->conn->flush();
+        dead_.push_back(peer);
+    }
+
+    void onUpload(Peer *peer, const json &message)
+    {
+        peer->upload = std::make_unique<UploadState>();
+        UploadState &up = *peer->upload;
+        up.ref = message.value("ref", json());
+        up.session = message.contains("session") && message["session"].is_string() ? message["session"].get<std::string>() : "";
+        const std::string name = message.contains("name") && message["name"].is_string() ? message["name"].get<std::string>() : "";
+        std::string sha = message.contains("sha256") && message["sha256"].is_string() ? message["sha256"].get<std::string>() : "";
+        for (char &c : sha)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const bool sized = message.contains("size") && message["size"].is_number_integer() && message["size"].get<long long>() >= 0;
+        if (sized)
+            up.size = message["size"].get<unsigned long long>();
+        if (!sized || sha.size() != 64 || sha.find_first_not_of("0123456789abcdef") != std::string::npos)
+            return uploadFail(peer, "bad-request", 0);
+        const unsigned long long drain = up.size;
+        if (!session(up.session))
+            return uploadFail(peer, "unknown-session", drain);
+        if (up.size > kMaxUploadFile)
+            return uploadFail(peer, "too-large", drain);
+        up.file = std::make_unique<InboxUpload>(up.session, name, up.size, sha);
+        if (const std::string reason = up.file->open(); !reason.empty())
+            return uploadFail(peer, reason, drain);
+        if (up.size == 0)
+            uploadDone(peer);
+    }
+
+    // The hourly pass (and one at the start): old files, empty directories and
+    // the directories of sessions that are gone.
+    void sweepInbox()
+    {
+        if (Clock::now() < nextSweep_)
+            return;
+        nextSweep_ = Clock::now() + inboxSweepEvery();
+        std::set<std::string> live;
+        for (Session *s : sessions())
+            live.insert(s->id());
+        cleanInbox(&live, kInboxLife);
     }
 
     void reap()
@@ -453,6 +625,8 @@ private:
                 if (const auto found = sessions_.find(peer->sessionId); found != sessions_.end()) {
                     const std::optional<StartRequest> again = found->second->replacement();
                     sessionGone(*found->second);
+                    if (!again) // a replacement takes the session's id and its files
+                        removeInbox(found->first);
                     sessions_.erase(found);
                     sessionsDirty_ = true;
                     if (again) // a restart that replaces the wrapper
@@ -475,6 +649,7 @@ private:
                 if (!entry.second->ended())
                     return false;
                 sessionGone(*entry.second);
+                removeInbox(entry.first);
                 return true;
             }))
             sessionsDirty_ = true;
@@ -495,7 +670,14 @@ private:
         const auto now = Clock::now();
         if (!conversation.empty())
             for (const auto &p : prompts) {
-                kept_.push_back({conversation, session.cwd(), session.id(), p, now + kKeptLife, ++keptSeq_});
+                // The files went with the session's inbox: only its text is kept, and nothing when there is none.
+                if (p.text.empty()) {
+                    mine.push_back(0);
+                    continue;
+                }
+                Prompt text = p;
+                text.files.clear();
+                kept_.push_back({conversation, session.cwd(), session.id(), std::move(text), now + kKeptLife, ++keptSeq_});
                 mine.push_back(keptSeq_);
             }
         // What the caps push out, oldest first; of a prompt of this very
@@ -773,7 +955,8 @@ private:
         }
         return {{"type", "welcome"}, {"host", hostName()}, {"user", userName()}, {"version", kVersion},
                 {"assistants", assistants}, {"installed", installed}, {"conversations", true},
-                {"peers", true}, {"forget", true}, {"model", true}, {"effort", true}, {"logout", true}, {"rename", true}, {"tokenLogin", true}};
+                {"peers", true}, {"forget", true}, {"model", true}, {"effort", true}, {"logout", true}, {"rename", true}, {"tokenLogin", true},
+                {"upload", {{"maxFile", kMaxUploadFile}, {"maxSession", kMaxUploadSession}}}};
     }
 
     void handle(Peer *peer, const json &message)
@@ -906,6 +1089,8 @@ private:
             peer->subscriptions.erase(message.value("session", ""));
         else if (type == "prompt")
             onPrompt(peer, message);
+        else if (type == "upload")
+            onUpload(peer, message);
         else if (type == "dismiss")
             onDismiss(peer, message);
         else if (type == "propose" && !peer->ssl)
@@ -1287,7 +1472,20 @@ private:
         Session *session = this->session(id);
         if (!session)
             return reject(peer, ref, id, "unknown-session");
-        if (text.empty())
+        // Files the app uploaded for this session, and only those.
+        std::vector<std::string> files;
+        if (message.contains("files") && !message["files"].is_null()) {
+            const json &list = message["files"];
+            if (!list.is_array() || list.size() > kMaxPromptFiles)
+                return reject(peer, ref, id, "bad-file");
+            for (const auto &entry : list) {
+                const std::string resolved = entry.is_string() ? inboxFile(id, entry.get<std::string>()) : "";
+                if (resolved.empty())
+                    return reject(peer, ref, id, "bad-file");
+                files.push_back(resolved);
+            }
+        }
+        if (text.empty() && files.empty())
             return reject(peer, ref, id, "empty");
         if (text.size() > kMaxPrompt)
             return reject(peer, ref, id, "too-long");
@@ -1300,6 +1498,7 @@ private:
         const std::string header = fromLine(message);
         Prompt prompt{header + text, message.value("voice", false), ref};
         prompt.agent = !header.empty();
+        prompt.files = std::move(files);
         const bool typed = session->prompt(std::move(prompt));
         peer->conn->send({{"type", "accepted"}, {"ref", ref}, {"session", id},
                           {"delivery", typed && !session->confirmsDelivery() ? "typed" : "queued"}});
@@ -1432,7 +1631,7 @@ private:
         proposals_.push_back(proposal);
         int apps = 0;
         for (const auto &other : peers_)
-            if (other->kind == Kind::App && other->client != "pvai")
+            if (other->kind == Kind::App && !other->upload && other->client != "pvai")
                 ++apps;
         long long seenAt = 0;
         const std::string warning = targetWarning(to, seenAt);
@@ -1567,6 +1766,7 @@ private:
         take(directDeadline());
         if (!kept_.empty())
             take(kept_.front().expires);
+        take(nextSweep_);
         if (!next)
             return -1;
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(*next - Clock::now()).count();
@@ -1961,6 +2161,8 @@ private:
                 peer->deadline.reset();
                 if (peer->kind == Kind::Unknown)
                     dead_.push_back(peer.get());
+            } else if (peer->upload && !peer->conn->closing() && now - peer->lastReceived >= uploadIdle()) {
+                uploadEnded(peer.get(), "short"); // nothing came for too long
             } else if (silent(*peer, now) || peer->conn->pending() > kMaxOut) {
                 logLine((peer->address.empty() ? std::string("a peer") : peer->address) + ": dropped, "
                         + (peer->conn->pending() > kMaxOut ? "too much unsent" : "silent"));
@@ -1979,7 +2181,7 @@ private:
     // (CLI, hooks, wrappers, processes) may wait as long as they like.
     static bool silent(const Peer &peer, Clock::time_point now)
     {
-        return peer.tcp && peer.kind == Kind::App && now - peer.lastReceived >= kAppSilence;
+        return peer.tcp && peer.kind == Kind::App && !peer.upload && now - peer.lastReceived >= kAppSilence;
     }
 
     std::optional<Clock::time_point> directDeadline() const
@@ -1994,6 +2196,8 @@ private:
         for (const auto &peer : peers_)
             if (peer->deadline)
                 take(*peer->deadline);
+            else if (peer->upload)
+                take(peer->lastReceived + uploadIdle());
             else if (peer->tcp && peer->kind == Kind::App)
                 take(peer->lastReceived + kAppSilence);
         if (window_)
@@ -2014,6 +2218,7 @@ private:
     std::deque<KeptPrompt> kept_;
     unsigned long long keptSeq_ = 0;
     bool sessionsDirty_ = false;
+    Clock::time_point nextSweep_; // the next pass over the inbox
     unsigned long long serial_ = 0;
     std::vector<std::unique_ptr<Backend>> backends_;
     ClaudeBackend *claude_ = nullptr; // its sessions come from wrappers

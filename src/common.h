@@ -209,6 +209,17 @@ public:
     // Reads what is there and appends whole lines; a line that is not JSON
     // becomes a null value. False on EOF, error or an overlong line.
     bool readMessages(std::vector<json> &messages);
+    // The same in two steps, for a reader that may leave line framing after
+    // a message (an upload): fill() reads what is there (false on EOF or
+    // error; what came stays buffered), next() takes the next whole line as a
+    // message (false when none is buffered; `tooLong` when a line is over the limit).
+    bool fill();
+    bool next(json &message, bool &tooLong);
+    bool overlong() const { return in_.size() > maxLine_; }
+    // Raw bytes: what fill() buffered and next() did not take, and then the
+    // stream itself (Stream::read's codes).
+    std::string takeBuffered();
+    long readRaw(char *buffer, std::size_t size) { return stream_->read(buffer, size); }
     bool flush(); // false on error
     void closeAfterFlush() { closing_ = true; }
     bool closing() const { return closing_; }

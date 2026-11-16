@@ -1,5 +1,7 @@
 #include "text.h"
 
+#include <cctype>
+
 #include <cstdio>
 #include <ctime>
 
@@ -109,6 +111,44 @@ int compareVersions(std::string_view a, std::string_view b)
             return x < y ? -1 : 1;
     }
     return 0;
+}
+
+std::string withFiles(const std::string &text, const std::vector<std::string> &paths)
+{
+    if (paths.empty())
+        return text;
+    // Without a text a short lead keeps a path from starting the prompt (a
+    // leading / would read as a slash command).
+    std::string out = text.empty() ? "Attached:\n" : text + "\n\n";
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        const std::string &path = paths[i];
+        const bool quote = path.find_first_of(" \t\"'\\") != std::string::npos;
+        if (quote) {
+            out += '"';
+            for (const char c : path) {
+                if (c == '"' || c == '\\')
+                    out += '\\';
+                out += c;
+            }
+            out += '"';
+        } else {
+            out += path;
+        }
+        if (i + 1 < paths.size())
+            out += '\n';
+    }
+    return out;
+}
+
+bool isImagePath(const std::string &path)
+{
+    const auto dot = path.rfind('.');
+    if (dot == std::string::npos)
+        return false;
+    std::string extension = path.substr(dot + 1);
+    for (char &c : extension)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return extension == "png" || extension == "jpg" || extension == "jpeg" || extension == "gif" || extension == "webp";
 }
 
 } // namespace pvai

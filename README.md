@@ -64,6 +64,7 @@ pvai answer <session> allow|deny     # the dialog it waits on
 pvai clear-input <session>           # empty its prompt box (a draft, a command left in shell mode)
 pvai interrupt <session>             # cancel the running turn or a hung request, the session stays (Esc; since 0.5.81)
 pvai effort <session> <level>        # Claude Code low|medium|high|xhigh|max, Codex minimal..xhigh (since 0.5.82)
+pvai upload <session> <file>         # put a file into the session's inbox, as the app does (since 0.5.83)
 pvai forget <dir> <id>               # delete an ended Claude Code conversation for good
 pvai sessions                        # what runs on this host
 pvai watch                           # what an app would see, for checks
