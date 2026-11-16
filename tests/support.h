@@ -302,6 +302,13 @@ public:
         send({{"jsonrpc", "2.0"}, {"id", request["id"]}, {"result", result}});
     }
 
+    // Drops what was received so far.
+    void clearReceived()
+    {
+        std::lock_guard lock(mutex_);
+        in_.clear();
+    }
+
     // The first message from the daemon that matches, waiting up to `ms`;
     // null when none came. `remove`: take it off the list.
     json take(const std::function<bool(const json &)> &pred, int ms = 3000, bool remove = true)

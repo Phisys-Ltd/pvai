@@ -784,8 +784,13 @@ for Claude Code; the differences:
   `pvai codex` TUI holds it is `rejected` with `not-detached`.
 - After the app server restarts, the daemon takes on what it reports as
   loaded (`thread/loaded/list`); a thread that another client loads again
-  shows up again. TUI threads and threads from before a
-  daemon restart are not `detached`.
+  shows up again. TUI threads are not `detached`. Since 0.6.0 the threads
+  the daemon started (`start`, `start.resume`) stay `detached` across daemon
+  restarts and crashes: their ids are kept in `~/.config/pvai/codex-threads.json`
+  until the thread is stopped, archived or deleted, or no longer loaded in
+  the app server (then `start.resume` makes it detached again), so `stop`
+  still archives them. A thread the app server holds that the daemon did
+  not start (a plain `codex`, a `pvai codex` TUI) stays not `detached`.
 - When a TUI started with `pvai codex` ends, its threads leave `sessions`:
   the daemon unsubscribes them (which unloads them unless another client
   holds them) and does not take them on again while they stay loaded. A
@@ -793,8 +798,8 @@ for Claude Code; the differences:
   daemon takes on while that TUI is the only `pvai codex` running in the
   thread's folder; with two TUIs in one folder, new threads belong to
   neither. Detached threads never leave this way. Threads of a plain
-  `codex` (without pvai), and all threads after a daemon restart, stay
-  loaded and stay sessions until `stop` or the app server unloads them.
+  `codex` (without pvai) stay loaded and stay sessions until `stop` or the
+  app server unloads them.
 - `usage`: `model`, `context` from Codex's token count of the last request
   (`tokens` its total, `size` the model's context window; for a thread that
   ran before the daemon saw it, the last count in its rollout file; `0` and

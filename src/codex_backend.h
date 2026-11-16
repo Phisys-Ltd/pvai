@@ -106,7 +106,12 @@ public:
     std::optional<Clock::time_point> deadline() const override;
 
     // For its sessions.
-    void markStopped(const std::string &thread) { stopped_.insert(thread); }
+    // A stopped thread is archived or let go of: not the daemon's own any more.
+    void markStopped(const std::string &thread)
+    {
+        stopped_.insert(thread);
+        forgetOwn(thread);
+    }
     bool heldByTui(const std::string &thread) const;
     // Lets go of a thread that is not ours (unsubscribes; not taken on again
     // while it stays loaded).
@@ -133,6 +138,14 @@ private:
     // it and no thread works.
     void maybeRestart();
     void adopt(const std::string &id);
+    // The ids of the threads this daemon started (new or resumed), kept in
+    // codex-threads.json of the config directory so they stay detached across
+    // a restart of the daemon. Load and save never throw: a missing or broken
+    // file is an empty set.
+    void loadOwn();
+    void saveOwn() const;
+    void rememberOwn(const std::string &thread);
+    void forgetOwn(const std::string &thread);
     CodexSession *addSession(const json &thread, bool detached);
     void setLimits(const json &limits);
     void listThreads(const std::string &cwd, bool archived, std::function<void(json)> done);
@@ -149,6 +162,7 @@ private:
     bool serverAccount_ = false;   // the app server holds an account (it keeps it in memory)
     bool restartWanted_ = false;   // a login or logout changed what the server holds
     bool restarting_ = false;
+    std::set<std::string> own_;      // threads the daemon started: detached, also after a restart
     std::set<std::string> stopped_;  // threads stopped here: not adopted again
     std::set<std::string> adopting_; // thread/resume sent
     // Loaded subagent threads (parentThreadId set) by id: their parent, the

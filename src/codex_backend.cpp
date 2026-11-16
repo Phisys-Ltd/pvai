@@ -3,9 +3,11 @@
 #include "transcript.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 
 #include <poll.h>
+#include <sys/stat.h>
 
 namespace pvai {
 
@@ -713,6 +715,57 @@ CodexBackend::CodexBackend(Host &host)
     : RpcBackend(host)
 {
     bin_ = codexBinary();
+    // Before the first rescan or a thread/started can adopt anything.
+    loadOwn();
+}
+
+namespace {
+
+std::string ownPath() { return configDir() + "/codex-threads.json"; }
+
+} // namespace
+
+void CodexBackend::loadOwn()
+{
+    own_.clear();
+    try {
+        std::ifstream in(ownPath());
+        const json file = json::parse(in, nullptr, false);
+        if (file.is_object() && file.contains("threads") && file["threads"].is_array())
+            for (const auto &id : file["threads"])
+                if (id.is_string() && !id.get<std::string>().empty())
+                    own_.insert(id.get<std::string>());
+    } catch (...) {
+        own_.clear();
+    }
+}
+
+// Written through a temporary file in the same directory (mode 0600), like labels.json.
+void CodexBackend::saveOwn() const
+{
+    try {
+        const std::string path = ownPath(), temp = path + ".tmp";
+        {
+            std::ofstream out(temp, std::ios::trunc);
+            out << json{{"threads", own_}}.dump(1) << "\n";
+        }
+        ::chmod(temp.c_str(), 0600);
+        std::error_code ec;
+        std::filesystem::rename(temp, path, ec);
+    } catch (...) {
+    }
+}
+
+void CodexBackend::rememberOwn(const std::string &thread)
+{
+    if (!thread.empty() && own_.insert(thread).second)
+        saveOwn();
+}
+
+void CodexBackend::forgetOwn(const std::string &thread)
+{
+    if (own_.erase(thread))
+        saveOwn();
 }
 
 json CodexBackend::modes() const
@@ -895,6 +948,12 @@ void CodexBackend::service()
                         if (changed)
                             host_.assistantsChanged();
                     });
+                } else if (method == "thread/archived" || method == "thread/deleted") {
+                    forgetOwn(str(params, "threadId"));
+                    if (subagentEvent(method, params)) {
+                    } else if (auto *session = dynamic_cast<CodexSession *>(host_.session(str(params, "threadId")))) {
+                        session->onNotification(method, params);
+                    }
                 } else if (method == "thread/started") {
                     const json thread = member(params, "thread");
                     if (member(thread, "parentThreadId").is_null())
@@ -931,6 +990,19 @@ void CodexBackend::rescan()
         std::erase_if(released_, [&](const std::string &id) { return !loaded.count(id); });
         // A stopped thread that is no longer loaded is archived and gone.
         std::erase_if(stopped_, [&](const std::string &id) { return !loaded.count(id); });
+        // Threads the daemon started that are not loaded any more are no sessions;
+        // `start.resume` adds them again. One with a session or being resumed is
+        // kept: this list may have been taken before it was started.
+        bool pruned = false;
+        for (auto it = own_.begin(); it != own_.end();) {
+            if (!loaded.count(*it) && !host_.session(*it) && !adopting_.count(*it)) {
+                it = own_.erase(it);
+                pruned = true;
+            } else
+                ++it;
+        }
+        if (pruned)
+            saveOwn();
         if (std::erase_if(subagents_, [&](const auto &entry) { return !loaded.count(entry.first); }))
             host_.sessionsChanged();
         for (const auto &id : loaded)
@@ -1063,7 +1135,7 @@ void CodexBackend::adopt(const std::string &id)
         if (!result.contains("thread"))
             return;
         if (member(result["thread"], "parentThreadId").is_null()) {
-            if (CodexSession *session = addSession(result["thread"], false))
+            if (CodexSession *session = addSession(result["thread"], own_.count(id) > 0))
                 session->setSettings(member(result, "approvalPolicy"), member(result, "sandbox"), member(result, "model"), member(result, "reasoningEffort"));
         } else
             noteSubagent(result["thread"]);
@@ -1076,6 +1148,8 @@ CodexSession *CodexBackend::addSession(const json &thread, bool detached)
     // Subagents' threads are part of their parent's turn.
     if (id.empty() || !member(thread, "parentThreadId").is_null())
         return nullptr;
+    if (detached)
+        rememberOwn(id);
     if (auto *existing = dynamic_cast<CodexSession *>(host_.session(id))) {
         if (detached)
             existing->setDetached();
@@ -1199,6 +1273,7 @@ void CodexBackend::start(const StartRequest &request, Started done)
     }
     const std::string id = request.resume;
     if (auto *running = dynamic_cast<CodexSession *>(host_.session(id))) {
+        rememberOwn(id);
         running->setDetached();
         running->setLabel(label);
         return done(id, {});

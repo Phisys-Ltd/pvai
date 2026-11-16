@@ -114,6 +114,13 @@ public:
         return received([&](const json &m) { return m.value("method", "") == method && (!params || params(m.value("params", json()))); }, ms);
     }
 
+    // More threads that thread/loaded/list reports.
+    void load(const std::string &id)
+    {
+        std::lock_guard lock(loadedMutex_);
+        loadedMore_.push_back(id);
+    }
+
     std::atomic<int> threadListCalls{0};
     std::atomic<int> rejectTurn{0}; // turn/start answers an error: 1 a model the account may not use, 2 a login problem
     std::atomic<bool> rejectStart{false}; // thread/start answers an error
@@ -204,10 +211,16 @@ protected:
         else if (method == "model/list")
             reply(id, {{"data", {{{"model", "gpt-test"}, {"hidden", false}}, {{"model", "gpt-hidden"}, {"hidden", true}}}}});
         else if (method == "thread/loaded/list")
-            reply(id, {{"data", {"t-tui", "t-kid"}}});
+        {
+            json data = {"t-tui", "t-kid"};
+            std::lock_guard lock(loadedMutex_);
+            for (const auto &more : loadedMore_)
+                data.push_back(more);
+            reply(id, {{"data", data}});
+        }
         else if (method == "thread/resume") {
             const std::string tid = params.value("threadId", "");
-            if (tid == "t-tui" || tid == "t-arch" || tid == "t-tui2" || tid == "t-free")
+            if (tid == "t-tui" || tid == "t-new" || tid == "t-arch" || tid == "t-tui2" || tid == "t-free")
                 reply(id, {{"thread", thread(tid, "/tmp")}});
             else if (tid == "t-kid")
                 reply(id, {{"thread", kid()}});
@@ -247,6 +260,8 @@ protected:
     }
 
     std::string in_raw_;
+    std::mutex loadedMutex_;
+    std::vector<std::string> loadedMore_;
 };
 
 } // namespace
@@ -3419,6 +3434,42 @@ esac
           "uninstall-hooks removes them and restores the chained status line: " + out + removed.dump());
     check(shell(g_pvai + " uninstall-hooks").find("no pvai hooks") != std::string::npos,
           "a second uninstall-hooks leaves the file alone");
+
+    // ---- Codex: a thread the daemon started stays detached across a restart of the daemon.
+    {
+        const std::string ownFile = configHome + "/pvai/codex-threads.json";
+        auto ownIds = [&] { return json::parse(readFile(ownFile), nullptr, false).value("threads", json::array()); };
+        auto has = [&](const std::string &id) {
+            const json ids = ownIds();
+            return std::find(ids.begin(), ids.end(), id) != ids.end();
+        };
+        check(has("t-arch") && has("t-free") && !has("t-new") && !has("t-tui"),
+              "codex-threads.json holds the resumed threads, not the stopped one nor a TUI's: " + ownIds().dump());
+        a.send({{"type", "start"}, {"ref", 3100}, {"assistant", "codex"}, {"cwd", project}});
+        check(a.next("started", [](const json &m) { return m.value("ref", 0) == 3100; }).value("session", "") == "t-new", "codex: a thread started again");
+        check(has("t-new"), "and its id is kept: " + ownIds().dump());
+        codex.load("t-new");
+        // The daemon ends and a new one finds the thread loaded.
+        daemon.stop();
+        codex.clearReceived();
+        daemon.start(g_pvai, appPort, 1200, true);
+        LineClient b;
+        b.send(app());
+        b.next("welcome");
+        const json both = b.next("sessions", [](const json &m) {
+            return !sessionIn(m, "t-new").empty() && !sessionIn(m, "t-tui").empty();
+        }, 6000);
+        const json again = sessionIn(both, "t-new"), other = sessionIn(both, "t-tui");
+        check(again.value("detached", false) && again.value("stoppable", false), "after a restart the thread is still detached and stoppable: " + again.dump());
+        check(!other.empty() && !other.value("detached", true), "while a thread pvai did not start is not detached: " + other.dump());
+        check(!has("t-arch") && !has("t-free") && has("t-new"), "the ids of threads that are not loaded are pruned: " + ownIds().dump());
+        b.send({{"type", "stop"}, {"ref", 3101}, {"session", "t-new"}});
+        check(!b.next("stopping").empty(), "the restarted daemon stops it");
+        check(!codex.call("thread/archive", [](const json &p) { return p.value("threadId", "") == "t-new"; }).is_null(), "by archiving it");
+        check(codex.call("thread/unsubscribe", [](const json &p) { return p.value("threadId", "") == "t-new"; }, 300).is_null(), "not by unsubscribing");
+        check(!b.next("sessions", [](const json &m) { return sessionIn(m, "t-new").empty(); }).empty(), "it leaves the sessions");
+        check(!has("t-new"), "and its id leaves codex-threads.json: " + ownIds().dump());
+    }
 
     daemon.stop();
     return finish();
