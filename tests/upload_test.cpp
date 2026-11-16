@@ -7,6 +7,8 @@
 
 #include "inbox.h"
 
+#include <climits>
+
 #include <openssl/evp.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -150,7 +152,16 @@ int main(int argc, char **argv)
     const TestHome home;
     ::setenv("PVAI_CODEX", "", 1);
     ::unsetenv(kEnvId);
-    const std::string inbox = home.path + "/.cache/pvai/inbox";
+    // HOME behind a symlink (macOS: /tmp -> /private/tmp): the inbox, uploaded.path and the
+    // paths of a prompt must all be the canonical ones.
+    const std::string homeLink = home.path + "-link";
+    ::unlink(homeLink.c_str());
+    check(::symlink(home.path.c_str(), homeLink.c_str()) == 0, "HOME as a symlink");
+    ::setenv("HOME", homeLink.c_str(), 1);
+    char realBuf[PATH_MAX];
+    const std::string realHome = ::realpath(home.path.c_str(), realBuf) ? realBuf : home.path;
+    const std::string inbox = realHome + "/.cache/pvai/inbox";
+    check(inboxRoot() == inbox, "inboxRoot is canonical behind a symlinked HOME: " + inboxRoot());
 
     // ---- The name, without a daemon.
     check(sanitizeUploadName("report.pdf") == "report.pdf", "a plain name stays");
@@ -338,6 +349,7 @@ int main(int argc, char **argv)
         const json two = upload("wup", "my file.txt", "spaced");
         const json plain = upload("wup", "plain.txt", "plain");
         const std::string spaced = two.value("path", ""), simple = plain.value("path", "");
+        check(simple.compare(0, inbox.size(), inbox) == 0, "uploaded.path is canonical: " + simple);
         app.drain();
         app.send({{"type", "prompt"}, {"ref", 1}, {"session", "wup"}, {"text", "look"}, {"files", {simple}}});
         check(app.next("accepted").value("delivery", "") == "typed", "a prompt with files is accepted");
@@ -407,5 +419,6 @@ int main(int argc, char **argv)
     check(fs::exists(inbox + "/wq"), "another session's directory stays");
 
     daemon.stop();
+    ::unlink(homeLink.c_str());
     return finish();
 }

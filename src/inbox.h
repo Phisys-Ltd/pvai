@@ -19,7 +19,7 @@ constexpr std::size_t kMaxUploadName = 120;                            // bytes 
 constexpr std::size_t kMaxPromptFiles = 32;                            // `files` of one prompt
 constexpr auto kInboxLife = std::chrono::hours(24);
 
-std::string inboxRoot();                          // ~/.cache/pvai/inbox, nothing is created
+std::string inboxRoot();                          // ~/.cache/pvai/inbox, created, canonical (realpath)
 std::string inboxDir(const std::string &session); // empty for an id that is no path component
 
 // The name as it is stored, without the timestamp: basename only, control

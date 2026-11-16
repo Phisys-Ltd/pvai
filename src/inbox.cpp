@@ -20,7 +20,14 @@ namespace fs = std::filesystem;
 
 std::string inboxRoot()
 {
-    return homeDir() + "/.cache/pvai/inbox";
+    // Created on demand and canonical (symlinks in HOME resolved), so that every
+    // path derived from it agrees with what realpath() gives back later.
+    const std::string path = homeDir() + "/.cache/pvai/inbox";
+    std::error_code ec;
+    fs::create_directories(path, ec);
+    ::chmod(path.c_str(), 0700);
+    char real[PATH_MAX];
+    return ::realpath(path.c_str(), real) ? std::string(real) : path;
 }
 
 static bool goodId(const std::string &id)

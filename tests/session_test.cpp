@@ -6,6 +6,7 @@
 // usage: pvai-session-test /path/to/pvai
 #include "support.h"
 
+#include <climits>
 #include <fcntl.h>
 #include <sys/stat.h>
 
@@ -310,6 +311,11 @@ int main(int argc, char **argv)
     g_pvai = fs::canonical(argv[1]).string();
     const TestHome testHome;
     const std::string home = testHome.path;
+    // The inbox is canonical: HOME behind a symlink (macOS /tmp) shows as its real path.
+    const std::string realHome = [&] {
+        char r[PATH_MAX];
+        return ::realpath(home.c_str(), r) ? std::string(r) : home;
+    }();
     const std::string configHome = home + "/.config";
     const std::string runtime = testHome.runtime;
     const std::string bin = home + "/bin";
@@ -697,7 +703,7 @@ esac
     // Uploaded files (PROTOCOL.md, "Files"): a picture goes in as a localImage item, any other file as a path
     // after the text; only files of the session's own inbox are taken.
     {
-        const std::string inbox = home + "/.cache/pvai/inbox/t-new";
+        const std::string inbox = realHome + "/.cache/pvai/inbox/t-new";
         writeFile(inbox + "/20261116-101530-shot.PNG", "png");
         writeFile(inbox + "/20261116-101530-notes.txt", "notes");
         a.drain();
@@ -3097,7 +3103,7 @@ esac
         args = readFile(bin + "/claude.args");
     }
     // pvai run adds --add-dir (the inbox, for uploaded files) last; a resume goes after it.
-    const std::string addDir = "--add-dir " + home + "/.cache/pvai/inbox";
+    const std::string addDir = "--add-dir " + realHome + "/.cache/pvai/inbox";
     check(args == "--model opus --continue " + addDir + "\n--model opus " + addDir + " --resume sess-1\n",
           "the same arguments plus --add-dir, --continue gives way to --resume: " + args);
     check(fs::is_directory(home + "/.cache/pvai/inbox"), "pvai run creates the inbox root");
