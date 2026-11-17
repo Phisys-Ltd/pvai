@@ -1,3 +1,10 @@
+pvai (0.6.0-1) trixie; urgency=medium
+
+  * Codex threads the daemon started stay detached across daemon restarts and crashes (kept in ~/.config/pvai/codex-threads.json), so stop archives them instead of only letting go.
+  * Agent messages carry files: pvai propose --file PATH (repeatable). The daemon copies them into an outbox; the app fetches them over a download connection and uploads them to the target session on release. welcome.proposalFiles, upload.maxProposal, upload.maxOutbox; pvai download.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 17 Nov 2026 00:56:24 +0100
+
 pvai (0.5.84-1) trixie; urgency=medium
 
   * Inbox paths are canonical (realpath), so uploads work when HOME sits behind a symlink, as on macOS (/tmp -> /private/tmp).
