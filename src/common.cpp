@@ -98,6 +98,11 @@ std::string daemonSocket()
     return runtimeDir() + "/daemon.sock";
 }
 
+std::string appSocket()
+{
+    return runtimeDir() + "/app.sock";
+}
+
 std::string configDir()
 {
     std::string base;
@@ -535,7 +540,9 @@ int listenTcp(const std::string &host, int port)
     if (::inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1
         || ::bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof address) != 0
         || ::listen(fd, 16) != 0) {
+        const int saved = errno;
         ::close(fd);
+        errno = saved;
         return -1;
     }
     return fd;

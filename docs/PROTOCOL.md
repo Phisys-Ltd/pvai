@@ -11,6 +11,36 @@ this file; a change lands here first, then in both implementations.
   ssh port forward it starts itself:
   `ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L <free port>:127.0.0.1:7470 <dest>`.
   `<dest>` is the user that runs Claude Code on that host (`root@taifun`).
+  Since 0.7.0 the form for current apps forwards to the app socket instead
+  (below), so that several users of one host can each have a daemon.
+- App socket (since 0.7.0): each daemon also listens on a unix socket,
+  `$XDG_RUNTIME_DIR/pvai/app.sock` (`/run/user/<uid>/pvai/app.sock`; without
+  `XDG_RUNTIME_DIR` the same directory logind made, else
+  `$TMPDIR/pvai-<uid>/app.sock`). The directory is mode 0700 and owned by the
+  user (the daemon refuses to start in any other), the socket 0600. A peer on
+  it is an app exactly like one on loopback TCP: `hello` needs the `token`,
+  the wrapper, hook, `register`, `attach`, `pair-open`, `revoke` and `listen`
+  messages are refused, the silence, hello and output limits are the same,
+  and `upload`, `download` and `fetch` side connections work the same. (The
+  CLI, hooks and wrappers use `daemon.sock`, which stays as it is.) A path
+  too long for a unix socket (about 107 bytes) means no app socket; the log
+  says so.
+  The ssh forward to it is
+  `ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L <free port>:<socket path> <dest>`
+  and needs OpenSSH 6.7 or newer on both ends. `<socket path>` and the token
+  come from one command: `ssh <dest> pvai endpoint`, which prints one JSON
+  line `{"token": "...", "socket": "/run/user/1000/pvai/app.sock", "port": 7470}`.
+  `socket` is null when there is no app socket, `port` is null when this
+  daemon does not hold the TCP port. `pvai endpoint` starts the daemon when
+  none runs and asks the running one, so the values are real. An app that
+  finds `pvai endpoint` unknown (older pvai) falls back to `pvai token` and
+  port 7470. `pvai token` is unchanged.
+- Port 7470 stays (an older app uses it). With several users on a host only
+  the first daemon gets it; if the bind fails the daemon starts anyway,
+  with `daemon.sock` and `app.sock`, and logs
+  `app port 127.0.0.1:7470 is taken (another user's daemon?); apps reach this daemon over <app.sock path> only`.
+  It does not retry. An app must therefore use the socket (or `pvai endpoint`)
+  and never assume that 7470 reaches the right user's daemon.
 - Framing: one JSON object per line, UTF-8, ended by `\n`. Every object has
   a `type`. Unknown types and unknown fields are ignored, on both sides.
 - Token: the daemon creates `~/.config/pvai/token` (32 random hex chars, mode
@@ -39,7 +69,12 @@ so this path must hold up like ssh.
   Kept in `~/.config/pvai/listen`; the daemon picks it up without a
   restart, and `pvai listen` starts the daemon. Only a running daemon
   listens: after a reboot, until something starts it (`pvai listen`, the
-  first `pvai run`), the host is not reachable directly.
+  first `pvai run`), the host is not reachable directly. Since 0.7.0, when
+  the port is in use (another user's daemon), the daemon logs and
+  `pvai listen` reports `port 7471 on ADDR is in use (another user's daemon?); choose another port with pvai listen ADDR:PORT`
+  (`pvai listen` exits 1 and shows it as
+  `pvai: the daemon cannot listen on ADDR:7471: <that message> (see .../daemon.log)`;
+  the daemon's `listening` answer carries it as `error`, for the local CLI only).
 - Identity: the daemon's Ed25519 key `~/.config/pvai/server.key` (0600) with
   a self-signed certificate, made on the first `listen` or `pair`. Each app
   install has its own Ed25519 key and self-signed certificate (on the Mac in

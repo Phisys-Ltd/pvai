@@ -158,12 +158,14 @@ private:
 
 class LineClient {
 public:
-    LineClient()
+    LineClient() : LineClient(daemonSocket()) {}
+    // On another unix socket (the app socket).
+    explicit LineClient(const std::string &path)
     {
         fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
         sockaddr_un addr{};
         addr.sun_family = AF_UNIX;
-        std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", daemonSocket().c_str());
+        std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path.c_str());
         ::connect(fd_, reinterpret_cast<sockaddr *>(&addr), sizeof addr);
     }
     ~LineClient() { ::close(fd_); }

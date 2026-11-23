@@ -35,6 +35,7 @@ constexpr const char *kEnvSocket = "PVAI_SOCK";
 
 std::string runtimeDir(); // created with mode 0700 when missing
 std::string daemonSocket();
+std::string appSocket(); // runtimeDir()/app.sock: the apps' socket, token like on TCP
 std::string configDir();  // ~/.config/pvai, created when missing
 std::string token();      // created on first use, mode 0600
 std::string selfExe();

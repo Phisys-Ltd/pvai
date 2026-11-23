@@ -1,3 +1,9 @@
+pvai (0.7.0-1) trixie; urgency=medium
+
+  * Several users on one host, each with an own daemon: the daemon also listens for apps on a unix socket, app.sock in the runtime directory (directory 0700, socket 0600), with the same rules as loopback TCP (token in hello, no wrapper or hook messages). If port 127.0.0.1:7470 is taken by another user's daemon, the daemon starts anyway and logs it; apps reach it over app.sock. New command `pvai endpoint` prints {"token", "socket", "port"} (port null when not held, socket null when none; starts the daemon like `pvai token`). `pvai listen` and the log now say when the direct-access port is in use and how to choose another.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 23 Nov 2026 17:00:00 +0100
+
 pvai (0.6.2-1) trixie; urgency=medium
 
   * New request fetch (welcome.fetch): the app opens a file link a session printed by fetching a read-only copy on a connection of its own (header with real path, name, size, sha256 and mtime, then the bytes). Allowed inside the session's working directory or inbox, or for a path that occurs in the session's own history; never for credentials, ~/.ssh, ~/.config/phi-secrets or pvai's own configuration. A working directory of / or the home directory grants nothing.

@@ -163,6 +163,15 @@ The app reaches a host in one of two ways.
 The app opens `ssh -N -o BatchMode=yes -L …:127.0.0.1:7470 USER@HOST`
 and runs `ssh USER@HOST pvai token` first. So:
 
+Several users on one host (since 0.7.0): each user's daemon also listens on
+`app.sock` in their runtime directory, and only the first daemon gets port
+7470 (the others log that the port is taken and carry on). An app that knows
+this asks `ssh USER@HOST pvai endpoint` (one JSON line with token, socket and
+port) and forwards to the socket with `-L PORT:/run/user/UID/pvai/app.sock`
+(OpenSSH 6.7 or newer); older apps keep using 7470, which reaches whoever
+got it first. Each user sets up the connection with their own login.
+
+
 1. Log in with a key, without a password or passphrase prompt: put the
    Mac's public key into the host's `~/.ssh/authorized_keys` (for example
    `ssh-copy-id USER@HOST`) and keep the key in the Mac's agent or

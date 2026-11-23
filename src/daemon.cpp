@@ -31,6 +31,7 @@
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <syslog.h>
 #include <unistd.h>
@@ -347,9 +348,11 @@ bool goodTarget(const std::string &to)
 
 class Daemon : public Host {
 public:
-    Daemon(int unixFd, int tcpFd)
+    Daemon(int unixFd, int appFd, int tcpFd, int port)
         : unixFd_(unixFd)
+        , appFd_(appFd)
         , tcpFd_(tcpFd)
+        , port_(port)
     {
         loadLabels();
         // The assistants this daemon knows, in the order the app lists them.
@@ -390,6 +393,7 @@ public:
             fds.push_back({unixFd_, POLLIN, 0});
             fds.push_back({tcpFd_, POLLIN, 0});
             fds.push_back({direct_.fd, POLLIN, 0});
+            fds.push_back({appFd_, POLLIN, 0});
             const std::size_t firstBackend = fds.size();
             for (const auto &backend : backends_)
                 fds.push_back({backend->fd(), backend->events(), 0});
@@ -418,9 +422,11 @@ public:
             if (fds[0].revents & POLLIN)
                 accept(unixFd_, false);
             if (fds[1].revents & POLLIN)
-                accept(tcpFd_, true);
+                accept(tcpFd_, true, true);
             if (direct_.fd >= 0 && fds[2].fd == direct_.fd && (fds[2].revents & POLLIN))
                 acceptDirect();
+            if (appFd_ >= 0 && fds[3].fd == appFd_ && (fds[3].revents & POLLIN))
+                accept(appFd_, true, false);
             // Peers, jobs and handshakes may be added or dropped while
             // handling; walk snapshots.
             std::vector<Peer *> ready;
@@ -559,9 +565,12 @@ public:
     }
 
     void log(const std::string &text) override { logLine(text); }
+    void setAppSocket(const std::string &path) { appSocket_ = path; }
 
 private:
-    void accept(int listenFd, bool tcp)
+    // `tcp`: an app (token in hello, no wrapper or hook messages); `inet`:
+    // over TCP, not the app socket.
+    void accept(int listenFd, bool tcp, bool inet = false)
     {
         const int fd = ::accept(listenFd, nullptr, nullptr);
         if (fd < 0)
@@ -573,7 +582,7 @@ private:
         if (!tcp)
             peer->conn->setMaxLine(kMaxLocalLine);
         peer->deadline = Clock::now() + kPreAuth; // cleared by hello (or the wrapper's register)
-        if (tcp)
+        if (inet)
             keepAlive(fd);
         peers_.push_back(std::move(peer));
     }
@@ -1277,6 +1286,14 @@ private:
             return;
         }
         if (peer->kind == Kind::Unknown) {
+            if (!peer->tcp && type == "endpoint") {
+                // Where apps can reach this daemon; null: not at all.
+                peer->conn->send({{"type", "endpoint"},
+                                  {"socket", appSocket_.empty() ? json(nullptr) : json(appSocket_)},
+                                  {"port", tcpFd_ >= 0 ? json(port_) : json(nullptr)}});
+                peer->conn->closeAfterFlush();
+                return;
+            }
             if (!peer->tcp && (type == "pair-open" || type == "revoke" || type == "listen")) {
                 if (type == "pair-open")
                     onPairOpen(peer, message);
@@ -1285,6 +1302,7 @@ private:
                 else {
                     loadListen();
                     peer->conn->send({{"type", "listening"}, {"spec", listenSpec_}, {"ok", direct_.fd >= 0 || listenSpec_.empty()},
+                                      {"error", listenSpec_.empty() || direct_.fd >= 0 ? "" : listenError_},
                                       {"fingerprint", tls_ ? tls_->fingerprint() : ""}});
                     peer->conn->closeAfterFlush();
                 }
@@ -2180,6 +2198,7 @@ private:
         spec = trim(spec);
         if (spec == listenSpec_ && (spec.empty() || direct_.fd >= 0))
             return;
+        listenError_.clear();
         if (direct_.fd >= 0) {
             ::close(direct_.fd);
             direct_.fd = -1;
@@ -2191,12 +2210,14 @@ private:
         std::string address;
         int port = 0;
         if (!parseListen(spec, address, port)) {
+            listenError_ = "cannot read the setting";
             logLine("direct access: cannot read listen setting \"" + spec + "\"");
             return;
         }
         if (!tls_) {
             tls_ = std::make_unique<TlsServer>([this](const std::string &print) { return admit(print); });
             if (!tls_->ready()) {
+                listenError_ = "no TLS identity in " + configDir();
                 logLine("direct access: no TLS identity in " + configDir());
                 tls_.reset();
                 return;
@@ -2204,7 +2225,15 @@ private:
         }
         direct_.fd = listenAny(address, port);
         if (direct_.fd < 0) {
-            logLine("direct access: cannot listen on " + spec + ": " + std::strerror(errno));
+            if (errno == EADDRINUSE) {
+                const std::string shown = address.find(':') == std::string::npos ? address : "[" + address + "]";
+                listenError_ = "port " + std::to_string(port) + " on " + address + " is in use (another user's daemon?); choose another port with pvai listen "
+                               + shown + ":PORT";
+                logLine("direct access: " + listenError_);
+            } else {
+                listenError_ = std::strerror(errno);
+                logLine("direct access: cannot listen on " + spec + ": " + listenError_);
+            }
             return;
         }
         setNonBlocking(direct_.fd);
@@ -2576,7 +2605,11 @@ private:
 
 
     int unixFd_;
-    int tcpFd_;
+    int appFd_;                 // the app socket; -1 without
+    int tcpFd_;                 // 127.0.0.1:port; -1 when taken
+    int port_;
+    std::string appSocket_;     // its path; empty without
+    std::string listenError_;   // why direct access is not up
     std::string token_ = token();
     std::vector<std::unique_ptr<Peer>> peers_;
     std::vector<Peer *> dead_;
@@ -2631,13 +2664,31 @@ int runDaemon(int port)
         std::fprintf(stderr, "pvai daemon: cannot listen on %s\n", daemonSocket().c_str());
         return 1;
     }
+    // The app socket: the same apps as on 127.0.0.1, for a host with several
+    // users. The lock above makes this daemon its only owner, so an old file is stale.
+    const std::string appPath = appSocket();
+    int appFd = -1;
+    if (appPath.size() >= sizeof(sockaddr_un::sun_path)) {
+        std::fprintf(stderr, "pvai daemon: app socket path too long, no app socket: %s\n", appPath.c_str());
+    } else if ((appFd = listenUnix(appPath)) < 0) {
+        std::fprintf(stderr, "pvai daemon: cannot listen on %s: %s; no app socket\n", appPath.c_str(), std::strerror(errno));
+    }
     const int tcpFd = listenTcp("127.0.0.1", port);
     if (tcpFd < 0) {
-        std::fprintf(stderr, "pvai daemon: cannot listen on 127.0.0.1:%d\n", port);
-        return 1;
+        const int saved = errno;
+        std::fprintf(stderr, "pvai daemon: app port 127.0.0.1:%d is %s%s; apps reach this daemon over %s only\n", port,
+                     saved == EADDRINUSE ? "taken (another user's daemon?)" : "not available: ",
+                     saved == EADDRINUSE ? "" : std::strerror(saved), appFd >= 0 ? appPath.c_str() : daemonSocket().c_str());
     }
-    std::fprintf(stderr, "pvai daemon %s: %s and 127.0.0.1:%d\n", kVersion, daemonSocket().c_str(), port);
-    return Daemon(unixFd, tcpFd).run();
+    std::fprintf(stderr, "pvai daemon %s: %s", kVersion, daemonSocket().c_str());
+    if (appFd >= 0)
+        std::fprintf(stderr, ", %s", appPath.c_str());
+    if (tcpFd >= 0)
+        std::fprintf(stderr, ", 127.0.0.1:%d", port);
+    std::fprintf(stderr, "\n");
+    Daemon daemon(unixFd, appFd, tcpFd, port);
+    daemon.setAppSocket(appFd >= 0 ? appPath : std::string());
+    return daemon.run();
 }
 
 } // namespace pvai

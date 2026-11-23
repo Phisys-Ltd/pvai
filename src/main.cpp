@@ -56,6 +56,7 @@ const char *kUsage =
     "       pvai install-service                       run the daemon as a systemd user service, also after a reboot\n"
     "       pvai uninstall-service                     remove that service again (the running daemon stays)\n"
     "       pvai token                                 print the token the app needs (and start the daemon)\n"
+    "       pvai endpoint                              JSON: token, app socket and port apps reach this daemon on\n"
     "       pvai start [--name LABEL] [DIR] [-- ARGS...] start Claude Code without a terminal\n"
     "       pvai attach SESSION                        a terminal onto such a session (Ctrl+\\ leaves it)\n"
     "       pvai sessions                              list this host's sessions\n"
@@ -661,6 +662,9 @@ int runListen(const std::vector<std::string> &args)
             std::printf("direct access is off\n");
         else if (ok)
             std::printf("direct access on %s\nfingerprint %s\n", spec.c_str(), answer.value("fingerprint", "").c_str());
+        else if (const std::string why = answer.value("error", ""); !why.empty())
+            std::fprintf(stderr, "pvai: the daemon cannot listen on %s: %s (see %s/daemon.log)\n", spec.c_str(), why.c_str(),
+                         runtimeDir().c_str());
         else
             std::fprintf(stderr, "pvai: the daemon cannot listen on %s (see %s/daemon.log)\n", spec.c_str(),
                          runtimeDir().c_str());
@@ -1191,6 +1195,25 @@ int main(int argc, char **argv)
             // where nothing has started the daemon yet, this does.
             if (const int fd = openDaemon(true); fd >= 0)
                 ::close(fd);
+            return 0;
+        }
+        if (verb == "endpoint" && args.size() == 1) {
+            // Where apps reach this daemon, from the daemon itself: the app
+            // socket and the TCP port when it holds them.
+            json endpoint;
+            const int status = adminRequest({{"type", "endpoint"}}, true, [&](const json &answer) {
+                endpoint = answer;
+                return true;
+            });
+            if (status < 0) {
+                std::fprintf(stderr, "pvai: the daemon did not start (see %s/daemon.log)\n", runtimeDir().c_str());
+                return 1;
+            }
+            if (status != 0 || endpoint.value("type", "") != "endpoint") {
+                std::fprintf(stderr, "pvai: the running daemon does not know `endpoint` (older than 0.6.3); pvai daemon restart\n");
+                return 1;
+            }
+            std::printf("%s\n", json({{"token", token()}, {"socket", endpoint["socket"]}, {"port", endpoint["port"]}}).dump().c_str());
             return 0;
         }
         if (verb == "send" && args.size() >= 3) {
