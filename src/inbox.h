@@ -29,6 +29,8 @@ std::string sanitizeUploadName(const std::string &name);
 
 // The SHA-256 of a file as lowercase hex; empty when it cannot be read.
 std::string fileSha256(const std::string &path);
+// The SHA-256 of bytes in memory as lowercase hex.
+std::string bytesSha256(const std::string &data);
 
 // `path` as a file of the session's inbox: the real path of a regular file
 // inside the session's inbox directory; empty for anything else.

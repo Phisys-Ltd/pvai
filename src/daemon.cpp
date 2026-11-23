@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -49,6 +50,8 @@
 #include <set>
 
 namespace pvai {
+
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -68,6 +71,8 @@ struct UploadState {
 // does not cut the transfer.
 struct DownloadState {
     int fd = -1;
+    std::string memory;      // a `fetch`: the whole file, read before the header; fd is -1 then
+    std::size_t offset = 0;  // how much of `memory` went out
     unsigned long long remaining = 0;
     std::chrono::steady_clock::time_point progress = std::chrono::steady_clock::now(); // the last time bytes left
     DownloadState() = default;
@@ -79,6 +84,74 @@ struct DownloadState {
             ::close(fd);
     }
 };
+
+// ---- fetch (PROTOCOL.md, "Files"): a read-only copy of a file a session named ----
+
+bool underDir(const std::string &real, const std::string &dir)
+{
+    if (dir.empty() || dir == "/")
+        return false;
+    return real == dir || real.compare(0, dir.size() + 1, dir + "/") == 0;
+}
+
+std::string realOr(const std::string &path)
+{
+    char buf[PATH_MAX];
+    return ::realpath(path.c_str(), buf) ? std::string(buf) : path;
+}
+
+// Files and directories fetch never serves, wherever they lie (also inside a
+// working directory, also when a session printed them).
+bool protectedPath(const std::string &real)
+{
+    const std::string home = homeDir();
+    const std::string config = configDir(); // pvai's devices, TLS key, tokens
+    std::vector<std::string> dirs = {home + "/.ssh", home + "/.config/phi-secrets", home + "/.kimi/credentials", config, runtimeDir()};
+    for (const std::string &dir : dirs)
+        if (underDir(real, realOr(dir)) || underDir(real, dir))
+            return true;
+    for (const std::string &file : {home + "/.claude/.credentials.json", home + "/.codex/auth.json", claudeTokenPath()})
+        if (real == realOr(file) || real == file)
+            return true;
+    return false;
+}
+
+bool nameChar(char c)
+{
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-' || (static_cast<unsigned char>(c) >= 0x80);
+}
+
+// `text` holds `path` as a whole path: not the middle of a longer one.
+bool textHasPath(const std::string &text, const std::string &path)
+{
+    for (std::size_t at = text.find(path); at != std::string::npos; at = text.find(path, at + 1)) {
+        if (at > 0 && (nameChar(text[at - 1]) || text[at - 1] == '/' || text[at - 1] == '.'))
+            continue;
+        const std::size_t end = at + path.size();
+        if (end < text.size()) {
+            const char c = text[end];
+            if (nameChar(c) || c == '/')
+                continue;
+            if (c == '.' && end + 1 < text.size() && nameChar(text[end + 1]))
+                continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool jsonHasPath(const json &value, const std::string &path, const std::string &other)
+{
+    if (value.is_string()) {
+        const std::string &text = value.get_ref<const std::string &>();
+        return textHasPath(text, path) || (other != path && textHasPath(text, other));
+    }
+    if (value.is_array() || value.is_object())
+        for (const auto &item : value)
+            if (jsonHasPath(item, path, other))
+                return true;
+    return false;
+}
 
 // Process: an assistant's own process that pvai started in a terminal
 // (`pvai codex`); its connection lasts as long as the process.
@@ -647,6 +720,13 @@ private:
         for (;;) {
             while (down.remaining > 0 && peer->conn->pending() < kChunk) {
                 char buffer[kChunk];
+                if (down.fd < 0) { // an in-memory file (`fetch`)
+                    const std::size_t take = std::min<std::size_t>(kChunk, static_cast<std::size_t>(down.remaining));
+                    peer->conn->sendRaw(down.memory.substr(down.offset, take));
+                    down.offset += take;
+                    down.remaining -= take;
+                    continue;
+                }
                 const ssize_t n = ::read(down.fd, buffer, static_cast<std::size_t>(std::min<unsigned long long>(sizeof buffer, down.remaining)));
                 if (n < 0 && errno == EINTR)
                     continue;
@@ -709,6 +789,81 @@ private:
         peer->conn->send({{"type", "download"}, {"ref", ref}, {"proposal", proposal->id}, {"file", file->id},
                           {"name", file->name}, {"size", file->size}, {"sha256", file->sha256}});
         // The first chunk goes in service(), when the socket is known to take it.
+    }
+
+    // A read-only copy of one file a session worked with (PROTOCOL.md, "Files"):
+    // the whole file is read first, then header and bytes go out like a download.
+    void onFetch(Peer *peer, const json &message)
+    {
+        peer->download = std::make_unique<DownloadState>();
+        DownloadState &down = *peer->download;
+        const json ref = message.value("ref", json());
+        const bool good = message.contains("session") && message["session"].is_string() && message.contains("path")
+            && message["path"].is_string();
+        const json sessionField = message.contains("session") ? message["session"] : json();
+        const std::string path = good ? message["path"].get<std::string>() : "";
+        std::string shown = good ? path : "?";
+        auto fail = [&](const char *reason) {
+            logLine("fetch of " + (sessionField.is_string() ? sessionField.get<std::string>() : std::string("?")) + " " + shown
+                    + " rejected: " + reason);
+            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"session", sessionField}, {"reason", reason}});
+            peer->conn->closeAfterFlush();
+        };
+        Session *target = sessionField.is_string() ? session(sessionField.get<std::string>()) : nullptr;
+        if (sessionField.is_string() && !target)
+            return fail("unknown-session");
+        if (!good || path.empty() || path[0] != '/' || path.find('\0') != std::string::npos)
+            return fail("bad-request");
+        char buf[PATH_MAX];
+        if (!::realpath(path.c_str(), buf))
+            return fail("not-found");
+        const std::string real = buf;
+        struct stat st;
+        if (::stat(real.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+            return fail("not-a-file");
+        if (protectedPath(real))
+            return fail("not-allowed");
+        const std::string home = realOr(homeDir());
+        const std::string cwd = realOr(target->cwd());
+        const bool inCwd = !target->cwd().empty() && cwd != home && underDir(real, cwd);
+        const std::string inbox = inboxDir(target->id());
+        bool allowed = inCwd || (!inbox.empty() && underDir(real, realOr(inbox)));
+        if (!allowed)
+            allowed = jsonHasPath(target->history(1000000), path, real);
+        if (!allowed)
+            return fail("not-allowed");
+        if (static_cast<unsigned long long>(st.st_size) > kMaxUploadFile)
+            return fail("too-large");
+        const int fd = ::open(real.c_str(), O_RDONLY | O_CLOEXEC);
+        std::string bytes;
+        bool ok = fd >= 0;
+        if (ok) {
+            char chunk[65536];
+            for (;;) {
+                const ssize_t n = ::read(fd, chunk, sizeof chunk);
+                if (n < 0 && errno == EINTR)
+                    continue;
+                if (n < 0)
+                    ok = false;
+                if (n <= 0)
+                    break;
+                bytes.append(chunk, static_cast<std::size_t>(n));
+                if (bytes.size() > kMaxUploadFile) {
+                    ok = false;
+                    break;
+                }
+            }
+            ::close(fd);
+        }
+        if (!ok)
+            return fail("read-failed");
+        down.memory = std::move(bytes);
+        down.remaining = down.memory.size();
+        down.progress = Clock::now();
+        logLine("fetch of " + target->id() + " " + real + ": " + std::to_string(down.memory.size()) + " bytes");
+        peer->conn->send({{"type", "fetch"}, {"ref", ref}, {"session", target->id()}, {"path", real},
+                          {"name", fs::path(real).filename().string()}, {"size", down.memory.size()},
+                          {"sha256", bytesSha256(down.memory)}, {"mtime", static_cast<long long>(st.st_mtime)}});
     }
 
     void onUpload(Peer *peer, const json &message)
@@ -1105,7 +1260,7 @@ private:
                 {"peers", true}, {"forget", true}, {"model", true}, {"effort", true}, {"logout", true}, {"rename", true}, {"tokenLogin", true},
                 {"upload", {{"maxFile", kMaxUploadFile}, {"maxSession", kMaxUploadSession},
                             {"maxProposal", proposalLimits().proposal}, {"maxOutbox", proposalLimits().outbox}}},
-                {"proposalFiles", true}};
+                {"proposalFiles", true}, {"fetch", {{"maxFile", kMaxUploadFile}}}};
     }
 
     void handle(Peer *peer, const json &message)
@@ -1242,6 +1397,8 @@ private:
             onUpload(peer, message);
         else if (type == "download")
             onDownload(peer, message);
+        else if (type == "fetch")
+            onFetch(peer, message);
         else if (type == "dismiss")
             onDismiss(peer, message);
         else if (type == "propose" && !peer->ssl)

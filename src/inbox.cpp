@@ -179,6 +179,14 @@ std::string fileSha256(const std::string &path)
     return hexOf(digest, length);
 }
 
+std::string bytesSha256(const std::string &data)
+{
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int length = 0;
+    EVP_Digest(data.data(), data.size(), digest, &length, EVP_sha256(), nullptr);
+    return hexOf(digest, length);
+}
+
 InboxUpload::InboxUpload(std::string session, std::string name, unsigned long long size, std::string sha256)
     : session_(std::move(session))
     , name_(std::move(name))

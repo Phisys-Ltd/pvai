@@ -528,6 +528,7 @@ App to daemon:
 | `unsubscribe` | `session` | stop following it |
 | `dismiss` | `ref`, `proposal` | the owner sent or dropped that agent message; the daemon forgets it |
 | `download` | `ref`, `proposal`, `file` | (since 0.6.0, `welcome.proposalFiles`) on a connection of its own, after its `hello`: fetch one file of a proposal; answered with a `download` header line and exactly `size` raw bytes, or with `rejected`, then the connection closes (see "Files") |
+| `fetch` | `ref`, `session`, `path` | (since 0.6.2, `welcome.fetch`) on a connection of its own, after its `hello`: a read-only copy of one file a session printed (an absolute `path`, the app strips `:60`, `:60:5` and `#L60` itself); answered with a `fetch` header line and exactly `size` raw bytes, or with `rejected`, then the connection closes (see "Files") |
 | `propose` | `ref`, `to`, `text`, `from`, `files`, `replyTo` | from `pvai propose` only, on loopback (ignored over TLS): an agent message for the owner to release, `files` (since 0.6.0, optional) an array of up to 32 absolute paths to offer with it (see "Agent messages"); answered with `proposed` (`ref`, `id`, `apps`, optional `warning`, `seenAt`) or `rejected` |
 | `peers` | `self`, `peers: [Peer]` | the sessions on other hosts that agents here may write to, as the app knows them; the whole list each time, sent after `welcome` and after every change (see "Peers") |
 | `ping` | | keepalive |
@@ -536,12 +537,12 @@ Daemon to app:
 
 | type | fields | meaning |
 |---|---|---|
-| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer; `tokenLogin: true`: it takes `login` with `method: "token"` and `set-token`; `effort: true` (since 0.5.82): it takes `effort`, an older daemon ignores the request without an answer; `upload: {maxFile, maxSession}` (since 0.5.83): it takes `upload` (see "Files"), `maxFile` and `maxSession` are the limits in bytes (52428800 and 104857600); `upload.maxProposal` and `upload.maxOutbox` (since 0.6.0, 104857600 and 209715200): the limits for the files of one proposal and of all open proposals together; `proposalFiles: true` (since 0.6.0): `propose` takes `files`, proposals carry `files` and the daemon takes `download` (see "Agent messages" and "Files") |
+| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer; `tokenLogin: true`: it takes `login` with `method: "token"` and `set-token`; `effort: true` (since 0.5.82): it takes `effort`, an older daemon ignores the request without an answer; `upload: {maxFile, maxSession}` (since 0.5.83): it takes `upload` (see "Files"), `maxFile` and `maxSession` are the limits in bytes (52428800 and 104857600); `upload.maxProposal` and `upload.maxOutbox` (since 0.6.0, 104857600 and 209715200): the limits for the files of one proposal and of all open proposals together; `proposalFiles: true` (since 0.6.0): `propose` takes `files`, proposals carry `files` and the daemon takes `download` (see "Agent messages" and "Files"); `fetch: {maxFile}` (since 0.6.2): it takes `fetch` (see "Files"), `maxFile` the largest file in bytes (52428800) |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `uploaded` | `ref`, `session`, `path`, `name`, `size` | (since 0.5.83) a file is in the session's inbox: `path` absolute, `name` the stored file name; sent on the upload connection and to every app on its main connection (see "Files") |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (no login on the host, see "Login problems"), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `effort`: `unknown-session`, `bad-effort` (not in the assistant's `efforts`), `not-supported` (the assistant has no `efforts`), `busy` (another effort switch is pending); to `answer`, `clearInput`, `mode`, `model`, `effort` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty` (no text and no files), `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`, and since 0.6.0 `bad-file` (`files` is no array of at most 32 strings, or a path is not absolute, missing, no regular file after following links, unreadable, or its copy failed), `too-large` (a file over 50 MiB, or the files together over `welcome.upload.maxProposal`), `quota` (the open proposals together would hold more than `welcome.upload.maxOutbox`); to `download` (since 0.6.0, on its own connection, with `ref`, `proposal` and `file` as sent): `unknown-proposal`, `unknown-file`, `bad-request` (`proposal` or `file` is missing or no string), `read-failed` (the copy cannot be opened); to `prompt` also `self-message` (its `from` is the target session itself) and, since 0.5.83, `bad-file` (a `files` entry is not a regular file in this session's inbox, or `files` is no array of at most 32 paths); to `upload` (since 0.5.83, on its own connection, with `ref` and `session` as sent): `unknown-session`, `bad-request` (a field is missing or of the wrong type, `sha256` is no 64 hex digits), `too-large` (`size` over `welcome.upload.maxFile`), `quota` (the session's inbox would hold more than `welcome.upload.maxSession`), `checksum`, `bad-name` (nothing is left of `name` after sanitising), `short` (the connection ended, or sent nothing for 60 s, before `size` bytes came), `write-failed` (the disk refused) |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (no login on the host, see "Login problems"), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `effort`: `unknown-session`, `bad-effort` (not in the assistant's `efforts`), `not-supported` (the assistant has no `efforts`), `busy` (another effort switch is pending); to `answer`, `clearInput`, `mode`, `model`, `effort` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty` (no text and no files), `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`, and since 0.6.0 `bad-file` (`files` is no array of at most 32 strings, or a path is not absolute, missing, no regular file after following links, unreadable, or its copy failed), `too-large` (a file over 50 MiB, or the files together over `welcome.upload.maxProposal`), `quota` (the open proposals together would hold more than `welcome.upload.maxOutbox`); to `download` (since 0.6.0, on its own connection, with `ref`, `proposal` and `file` as sent): `unknown-proposal`, `unknown-file`, `bad-request` (`proposal` or `file` is missing or no string), `read-failed` (the copy cannot be opened); to `fetch` (since 0.6.2, on its own connection, with `ref` and `session` as sent, `session` `null` when it was no string), checked in this order: `unknown-session` (no running session with that id), `bad-request` (a field is missing or no string, or `path` is not absolute), `not-found` (the path cannot be resolved), `not-a-file` (not a regular file after resolving links), `not-allowed` (a protected file, or outside the session's reach, see "Files"), `too-large` (over `welcome.fetch.maxFile`), `read-failed`; to `prompt` also `self-message` (its `from` is the target session itself) and, since 0.5.83, `bad-file` (a `files` entry is not a regular file in this session's inbox, or `files` is no array of at most 32 paths); to `upload` (since 0.5.83, on its own connection, with `ref` and `session` as sent): `unknown-session`, `bad-request` (a field is missing or of the wrong type, `sha256` is no 64 hex digits), `too-large` (`size` over `welcome.upload.maxFile`), `quota` (the session's inbox would hold more than `welcome.upload.maxSession`), `checksum`, `bad-name` (nothing is left of `name` after sanitising), `short` (the connection ended, or sent nothing for 60 s, before `size` bytes came), `write-failed` (the disk refused) |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `renamed` | `ref`, `session`, `label` | the session carries `label` (trimmed) now; the `sessions` list follows |
@@ -1282,6 +1283,49 @@ and `sha256` itself. Several downloads of one proposal may run at once.
 (for tests and debugging): it writes the file, prints the header line and
 exits 0 when size and SHA-256 match, 1 otherwise (a `rejected` line is
 printed too).
+
+**Fetch connection (since 0.6.2, `welcome.fetch`).** The app opens a file
+link that a session printed (Codex prints `[Manifest](/opt/x/src/manifest.ts:60)`)
+by fetching a read-only copy, on a connection of its own as for `download`,
+starting with `hello`. It sends one line, `path` absolute with any `:60`,
+`:60:5` or `#L60` already removed by the app:
+
+```
+{"type": "fetch", "ref": "f1", "session": "w1a2b3c4d", "path": "/opt/x/src/manifest.ts"}
+```
+
+Answer, then the connection closes:
+
+- `{"type": "fetch", "ref", "session", "path", "name", "size", "sha256", "mtime"}`
+  and straight after that line exactly `size` raw bytes. `path` is the real
+  path (links resolved), `name` its last component, `sha256` is of the bytes
+  sent and `mtime` the file's modification time in Unix seconds. The daemon
+  reads the whole file into memory first (at most `welcome.fetch.maxFile`,
+  50 MiB), so header and bytes always agree.
+- `{"type": "rejected", "ref", "session", "reason"}`, the reasons in the
+  order they are checked: `unknown-session`, `bad-request`, `not-found`,
+  `not-a-file`, `not-allowed`, `too-large`, `read-failed`.
+
+`not-allowed` means: the real path is protected, or it is outside the
+session's reach. Protected, always, even inside the working directory or
+when the session printed it: `~/.claude/.credentials.json`,
+`~/.codex/auth.json`, `~/.kimi/credentials/`, `~/.ssh/`,
+`~/.config/phi-secrets/`, pvai's own configuration directory (device list,
+TLS key and certificate, `token`, `claude-token`) and its runtime directory.
+Within reach: the real path lies inside the session's working directory
+(links resolved, compared by path components; a symlink that leads out of it
+does not count) or inside the session's inbox; or the path as sent, or its
+real path, occurs as a whole path (not as the middle of a longer one) in the
+session's own history, the entries `history` returns (replies, tool calls
+and tool results; Claude Code's transcript, Codex's and Kimi's buffered
+entries: at most the last 500 entries, and texts as cut in the history). A
+working directory of `/` or of the home directory does not grant the working
+directory rule: then only the inbox and the history apply.
+
+The connection is served like a download (no broadcasts, no keepalive,
+bytes after the request dropped, 60 s without progress closes it). Every
+fetch, accepted or rejected, is one line in `daemon.log` with the session,
+the path and the size or the reason.
 
 From the command line, `pvai upload SESSION FILE` does a whole upload on the
 daemon's Unix socket, prints the answer line and exits 0 for `uploaded`, 1

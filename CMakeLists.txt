@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(pvai
-    VERSION 0.6.1
+    VERSION 0.6.2
     DESCRIPTION "pvai: Claude Code and Codex sessions reachable by voice from the PhiVoice AI app"
     LANGUAGES CXX
 )
@@ -72,6 +72,8 @@ if(BUILD_TESTING)
     add_test(NAME sessions COMMAND pvai-session-test $<TARGET_FILE:pvai>)
     pvai_test(pvai-upload-test tests/upload_test.cpp)
     add_test(NAME upload COMMAND pvai-upload-test $<TARGET_FILE:pvai>)
+    pvai_test(pvai-fetch-test tests/fetch_test.cpp)
+    add_test(NAME fetch COMMAND pvai-fetch-test $<TARGET_FILE:pvai>)
     pvai_test(pvai-screen-test tests/screen_test.cpp)
     add_test(NAME screen COMMAND pvai-screen-test)
     pvai_test(pvai-transcript-test tests/transcript_test.cpp)
