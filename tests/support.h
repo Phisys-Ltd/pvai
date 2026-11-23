@@ -162,7 +162,7 @@ public:
     // On another unix socket (the app socket).
     explicit LineClient(const std::string &path)
     {
-        fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        fd_ = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
         sockaddr_un addr{};
         addr.sun_family = AF_UNIX;
         std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path.c_str());

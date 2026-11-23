@@ -306,13 +306,19 @@ void Session::loginAttention(const std::string &text)
     attention("login", text);
 }
 
+json Host::historyView(Session &session, int limit)
+{
+    return session.history(limit);
+}
+
 void Session::historyReset()
 {
-    host_.toSubscribers(id_, {{"type", "history"}, {"session", id_}, {"entries", history(200)}});
+    host_.toSubscribers(id_, {{"type", "history"}, {"session", id_}, {"entries", host_.historyView(*this, 200)}});
 }
 
 void Session::sendEntries(std::vector<json> entries)
 {
+    host_.decorateEntries(*this, entries);
     for (auto &entry : entries)
         host_.toSubscribers(id_, {{"type", "entry"}, {"session", id_}, {"entry", std::move(entry)}});
 }

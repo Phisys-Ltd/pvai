@@ -82,9 +82,11 @@ so this path must hold up like ssh.
   SubjectPublicKeyInfo (DER), written in lowercase base32 without padding.
 - TLS 1.3 only, ALPN `pvai/1`, client certificate required. The daemon
   accepts a client whose fingerprint is in `~/.config/pvai/devices.json`
-  (`[{"fingerprint", "name", "added", "lastSeen"}]`) and, while a pairing
-  window is open, any client for one `pair` message. Everyone else fails in
-  the handshake and never reaches the JSON.
+  (`[{"fingerprint", "name", "added", "lastSeen"}]`; since 0.7.0 an entry
+  may also hold a `guest` object, see "Sharing a session") and, while a
+  pairing window or an invitation to a session is open, any client for one
+  `pair` message. Everyone else fails in the handshake and never reaches the
+  JSON.
 - After the handshake the framing is the same as on loopback. `hello` needs
   no `token` here: the client certificate is the login.
 - The app pins the daemon's fingerprint from pairing and refuses any other,
@@ -564,6 +566,11 @@ App to daemon:
 | `dismiss` | `ref`, `proposal` | the owner sent or dropped that agent message; the daemon forgets it |
 | `download` | `ref`, `proposal`, `file` | (since 0.6.0, `welcome.proposalFiles`) on a connection of its own, after its `hello`: fetch one file of a proposal; answered with a `download` header line and exactly `size` raw bytes, or with `rejected`, then the connection closes (see "Files") |
 | `fetch` | `ref`, `session`, `path` | (since 0.6.2, `welcome.fetch`) on a connection of its own, after its `hello`: a read-only copy of one file a session printed (an absolute `path`, the app strips `:60`, `:60:5` and `#L60` itself); answered with a `fetch` header line and exactly `size` raw bytes, or with `rejected`, then the connection closes (see "Files") |
+| `share` | `ref`, `session`, `name`, `host`, `ttl`, `dialogs` | (since 0.7.0, `welcome.share`; owner only) invite a guest to one session: answered with `shared` (a link) or `rejected`; see "Sharing a session" |
+| `shares` | `ref` | (since 0.7.0, owner only) the guests and the open invitations: answered with `shares` |
+| `share-revoke` | `ref`, `name` | (since 0.7.0, owner only) end a guest's share and close its connections, or cancel an invitation (`name` is the guest's name, its fingerprint or the invitation's `id`): `share-revoked` |
+| `share-confirm` | `ref`, `name` | (since 0.7.0, owner only) let a guest on whose share is `scope-moved`, with the session's conversation as it is now: `share-confirmed` |
+| `share-move` | `ref`, `name`, `session` | (since 0.7.0, owner only) move a share to another session that runs the same conversation: `share-moved` |
 | `propose` | `ref`, `to`, `text`, `from`, `files`, `replyTo` | from `pvai propose` only, on loopback (ignored over TLS): an agent message for the owner to release, `files` (since 0.6.0, optional) an array of up to 32 absolute paths to offer with it (see "Agent messages"); answered with `proposed` (`ref`, `id`, `apps`, optional `warning`, `seenAt`) or `rejected` |
 | `peers` | `self`, `peers: [Peer]` | the sessions on other hosts that agents here may write to, as the app knows them; the whole list each time, sent after `welcome` and after every change (see "Peers") |
 | `ping` | | keepalive |
@@ -572,12 +579,12 @@ Daemon to app:
 
 | type | fields | meaning |
 |---|---|---|
-| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer; `tokenLogin: true`: it takes `login` with `method: "token"` and `set-token`; `effort: true` (since 0.5.82): it takes `effort`, an older daemon ignores the request without an answer; `upload: {maxFile, maxSession}` (since 0.5.83): it takes `upload` (see "Files"), `maxFile` and `maxSession` are the limits in bytes (52428800 and 104857600); `upload.maxProposal` and `upload.maxOutbox` (since 0.6.0, 104857600 and 209715200): the limits for the files of one proposal and of all open proposals together; `proposalFiles: true` (since 0.6.0): `propose` takes `files`, proposals carry `files` and the daemon takes `download` (see "Agent messages" and "Files"); `fetch: {maxFile}` (since 0.6.2): it takes `fetch` (see "Files"), `maxFile` the largest file in bytes (52428800) |
+| `welcome` | `host`, `user`, `version`, `assistants`, `installed`, `conversations` | answer to a good `hello`; `host` is the short hostname; `user` (since 0.5.35) the login name the daemon runs as, which every session runs as too; `assistants` what `start` can start on this host, see "Assistants"; `installed` the version of each, see "Versions and updates"; `conversations: true`: the daemon answers `conversations` and `start.resume`; `peers: true`: it takes `peers`; `forget: true`: it takes `forget`; `logout: true` (since 0.5.39): it takes `logout`; `rename: true` (since 0.5.74): it takes `rename`, an older daemon ignores the request without an answer; `tokenLogin: true`: it takes `login` with `method: "token"` and `set-token`; `effort: true` (since 0.5.82): it takes `effort`, an older daemon ignores the request without an answer; `upload: {maxFile, maxSession}` (since 0.5.83): it takes `upload` (see "Files"), `maxFile` and `maxSession` are the limits in bytes (52428800 and 104857600); `upload.maxProposal` and `upload.maxOutbox` (since 0.6.0, 104857600 and 209715200): the limits for the files of one proposal and of all open proposals together; `proposalFiles: true` (since 0.6.0): `propose` takes `files`, proposals carry `files` and the daemon takes `download` (see "Agent messages" and "Files"); `fetch: {maxFile}` (since 0.6.2): it takes `fetch` (see "Files"), `maxFile` the largest file in bytes (52428800); `share: true` (since 0.7.0, owner devices, loopback, the app socket and the CLI only): it takes the `share` requests (see "Sharing a session"); `guest` (since 0.7.0, a guest's welcome only): `{session, assistant, rights, dialogs, expires, state}`, what the share allows |
 | `sessions` | `sessions: [Session]` | the full list, sent after `welcome` and after every change of any session (state, queue, label, start, end) |
 | `accepted` | `ref`, `session`, `delivery` | `delivery` is `typed` (went in now) or `queued`; under a `pvai run` of 0.5.15 or later always `queued`, and `delivered` follows once Claude Code has the prompt |
 | `uploaded` | `ref`, `session`, `path`, `name`, `size` | (since 0.5.83) a file is in the session's inbox: `path` absolute, `name` the stored file name; sent on the upload connection and to every app on its main connection (see "Files") |
 | `delivered` | `session`, `ref` | (since 0.5.15) a prompt is Claude Code's: `UserPromptSubmit` confirmed it, or for a slash command the wrapper saw it in the prompt box; `ref` the one of its `prompt`; to every app |
-| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (no login on the host, see "Login problems"), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `effort`: `unknown-session`, `bad-effort` (not in the assistant's `efforts`), `not-supported` (the assistant has no `efforts`), `busy` (another effort switch is pending); to `answer`, `clearInput`, `mode`, `model`, `effort` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty` (no text and no files), `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`, and since 0.6.0 `bad-file` (`files` is no array of at most 32 strings, or a path is not absolute, missing, no regular file after following links, unreadable, or its copy failed), `too-large` (a file over 50 MiB, or the files together over `welcome.upload.maxProposal`), `quota` (the open proposals together would hold more than `welcome.upload.maxOutbox`); to `download` (since 0.6.0, on its own connection, with `ref`, `proposal` and `file` as sent): `unknown-proposal`, `unknown-file`, `bad-request` (`proposal` or `file` is missing or no string), `read-failed` (the copy cannot be opened); to `fetch` (since 0.6.2, on its own connection, with `ref` and `session` as sent, `session` `null` when it was no string), checked in this order: `unknown-session` (no running session with that id), `bad-request` (a field is missing or no string, or `path` is not absolute), `not-found` (the path cannot be resolved), `not-a-file` (not a regular file after resolving links), `not-allowed` (a protected file, or outside the session's reach, see "Files"), `too-large` (over `welcome.fetch.maxFile`), `read-failed`; to `prompt` also `self-message` (its `from` is the target session itself) and, since 0.5.83, `bad-file` (a `files` entry is not a regular file in this session's inbox, or `files` is no array of at most 32 paths); to `upload` (since 0.5.83, on its own connection, with `ref` and `session` as sent): `unknown-session`, `bad-request` (a field is missing or of the wrong type, `sha256` is no 64 hex digits), `too-large` (`size` over `welcome.upload.maxFile`), `quota` (the session's inbox would hold more than `welcome.upload.maxSession`), `checksum`, `bad-name` (nothing is left of `name` after sanitising), `short` (the connection ended, or sent nothing for 60 s, before `size` bytes came), `write-failed` (the disk refused) |
+| `rejected` | `ref`, `session`, `reason` | to `prompt`: `unknown-session`, `empty`, `too-long` (over 32 KiB); to `start`: `bad-cwd`, `unknown-assistant`, `no-assistant` (Codex's app server or `kimi acp` is not reachable, yet), `bad-start` (the assistant refused), `not-logged-in` (no login on the host, see "Login problems"), `not-installed` (the assistant's program is not on this host, see "Assistants"), `unknown-conversation` (no such `resume` id); to `answer`: `unknown-session`, `no-dialog`, `bad-choice`; to `stop`: `unknown-session`, `not-detached` (not `stoppable`); to `interrupt`: `unknown-session`; to `restart`: `unknown-session`, `not-restartable`, `busy` (only from `idle` without a `draft`); to `effort`: `unknown-session`, `bad-effort` (not in the assistant's `efforts`), `not-supported` (the assistant has no `efforts`), `busy` (another effort switch is pending); to `answer`, `clearInput`, `mode`, `model`, `effort` and `restart` (also): `stale-wrapper` (since 0.5.52, the session's `pvai run` reports a version older than 0.5.44, see `Session.stale`); to `rename`: `unknown-session`, `bad-label`, `taken` (see "Renaming a session"); to `clearInput`: `unknown-session`, `not-supported` (not Claude Code, or a `pvai run` older than 0.5.30), `busy` (not `inputClearable` now); to `propose`: `empty` (no text and no files), `too-long`, `bad-target`, `no-session` (a host alone), `ambiguous-target`, `bad-reply`, `too-many`, and since 0.6.0 `bad-file` (`files` is no array of at most 32 strings, or a path is not absolute, missing, no regular file after following links, unreadable, or its copy failed), `too-large` (a file over 50 MiB, or the files together over `welcome.upload.maxProposal`), `quota` (the open proposals together would hold more than `welcome.upload.maxOutbox`); to `download` (since 0.6.0, on its own connection, with `ref`, `proposal` and `file` as sent): `unknown-proposal`, `unknown-file`, `bad-request` (`proposal` or `file` is missing or no string), `read-failed` (the copy cannot be opened); to `fetch` (since 0.6.2, on its own connection, with `ref` and `session` as sent, `session` `null` when it was no string), checked in this order: `unknown-session` (no running session with that id), `bad-request` (a field is missing or no string, or `path` is not absolute), `not-found` (the path cannot be resolved), `not-a-file` (not a regular file after resolving links), `not-allowed` (a protected file, or outside the session's reach, see "Files"), `too-large` (over `welcome.fetch.maxFile`), `read-failed`; to `prompt` also `self-message` (its `from` is the target session itself) and, since 0.5.83, `bad-file` (a `files` entry is not a regular file in this session's inbox, or `files` is no array of at most 32 paths); to `upload` (since 0.5.83, on its own connection, with `ref` and `session` as sent): `unknown-session`, `bad-request` (a field is missing or of the wrong type, `sha256` is no 64 hex digits), `too-large` (`size` over `welcome.upload.maxFile`), `quota` (the session's inbox would hold more than `welcome.upload.maxSession`), `checksum`, `bad-name` (nothing is left of `name` after sanitising), `short` (the connection ended, or sent nothing for 60 s, before `size` bytes came), `write-failed` (the disk refused); to a guest's request (since 0.7.0, see "Sharing a session"), checked in this order: `expired` (the share's time is over), `ended`, `scope-moved` (the share's state), then `guest-denied` (a request or a session a guest may not use, or an answer while `dialogs` is off); to `share`: `unknown-session`, `not-listening` (direct access is off, with `text`), `bad-ttl`, `bad-request`, `not-ready` (the session has not reported its conversation yet), `too-many` (16 open invitations); to `share-revoke`, `share-confirm` and `share-move`: `unknown-share`, `bad-request`, `save-failed`, and for `share-confirm` `not-scope-moved`, `unknown-session`, `not-ready`, for `share-move` `unknown-session`, `conversation-mismatch` |
 | `started` | `ref`, `session` | the new session's id; it shows up in `sessions` when its wrapper is up (`starting`) |
 | `answered` | `ref`, `session` | the keys went in |
 | `renamed` | `ref`, `session`, `label` | the session carries `label` (trimmed) now; the `sessions` list follows |
@@ -605,6 +612,13 @@ Daemon to app:
 | `proposals` | `proposals: [Proposal]` | the agent messages waiting for the owner, sent after `welcome` and after every change (see "Agent messages") |
 | `dismissed` | `ref`, `proposal` | answer to `dismiss`; `proposal` is gone from `proposals` (also when it was unknown) |
 | `dropped` | `prompts: [{session, ref, text, kept?}]` | (since 0.5.21, extended 0.5.52) prompts that will not be typed: a session ended with a queue or a prompt typed and not yet confirmed (Claude Code exited, `stop`, a restart that failed, the daemon dropped its wrapper; Codex and Kimi: the thread or session ended), or the daemon is stopping by `pvai daemon stop|restart --force`. Since 0.5.71 also a prompt typed and lost without a trace: Claude Code took a slash command (a `UserPromptSubmit` starting with `/`) instead of it, or the queue was dropped after an interrupt of a hung session; the daemon never types it again, the app may offer to resend. `ref` is the one of their `prompt`; `text` is the whole prompt (before 0.5.52 the first 80 bytes, and only on a forced stop). `kept: true` (since 0.5.52, Claude Code only) says the daemon keeps that prompt for the conversation (see "Kept prompts"); it is omitted otherwise. A prompt kept and later lost for good (24 h, `daemon stop`, `forget`, the caps) comes in a second `dropped` with the same `session` and `ref`, without `kept`. To every app. Without `--force` the daemon does not stop while any prompt is queued (`pvai` gets `rejected` with `queued` over loopback, from `{"type": "shutdown", "ref", "force"}`) |
+| `shared` | `ref`, `id`, `link`, `session`, `assistant`, `label`, `dialogs`, `expires`, `warning` | (since 0.7.0) answer to `share`: the invitation (see "Sharing a session") |
+| `shares` | `ref`, `shares: [Share]`, `invites: [Invite]` | (since 0.7.0) answer to `shares` |
+| `share-revoked` | `ref`, `shares`, `invites` | (since 0.7.0) answer to `share-revoke`: the names of the guests removed and the ids of the invitations cancelled |
+| `share-confirmed` | `ref`, `name`, `session`, `conversation` | (since 0.7.0) answer to `share-confirm` |
+| `share-moved` | `ref`, `name`, `session`, `from` | (since 0.7.0) answer to `share-move` |
+| `share-state` | `state`, `session` | (since 0.7.0, to a guest) its share is now `active`, `scope-moved`, `ended` or `expired` |
+| `dialog-answered` | `session`, `choice`, `answeredBy` | (since 0.7.0, to every app, a guest of that session too) a dialog was answered through pvai: by the guest's device name, an owner device's name, or `owner` |
 | `entry` | `session`, `entry: Entry` | one new piece of the conversation |
 | `pong` | | keepalive |
 | `error` | `code`, `text` | `auth` (then the daemon closes), `bad-message`, `unknown-session` (`text` is the id) |
@@ -1366,6 +1380,197 @@ From the command line, `pvai upload SESSION FILE` does a whole upload on the
 daemon's Unix socket, prints the answer line and exits 0 for `uploaded`, 1
 for anything else.
 
+## Sharing a session (since 0.7.0)
+
+The owner can share **one** session with a guest who has their own app and
+their own device certificate. The guest pairs over direct access (see
+"Direct access"), works with that one session only, and the owner can end the
+share at any time.
+
+> **Warning, shown with every invitation (`warning`).** The guest works with
+> the owner's rights: its prompts run as the owner's user, and the agent can
+> run any command. Share only with people you would trust with your account.
+
+**Invitation.** `pvai share SESSION [--name NAME] [--host HOST] [--ttl DURATION|none] [--dialogs] [--link]`
+(local only; `SESSION` is a session id, or a label that only one session
+has) or, from an owner's app (`welcome.share`), the request
+
+```json
+{"type": "share", "ref": "s1", "session": "w1a2b3c4d", "name": "phi-core", "host": "192.168.1.10", "ttl": 604800, "dialogs": false}
+```
+
+`session` is required. `name` and `host` are as for `pvai pair` (`name` the
+host's name in the link, default the short hostname; `host` the address to
+dial, default as for `pvai pair`). `ttl` is how long the share lasts, in
+seconds, a duration string (`90s`, `30m`, `12h`, `7d`, `2w`) or the string
+`"none"` for no expiry; without it 7 days. Unlimited is never the default.
+`dialogs` (default false) lets the guest see and answer the session's
+dialogs. Direct access must be on (`pvai listen`); otherwise nothing is made
+and the answer is `rejected` with `reason` `not-listening` and `text`
+`direct access is off; turn it on with pvai listen ADDR`. The answer:
+
+```json
+{"type": "shared", "ref": "s1", "id": "i3f9a01", "session": "w1a2b3c4d", "assistant": "claude", "label": "phi-core",
+ "dialogs": false, "expires": 1795000000,
+ "link": "pvai://share?host=192.168.1.10&port=7471&fp=<daemon fingerprint>&code=<secret>&name=<hostname>&session=w1a2b3c4d",
+ "warning": "The guest works with your rights: ..."}
+```
+
+`expires` is Unix time, or null for `none`. The link has the fields of a pair
+link (see "Pairing") and `session`; the guest's app pairs with it exactly as
+for `pvai pair` (the same `pair` message and proof, with the guest's own
+certificate). `pvai share` prints the warning, the link and a QR code (with
+`--link` only the link on stdout and the warning on stderr). An invitation
+is a pairing window of its own: it lasts until `expires` (or without limit
+for `none`), is used up by the first device that proves its code, and is
+**kept in memory only**, so a daemon restart cancels it. Up to 16 can be
+open, next to the owner's ordinary pairing window. While one is open the port
+completes the TLS handshake for any client, as it does in a pairing window; a
+wrong proof does not spend an invitation (it counts against the sender's
+address as ever). The conversation id is captured when the invitation is made;
+when the session's conversation has moved on by the time the guest pairs, the
+share starts as `scope-moved` (below).
+
+**Guest pairing and the guest list.** The `paired` answer of such a pairing
+carries `session` and `guest: true`. The daemon stores the device in
+`devices.json` with the fields of any device (`fingerprint`, `name`, `added`,
+`lastSeen`) and a `guest` object:
+
+```json
+{"fingerprint": "...", "name": "Anna phone", "added": 1794400000, "lastSeen": 1794400100,
+ "guest": {"assistant": "claude", "session": "w1a2b3c4d", "conversation": "4f3b744c-...",
+           "expires": 1795000000, "dialogs": false, "state": "active"}}
+```
+
+`name` is the device name the guest's app sent in `pair`, cleaned as always,
+and made unique among the devices (`Anna phone 2`; `owner` is reserved).
+**Whenever the daemon names a guest it uses this stored name, never a field
+of a request.** `expires` is null for no expiry. `state` is `active`,
+`scope-moved` or `ended`. A device with a `guest` object is a guest and no
+owner device; a `guest` that is damaged is read as `ended`. `pvai devices`
+marks guests; `pvai revoke NAME` removes one like any device.
+
+`pvai share list` shows the guests and the open invitations, `pvai share revoke NAME|ID`
+removes a guest (its entry is deleted and its connections are closed at once)
+or cancels an invitation, and an owner's app uses:
+
+| request | answer |
+|---|---|
+| `{"type": "shares", "ref"}` | `{"type": "shares", "ref", "shares": [Share], "invites": [Invite]}` |
+| `{"type": "share-revoke", "ref", "name"}` | `{"type": "share-revoked", "ref", "shares": [names], "invites": [ids]}`; `name` is a guest's name or fingerprint, or an invitation's `id` |
+| `{"type": "share-confirm", "ref", "name"}` | `{"type": "share-confirmed", "ref", "name", "session", "conversation"}` |
+| `{"type": "share-move", "ref", "name", "session"}` | `{"type": "share-moved", "ref", "name", "session", "from"}` |
+
+```json
+Share:  {"name": "Anna phone", "fingerprint": "...", "added": 1794400000, "lastSeen": 1794400100,
+         "session": "w1a2b3c4d", "assistant": "claude", "label": "phi-core", "conversation": "4f3b744c-...",
+         "expires": 1795000000, "expired": false, "dialogs": false, "state": "active"}
+Invite: {"id": "i3f9a01", "session": "w1a2b3c4d", "assistant": "claude", "label": "phi-core", "dialogs": false, "expires": 1795000000}
+```
+
+`label` is null while the session is not running. Guests can never create,
+list, revoke, confirm or move shares: they get `guest-denied`.
+
+**Scope.** A share is bound to the session's id, its `assistant` and the
+**conversation id** captured when the share was made (never to the label or
+the folder): for Claude Code `claudeSession` (from the hooks), for Codex the
+thread id and for Kimi the session id, both equal to the session's id. It
+survives `restart` and a daemon restart (the guest list is a file; a session
+that is not there yet is waited for, see `ended`).
+
+- `scope-moved`: the session's conversation id changed (`/clear`, or
+  `/resume` inside the running session). Requests are refused with reason
+  `scope-moved`, no events of the session reach the guest, its `sessions` list
+  is empty, and every live connection gets
+  `{"type": "share-state", "state": "scope-moved", "session"}`, until the
+  owner confirms with `pvai share confirm NAME` or `share-confirm`, which binds
+  the conversation as it is now and makes the share `active` (the guest gets
+  `share-state` `active` and subscribes again; `share-confirm` answers
+  `not-scope-moved` for a share in another state).
+- `ended`: the session is gone for good: its wrapper exited, `stop`, `forget`
+  of its conversation, a Codex thread archived, deleted or closed, Kimi or the
+  Codex app server lost. A session that is not there after a daemon restart
+  has 120 s to come back (`PVAI_SHARE_GRACE` seconds overrides this for tests),
+  a `restart` is no end. Requests are refused with `ended`; the device stays
+  paired, and nothing transfers by itself.
+- `share-move` / `pvai share move NAME SESSION` moves a share, from any state,
+  to another session of the same assistant that runs **the same conversation
+  id as at grant** (a Claude `start.resume` of the conversation gives a new
+  session id for it), else `conversation-mismatch`. The share becomes `active`.
+- Expiry: `expires` is checked on every request (`expired`), and a timer
+  closes the guest's live connections when it passes, after
+  `{"type": "share-state", "state": "expired", "session"}`. A guest that logs
+  in later gets its `welcome`, empty lists, that notice, and the connection
+  is closed. The entry stays until revoked.
+
+**What a guest may do.** After its TLS login a guest sends `hello` as any app
+and gets a `welcome` without the owner's accounts and without the features it
+cannot use (`conversations`, `peers`, `forget`, `model`, `effort`, `logout`,
+`rename`, `tokenLogin`, `proposalFiles` are false), but with:
+
+```json
+"guest": {"session": "w1a2b3c4d", "assistant": "claude",
+          "rights": ["sessions", "subscribe", "history", "prompt", "interrupt", "upload", "fetch"],
+          "dialogs": false, "expires": 1795000000, "state": "active"}
+```
+
+`rights` has `answer` too when `dialogs` is true. Allowed, for its session
+only: `hello`, `ping` (always), `subscribe` and `unsubscribe` (the `history`
+and the `entry` events), `prompt` (also with `files`; not a slash or shell
+command, `/...` and `!...` are refused: they would do what the guest may not
+ask, `/exit`, `/model`, `/logout`; the guest's `from`, `fromLabel`, `proposal`
+and `replyTo` fields are ignored, its prompt is never an agent message and
+never gets the `[Message ...]` header), `interrupt`, `upload` into that
+session's inbox (the limits of "Files"), `fetch` (the rules of "Files" for that
+session, nothing more), and `answer` only when the share has `dialogs` on.
+Everything else, and any other session, is refused with `guest-denied`: `start`,
+`stop`, `restart`, `forget`, `rename`, `mode`, `model`, `effort`, `clearInput`,
+`install`, `login`, `logout`, `set-token`, `login-code`, `login-cancel`,
+`peers`, `propose`, `download`, `update`, `projects`, `browse`,
+`conversations`, `dismiss`, `pair`, `listen`, `revoke`, `share`,
+`shares`, `share-revoke`, `share-confirm`, `share-move`, and any type the
+daemon does not know. The `rejected` answer carries `ref` and `session` as
+sent; a refused `upload`, `fetch` or `download` closes its connection.
+
+A guest hears the events of its session only, and only while the share is
+`active`: `sessions` (its one session, with `dialog` and `dialogInfo` null
+while `dialogs` is off), `history`, `entry`, `say`, `usage`, `delivered`,
+`uploaded`, `dropped` (its session's prompts), `model`, `effort`, `mode`,
+`dialog-answered`, `attention` (not of a dialog while `dialogs` is off) and
+`share-state`. It never gets `proposals` (an empty list at `hello`),
+`assistants`, `install`, `login`, `logout`, `updated` or anything of another
+session. A dialog with `dialogs` on reaches the owner and the guest; the first
+`answer` wins, and the other gets the ordinary `rejected` `no-dialog`.
+
+**Who did it.** The daemon never takes a name from a request.
+
+- A prompt entry in the history that a guest sent has `from`: the guest's
+  name. The daemon matches the prompt it typed to the entry (Claude Code's
+  transcript, or Codex's and Kimi's buffer) by the normalised text (Claude
+  Code's paste frame and the `🎙 ` mark removed, trimmed) and a time not before
+  the prompt was typed (not more than 24 h after it); several prompts with the
+  same words are matched first come, first served, and once matched an entry
+  keeps its record. A prompt of the owner's with the same words that was
+  written earlier gets no `from`. The record is `~/.config/pvai/guest-prompts.json`
+  (mode 0600, written through a temp file and renamed), keyed by conversation
+  id, at most 500 entries per conversation, each `{"hash", "fileHash"?, "time", "from", "entry"?}`,
+  a hash of the text, never the text; it is removed with the conversation
+  (`forget`), and a daemon restart keeps it. The matching is done where
+  entries are sent (`entry`, `history`), not in the transcript reader.
+- An answered dialog (`answer` accepted, for a guest, an owner device, the CLI
+  or a local app) is sent to every app as `dialog-answered` with `session`,
+  `choice` and `answeredBy`: the guest's name, an owner device's name, or
+  `owner` for an owner without a device (loopback, the app socket, `pvai answer`).
+  The history gets an entry `{"kind": "answer", "text": <choice>, "answeredBy", "id", "time"}`
+  from the daemon (in memory, the last 100 per session; it is lost when the
+  daemon stops). A dialog answered in the terminal leaves no trace.
+
+**Log.** `daemon.log` has a line for a share made (session, invitation, `dialogs`,
+lifetime), a guest paired, a share confirmed, moved, revoked, expired, ended or
+`scope-moved`, every guest prompt (the guest, the session, the size and the
+number of files, never the text), every answer with `answeredBy`, and every
+refusal with its reason.
+
 ## Usage limit
 
 Since 0.5.50 a Claude Code session that runs into its usage limit shows it.
@@ -1634,7 +1839,7 @@ a second.
 
 | `kind` | fields | what it is |
 |---|---|---|
-| `prompt` | `text` | what the owner sent, typed or spoken (with its `🎙 `); also one submitted while a turn runs, which Claude Code 2.1.x writes only as a `queued_command` attachment |
+| `prompt` | `text`, `from` | what the owner sent, typed or spoken (with its `🎙 `); also one submitted while a turn runs, which Claude Code 2.1.x writes only as a `queued_command` attachment; `from` (since 0.7.0, optional) is the name of the guest who sent it (see "Sharing a session") |
 | `text` | `text` | Claude's words, markdown (up to 64 KiB) |
 | `tool` | `tool`, `text`, `file` | a tool call; `text` is one line saying what it does; `file`, when present, names the file whose content the result shows (a `Read`, or a shell command that names exactly one file), so an app can colour it by its extension |
 | `result` | `tool`, `text`, `error` | what the tool returned, cut at 4 KiB |
@@ -1642,6 +1847,7 @@ a second.
 | `limited` | `text`, `resetsAt`, `type`, `model` | since 0.5.50: the usage limit was hit; `resetsAt` (Unix seconds) and `type` (`five_hour`, `seven_day`) are null when the line has none; since 0.5.57 `model` is true for a model's own quota (Fable), which does not hold the session busy |
 | `resumed` | | since 0.5.50, internal and optional: Claude Code went on by itself after a `limited`; an app that does not know the kind skips it |
 | `command` | `text` | a slash command that ran in Claude Code itself (`/compact`, `/context`, `/model opus`), a shell command the owner typed with `!` (`! git status`), or `/compact` for a compaction Claude Code started itself (the context ran full, or idle before the prompt cache expired) |
+| `answer` | `text`, `answeredBy` | since 0.7.0, the daemon's own entry, not from the transcript: a dialog was answered through pvai; `text` is the choice (cut at 200 bytes), `answeredBy` who (see "Sharing a session"); an app that does not know the kind skips it |
 | `output` | `text` | what such a command printed (for `!`: stdout, then stderr), terminal colours removed, cut at 4 KiB (empty output is not passed on) |
 
 - `id` is unique per transcript; an app that reconnects and subscribes again

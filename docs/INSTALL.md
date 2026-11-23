@@ -207,6 +207,23 @@ Scan the code or open the link in the app. Only paired devices get past the
 TLS handshake; `pvai devices` lists them, `pvai revoke NAME` removes one,
 `pvai listen off` turns it off.
 
+To let someone else work with **one** session, with their own app and device
+(since 0.7.0), invite them to it:
+
+```
+pvai share SESSION                # a link and a QR code for one guest; valid 7 days (--ttl 12h, --ttl none)
+pvai share list                   # guests and open invitations
+pvai share revoke NAME            # end a guest's share at once
+```
+
+Add `--dialogs` to let the guest answer the session's questions and
+permission dialogs. The guest works with **your rights**: its prompts run as
+your user, and the agent can run any command. Share only with people you
+would trust with your account. Direct access must be on; an invitation
+does not survive a daemon restart. See "Sharing a session" in `PROTOCOL.md`
+for what a guest may do and what happens when the conversation moves on
+(`pvai share confirm`, `pvai share move`).
+
 Let port 7471 through the host's firewall, ideally only from your own
 network:
 

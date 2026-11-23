@@ -4,6 +4,7 @@
 #include "pairing.h"
 #include "run.h"
 #include "service.h"
+#include "share.h"
 #include "tls.h"
 
 #include <qrcodegen.hpp>
@@ -48,6 +49,12 @@ const char *kUsage =
     "       pvai pair [--name N] [--host H] [--link]   let one device pair within 10 minutes (link and QR code)\n"
     "       pvai devices                               list paired devices\n"
     "       pvai revoke NAME|FINGERPRINT               remove a paired device and close its connections\n"
+    "       pvai share SESSION [--name N] [--host H] [--ttl DURATION|none] [--dialogs] [--link]\n"
+    "                                                  invite a guest to one session (link and QR code); default 7 days\n"
+    "       pvai share list                            guests and open invitations\n"
+    "       pvai share revoke NAME|ID                  end a guest's share (or cancel an invitation) at once\n"
+    "       pvai share confirm NAME                    let a guest on after its conversation moved (/clear, /resume)\n"
+    "       pvai share move NAME SESSION               move a share to the same conversation under another session\n"
     "       pvai hook                                  called by Claude Code's hooks\n"
     "       pvai statusline [--chain COMMAND]          called as Claude Code's status line\n"
     "       pvai install-hooks                         add the hooks and the status line to ~/.claude/settings.json\n"
@@ -756,6 +763,146 @@ int runPair(const std::vector<std::string> &args)
     return status == 0 ? result : 1;
 }
 
+std::string when(long long time);
+
+// "expires in 6 days", "expired", "never expires".
+static std::string expiryText(const json &expires)
+{
+    if (!expires.is_number())
+        return "no expiry";
+    const long long left = expires.get<long long>() - static_cast<long long>(std::time(nullptr));
+    if (left <= 0)
+        return "expired";
+    if (left < 3600)
+        return "expires in " + std::to_string((left + 59) / 60) + " min";
+    if (left < 2 * 86400)
+        return "expires in " + std::to_string((left + 3599) / 3600) + " h";
+    return "expires in " + std::to_string((left + 86399) / 86400) + " days";
+}
+
+// pvai share SESSION [...]: an invitation for one guest, `share list|revoke|confirm|move`.
+int runShare(const std::vector<std::string> &args)
+{
+    auto usage = [] {
+        std::fputs(kUsage, stderr);
+        return 2;
+    };
+    if (args.empty())
+        return usage();
+    json request;
+    bool linkOnly = false;
+    const std::string &verb = args[0];
+    if (verb == "list" && args.size() == 1) {
+        request = {{"type", "shares"}, {"ref", "cli"}};
+    } else if (verb == "revoke" && args.size() == 2) {
+        request = {{"type", "share-revoke"}, {"ref", "cli"}, {"name", args[1]}};
+    } else if (verb == "confirm" && args.size() == 2) {
+        request = {{"type", "share-confirm"}, {"ref", "cli"}, {"name", args[1]}};
+    } else if (verb == "move" && args.size() == 3) {
+        request = {{"type", "share-move"}, {"ref", "cli"}, {"name", args[1]}, {"session", args[2]}};
+    } else if (verb.rfind("--", 0) != 0) {
+        request = {{"type", "share"}, {"ref", "cli"}, {"session", verb}};
+        for (std::size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "--link") {
+                linkOnly = true;
+            } else if (args[i] == "--dialogs") {
+                request["dialogs"] = true;
+            } else if (args[i] == "--name" && i + 1 < args.size()) {
+                request["name"] = args[++i];
+            } else if (args[i] == "--host" && i + 1 < args.size()) {
+                request["host"] = args[++i];
+            } else if (args[i] == "--ttl" && i + 1 < args.size()) {
+                const std::string ttl = args[++i];
+                if (ttl != "none" && !parseDuration(ttl)) {
+                    std::fprintf(stderr, "pvai: --ttl takes a duration such as 90m, 12h, 7d, 2w, or none\n");
+                    return 2;
+                }
+                request["ttl"] = ttl;
+            } else {
+                return usage();
+            }
+        }
+    } else {
+        return usage();
+    }
+    int result = 1;
+    const int status = adminRequest(request, false, [&](const json &answer) {
+        const std::string type = answer.value("type", "");
+        if (type == "shared") {
+            const std::string link = answer.value("link", "");
+            if (linkOnly) {
+                std::printf("%s\n", link.c_str());
+            } else {
+                std::printf("Invitation %s for %s session %s (%s), %s%s.\n\n", answer.value("id", "").c_str(),
+                            answer.value("assistant", "").c_str(), answer.value("session", "").c_str(), answer.value("label", "").c_str(),
+                            expiryText(answer["expires"]).c_str(), answer.value("dialogs", false) ? ", dialogs on" : "");
+                std::printf("Open this on the guest's device, or scan the code:\n\n%s\n\n", link.c_str());
+                printQr(link);
+                std::printf("\nWarning: %s\n", answer.value("warning", "").c_str());
+            }
+            // The warning goes to stderr as well when only the link is printed, so a script cannot miss it.
+            if (linkOnly)
+                std::fprintf(stderr, "pvai: warning: %s\n", answer.value("warning", "").c_str());
+            result = 0;
+        } else if (type == "shares") {
+            if (answer["shares"].empty() && answer["invites"].empty())
+                std::printf("no shares\n");
+            for (const auto &g : answer["shares"])
+                std::printf("%-24s  %s session %s (%s)  %s  %s%s  last seen %s\n  %s\n", g.value("name", "").c_str(),
+                            g.value("assistant", "").c_str(), g.value("session", "").c_str(),
+                            g["label"].is_string() ? g["label"].get<std::string>().c_str() : "not running", g.value("state", "").c_str(),
+                            expiryText(g["expires"]).c_str(), g.value("dialogs", false) ? ", dialogs on" : "",
+                            when(g.value("lastSeen", 0LL)).c_str(), g.value("fingerprint", "").c_str());
+            for (const auto &i : answer["invites"])
+                std::printf("invitation %-8s  %s session %s (%s)  %s%s  not used yet\n", i.value("id", "").c_str(),
+                            i.value("assistant", "").c_str(), i.value("session", "").c_str(),
+                            i["label"].is_string() ? i["label"].get<std::string>().c_str() : "not running",
+                            expiryText(i["expires"]).c_str(), i.value("dialogs", false) ? ", dialogs on" : "");
+            result = 0;
+        } else if (type == "share-revoked") {
+            for (const auto &name : answer.value("shares", json::array()))
+                std::printf("revoked: %s\n", name.get<std::string>().c_str());
+            for (const auto &id : answer.value("invites", json::array()))
+                std::printf("invitation cancelled: %s\n", id.get<std::string>().c_str());
+            result = 0;
+        } else if (type == "share-confirmed") {
+            std::printf("confirmed: %s now follows conversation %s of session %s\n", answer.value("name", "").c_str(),
+                        answer.value("conversation", "").c_str(), answer.value("session", "").c_str());
+            result = 0;
+        } else if (type == "share-moved") {
+            std::printf("moved: %s from session %s to %s\n", answer.value("name", "").c_str(), answer.value("from", "").c_str(),
+                        answer.value("session", "").c_str());
+            result = 0;
+        } else if (type == "rejected") {
+            const std::string reason = answer.value("reason", "");
+            const std::string text = answer.value("text", "");
+            std::fprintf(stderr, "pvai: %s\n", (text.empty() ? reason : text + " (" + reason + ")").c_str());
+        } else {
+            return false; // anything else is not an answer
+        }
+        return true;
+    });
+    if (status < 0) {
+        // No daemon: the list can be read from the device list, nothing else makes sense.
+        if (verb == "list") {
+            bool any = false;
+            for (const auto &d : Devices(devicesPath()).load())
+                if (d.guest) {
+                    any = true;
+                    std::printf("%-24s  %s session %s  %s  %s  last seen %s\n", d.name.c_str(), d.guest->assistant.c_str(),
+                                d.guest->session.c_str(), d.guest->state.c_str(),
+                                expiryText(d.guest->expires > 0 ? json(d.guest->expires) : json()).c_str(), when(d.lastSeen).c_str());
+                }
+            if (!any)
+                std::printf("no shares\n");
+            return 0;
+        }
+        std::fprintf(stderr, "pvai: no daemon; pvai listen first\n");
+        return 1;
+    }
+    return status == 0 ? result : 1;
+}
+
 std::string when(long long time)
 {
     if (time <= 0)
@@ -776,8 +923,8 @@ int runDevices()
         return 0;
     }
     for (const auto &d : devices)
-        std::printf("%-24s  added %s  last seen %s\n  %s\n", d.name.c_str(), when(d.added).c_str(),
-                    when(d.lastSeen).c_str(), d.fingerprint.c_str());
+        std::printf("%-24s  added %s  last seen %s%s\n  %s\n", d.name.c_str(), when(d.added).c_str(), when(d.lastSeen).c_str(),
+                    d.guest ? ("  guest of session " + d.guest->session + " (" + d.guest->state + ")").c_str() : "", d.fingerprint.c_str());
     return 0;
 }
 
@@ -1120,6 +1267,8 @@ int main(int argc, char **argv)
             return runPair({args.begin() + 1, args.end()});
         if (verb == "devices")
             return runDevices();
+        if (verb == "share")
+            return runShare({args.begin() + 1, args.end()});
         if (verb == "revoke" && args.size() == 2)
             return runRevoke(args[1]);
         if (verb == "codex")

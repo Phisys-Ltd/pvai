@@ -69,6 +69,13 @@ public:
     // The owner renames a session: answers the reason to reject ("bad-label",
     // "taken") or empty when it went through (stored, kept over restarts).
     virtual std::string renameSession(Session &session, const std::string &label) = 0;
+    // Entries on their way to the subscribers, in order: the daemon adds what
+    // it knows that the assistant's own record does not (`from`, the guest
+    // who sent a prompt; see "Sharing a session"). Not part of the transcript.
+    virtual void decorateEntries(Session &, std::vector<json> &) {}
+    // `session.history(limit)` as the apps see it: decorated, with the
+    // daemon's own entries (dialog answers) in their place.
+    virtual json historyView(Session &session, int limit);
 };
 
 class Session {

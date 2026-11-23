@@ -45,14 +45,32 @@ std::string pairCode();
 std::string pairLink(const std::string &host, int port, const std::string &fingerprint, const std::string &code,
                      const std::string &name);
 
+// pvai://share?host=...&port=...&fp=...&code=...&name=...&session=...
+// (since 0.7.0): the pair link of one invited guest, bound to one session.
+std::string shareLink(const std::string &host, int port, const std::string &fingerprint, const std::string &code,
+                      const std::string &name, const std::string &session);
+
 // Equal without telling where they differ.
 bool sameSecret(const std::string &a, const std::string &b);
+
+// A guest's share (since 0.7.0, docs/PROTOCOL.md "Sharing a session"): the one
+// session its device may work with. `conversation` is the assistant's own
+// conversation id as captured when the share was granted or last confirmed.
+struct Guest {
+    std::string assistant;
+    std::string session;
+    std::string conversation;
+    long long expires = 0; // Unix time, 0: never
+    bool dialogs = false;
+    std::string state = "active"; // active | scope-moved | ended
+};
 
 struct Device {
     std::string fingerprint;
     std::string name;
     long long added = 0;    // Unix time
     long long lastSeen = 0; // Unix time, 0 before the first login
+    std::optional<Guest> guest; // set: a guest's device, no owner device
 };
 
 // ~/.config/pvai/devices.json, read on every use so a `pvai revoke` from
@@ -68,6 +86,12 @@ public:
     // `saved` (if given) tells whether the file was written; false: nothing is revoked.
     std::vector<Device> remove(const std::string &nameOrFingerprint, bool *saved = nullptr);
     void seen(const std::string &fingerprint, long long when);
+    // Replaces the guest part of a device; false when there is no such
+    // device or the file could not be written.
+    bool setGuest(const std::string &fingerprint, const Guest &guest);
+    // Only the guests, by name or fingerprint (an owner device with that name
+    // stays); returns the removed ones; `saved` as in remove().
+    std::vector<Device> removeGuests(const std::string &nameOrFingerprint, bool *saved = nullptr);
 
 private:
     std::string path_;

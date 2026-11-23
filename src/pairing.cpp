@@ -129,6 +129,13 @@ std::string pairLink(const std::string &host, int port, const std::string &finge
         + "&code=" + code + "&name=" + percentEncode(name);
 }
 
+std::string shareLink(const std::string &host, int port, const std::string &fingerprint, const std::string &code,
+                      const std::string &name, const std::string &session)
+{
+    return "pvai://share?host=" + percentEncode(host) + "&port=" + std::to_string(port) + "&fp=" + fingerprint
+        + "&code=" + code + "&name=" + percentEncode(name) + "&session=" + percentEncode(session);
+}
+
 bool sameSecret(const std::string &a, const std::string &b)
 {
     unsigned char diff = a.size() == b.size() ? 0 : 1;
@@ -167,6 +174,20 @@ std::vector<Device> Devices::load() const
         device.name = entry.value("name", "");
         device.added = entry.value("added", 0LL);
         device.lastSeen = entry.value("lastSeen", 0LL);
+        if (entry.contains("guest") && !entry["guest"].is_null()) {
+            // A guest part that is no object is a damaged guest: no access, never an owner device.
+            const json g = entry["guest"].is_object() ? entry["guest"] : json({{"state", "ended"}});
+            Guest guest;
+            guest.assistant = g.value("assistant", "");
+            guest.session = g.value("session", "");
+            guest.conversation = g.value("conversation", "");
+            guest.expires = g.contains("expires") && g["expires"].is_number_integer() ? g["expires"].get<long long>() : 0LL;
+            guest.dialogs = g.value("dialogs", false);
+            guest.state = g.value("state", "active");
+            if (guest.state != "active" && guest.state != "scope-moved" && guest.state != "ended")
+                guest.state = "ended"; // a state this version does not know: no access
+            device.guest = guest;
+        }
         out.push_back(device);
     }
     return out;
@@ -175,8 +196,15 @@ std::vector<Device> Devices::load() const
 bool Devices::save(const std::vector<Device> &devices) const
 {
     json list = json::array();
-    for (const auto &d : devices)
-        list.push_back({{"fingerprint", d.fingerprint}, {"name", d.name}, {"added", d.added}, {"lastSeen", d.lastSeen}});
+    for (const auto &d : devices) {
+        json entry = {{"fingerprint", d.fingerprint}, {"name", d.name}, {"added", d.added}, {"lastSeen", d.lastSeen}};
+        if (d.guest)
+            entry["guest"] = {{"assistant", d.guest->assistant}, {"session", d.guest->session},
+                              {"conversation", d.guest->conversation},
+                              {"expires", d.guest->expires > 0 ? json(d.guest->expires) : json()},
+                              {"dialogs", d.guest->dialogs}, {"state", d.guest->state}};
+        list.push_back(std::move(entry));
+    }
     return writeAtomically(path_, list.dump(2) + "\n") == Written::Ok;
 }
 
@@ -212,6 +240,36 @@ std::vector<Device> Devices::remove(const std::string &nameOrFingerprint, bool *
     if (!written)
         removed.clear();
     return removed;
+}
+
+std::vector<Device> Devices::removeGuests(const std::string &nameOrFingerprint, bool *saved)
+{
+    auto devices = load();
+    std::vector<Device> removed;
+    std::erase_if(devices, [&](const Device &d) {
+        const bool match = d.guest && (d.fingerprint == nameOrFingerprint || d.name == nameOrFingerprint);
+        if (match)
+            removed.push_back(d);
+        return match;
+    });
+    const bool written = removed.empty() || save(devices);
+    if (saved)
+        *saved = written;
+    if (!written)
+        removed.clear();
+    return removed;
+}
+
+bool Devices::setGuest(const std::string &fingerprint, const Guest &guest)
+{
+    auto devices = load();
+    bool found = false;
+    for (auto &d : devices)
+        if (d.fingerprint == fingerprint) {
+            d.guest = guest;
+            found = true;
+        }
+    return found && save(devices);
 }
 
 void Devices::seen(const std::string &fingerprint, long long when)

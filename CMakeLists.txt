@@ -35,6 +35,7 @@ add_library(pvai_core STATIC
     src/hook.cpp
     src/inbox.cpp
     src/pairing.cpp
+    src/share.cpp
     src/tls.cpp
     src/transcript.cpp
     src/text.cpp
@@ -76,6 +77,8 @@ if(BUILD_TESTING)
     add_test(NAME app-socket COMMAND pvai-appsocket-test $<TARGET_FILE:pvai>)
     pvai_test(pvai-fetch-test tests/fetch_test.cpp)
     add_test(NAME fetch COMMAND pvai-fetch-test $<TARGET_FILE:pvai>)
+    pvai_test(pvai-share-test tests/share_test.cpp)
+    add_test(NAME share COMMAND pvai-share-test $<TARGET_FILE:pvai>)
     pvai_test(pvai-screen-test tests/screen_test.cpp)
     add_test(NAME screen COMMAND pvai-screen-test)
     pvai_test(pvai-transcript-test tests/transcript_test.cpp)

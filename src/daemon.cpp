@@ -17,6 +17,7 @@
 #include "pairing.h"
 #include "setup.h"
 #include "session.h"
+#include "share.h"
 #include "tls.h"
 
 #include <arpa/inet.h>
@@ -169,6 +170,7 @@ struct Peer {
     std::string device;
     std::string deviceName;
     std::string pairing;
+    bool guest = false; // a device that has a share: see "Sharing a session" (its entry holds the rest)
     SSL *ssl = nullptr; // owned by conn's stream
     std::optional<std::chrono::steady_clock::time_point> deadline; // before login
     std::chrono::steady_clock::time_point lastReceived = std::chrono::steady_clock::now();
@@ -256,6 +258,35 @@ struct PairWindow {
     std::chrono::steady_clock::time_point until;
     unsigned long long waiter = 0; // the `pvai pair` that waits for the result
 };
+
+// An open invitation to one session (PROTOCOL.md, "Sharing a session"): a
+// pairing window of its own that lasts as long as the share would, is used
+// up by one device, and is kept in memory only.
+struct Invite {
+    std::string id, code;
+    std::string session, assistant, conversation;
+    bool dialogs = false;
+    long long expires = 0; // Unix time, 0: never
+    std::optional<Clock::time_point> until; // none: never
+};
+constexpr std::size_t kMaxInvites = 16;
+// A file as `stat` shows it, to see that it changed.
+struct FileSig {
+    long long mtime = -1, size = -1, inode = -1;
+    bool operator==(const FileSig &) const = default;
+};
+// A share's session may be missing this long (a restart, a daemon that just
+// started, a Codex app server coming back) before the share has `ended`.
+// PVAI_SHARE_GRACE seconds overrides it, for tests.
+std::chrono::seconds shareGrace()
+{
+    static const std::chrono::seconds grace = [] {
+        const char *text = std::getenv("PVAI_SHARE_GRACE");
+        const long seconds = text ? std::atol(text) : 0;
+        return std::chrono::seconds(seconds > 0 ? seconds : 120);
+    }();
+    return grace;
+}
 
 // An agent message waiting for the owner (PROTOCOL.md, "Agent messages").
 // A prompt of an ended Claude session, kept for its conversation.
@@ -355,6 +386,9 @@ public:
         , port_(port)
     {
         loadLabels();
+        devicesFile_ = devicesPath();
+        prompts_ = std::make_unique<GuestPrompts>(configDir() + "/guest-prompts.json");
+        refreshGuests(true);
         // The assistants this daemon knows, in the order the app lists them.
         auto claude = std::make_unique<ClaudeBackend>(*this);
         claude_ = claude.get();
@@ -413,6 +447,7 @@ public:
                                static_cast<short>(POLLIN | (peer->conn->wantsWrite() || (peer->download && peer->download->remaining > 0) ? POLLOUT : 0)), 0});
             if (::poll(fds.data(), fds.size(), nextTimeout()) < 0 && errno != EINTR)
                 return 1;
+            refreshGuests();
             const auto now = Clock::now();
             for (Session *session : sessions())
                 guarded("session " + session->id() + " tick", [&] { session->tick(now); });
@@ -460,7 +495,10 @@ public:
             expireKept();
             sweepSessions();
             sweepInbox();
+            shareTick();
             reap();
+            if (prompts_->dirty() && !prompts_->save())
+                logLine("guest prompts: cannot write " + configDir() + "/guest-prompts.json");
             if (sessionsDirty_) {
                 sessionsDirty_ = false;
                 broadcast(sessionsMessage());
@@ -489,6 +527,11 @@ public:
         std::string wire;
         for (auto &peer : peers_)
             if (peer->kind == Kind::App && !peer->detached()) {
+                if (peer->guest) {
+                    if (const auto view = guestView(*peer, message))
+                        peer->conn->send(*view);
+                    continue;
+                }
                 if (wire.empty())
                     wire = Conn::line(message);
                 peer->conn->sendRaw(wire);
@@ -503,6 +546,11 @@ public:
         std::string wire;
         for (auto &peer : peers_)
             if (peer->subscriptions.count(id)) {
+                if (peer->guest) {
+                    if (const auto view = guestView(*peer, message))
+                        peer->conn->send(*view);
+                    continue;
+                }
                 if (wire.empty())
                     wire = Conn::line(message);
                 peer->conn->sendRaw(wire);
@@ -565,6 +613,47 @@ public:
     }
 
     void log(const std::string &text) override { logLine(text); }
+
+    // A prompt entry a guest sent says who (PROTOCOL.md, "Sharing a session").
+    void decorateEntries(Session &session, std::vector<json> &entries) override
+    {
+        const std::string conversation = conversationOf(session);
+        if (conversation.empty())
+            return;
+        for (json &entry : entries)
+            prompts_->annotate(conversation, entry);
+    }
+
+    // The history as an app sees it: `from` on guests' prompts, and the
+    // daemon's own entries (who answered a dialog) where their time puts them.
+    json historyView(Session &session, int limit) override
+    {
+        json entries = session.history(limit);
+        const std::string conversation = conversationOf(session);
+        if (!conversation.empty())
+            for (json &entry : entries)
+                prompts_->annotate(conversation, entry);
+        const auto own = daemonEntries_.find(session.id());
+        if (own == daemonEntries_.end() || own->second.empty())
+            return entries;
+        std::vector<json> merged(entries.begin(), entries.end());
+        for (const json &entry : own->second) {
+            const std::string time = str(entry, "time");
+            auto at = merged.end();
+            while (at != merged.begin()) {
+                const std::string before = str(*(at - 1), "time");
+                if (before.empty() || before <= time)
+                    break;
+                --at;
+            }
+            merged.insert(at, entry);
+        }
+        const std::size_t keep = static_cast<std::size_t>(std::max(0, limit));
+        if (merged.size() > keep)
+            merged.erase(merged.begin(), merged.end() - static_cast<long>(keep));
+        return json(merged);
+    }
+
     void setAppSocket(const std::string &path) { appSocket_ = path; }
 
 private:
@@ -936,9 +1025,13 @@ private:
             if (peer->kind == Kind::Wrapper) {
                 if (const auto found = sessions_.find(peer->sessionId); found != sessions_.end()) {
                     const std::optional<StartRequest> again = found->second->replacement();
+                    const std::string gone = found->first;
                     sessionGone(*found->second);
-                    if (!again) // a replacement takes the session's id and its files
-                        removeInbox(found->first);
+                    if (!again) { // a replacement takes the session's id and its files
+                        removeInbox(gone);
+                        daemonEntries_.erase(gone);
+                        sessionEndedForShares(gone);
+                    }
                     sessions_.erase(found);
                     sessionsDirty_ = true;
                     if (again) // a restart that replaces the wrapper
@@ -962,6 +1055,8 @@ private:
                     return false;
                 sessionGone(*entry.second);
                 removeInbox(entry.first);
+                daemonEntries_.erase(entry.first);
+                sessionEndedForShares(entry.first);
                 return true;
             }))
             sessionsDirty_ = true;
@@ -1272,6 +1367,27 @@ private:
                 {"proposalFiles", true}, {"fetch", {{"maxFile", kMaxUploadFile}}}};
     }
 
+    // What this peer is told as `welcome`: an owner's feature flag for sharing,
+    // or a guest's rights (and none of the owner's accounts or other features).
+    json welcomeFor(const Peer &peer)
+    {
+        json welcome = welcomeMessage();
+        if (!peer.guest) {
+            welcome["share"] = true;
+            return welcome;
+        }
+        for (json &assistant : welcome["assistants"])
+            assistant["account"] = nullptr;
+        for (const char *key : {"conversations", "peers", "forget", "model", "effort", "logout", "rename", "tokenLogin", "proposalFiles"})
+            welcome[key] = false;
+        if (const Device *device = guestDevice(peer)) {
+            const Guest &g = *device->guest;
+            welcome["guest"] = {{"session", g.session}, {"assistant", g.assistant}, {"rights", guestRights(g.dialogs)},
+                                {"dialogs", g.dialogs}, {"expires", g.expires > 0 ? json(g.expires) : json()}, {"state", g.state}};
+        }
+        return welcome;
+    }
+
     void handle(Peer *peer, const json &message)
     {
         // In a pairing window every line that is no well-formed `pair` is a
@@ -1308,6 +1424,10 @@ private:
                 }
                 return;
             }
+            if (!peer->tcp && (type == "share" || type == "shares" || type == "share-revoke" || type == "share-confirm" || type == "share-move")) {
+                onShareRequest(peer, type, message);
+                return;
+            }
             if (!peer->tcp && type == "register") {
                 registerWrapper(peer, message);
                 return;
@@ -1342,7 +1462,20 @@ private:
                 }
                 peer->kind = Kind::App;
                 peer->client = message.value("client", "");
-                peer->conn->send(welcomeMessage());
+                peer->conn->send(welcomeFor(*peer));
+                if (peer->guest) {
+                    const Device *device = guestDevice(*peer);
+                    const auto sessionsView = guestView(*peer, sessionsMessage());
+                    peer->conn->send(sessionsView ? *sessionsView : json({{"type", "sessions"}, {"sessions", json::array()}}));
+                    peer->conn->send({{"type", "proposals"}, {"proposals", json::array()}});
+                    if (device && expiredShare(*device->guest)) {
+                        peer->conn->send({{"type", "share-state"}, {"state", "expired"}, {"session", device->guest->session}});
+                        peer->conn->closeAfterFlush();
+                    } else if (device && device->guest->state != "active") {
+                        peer->conn->send({{"type", "share-state"}, {"state", device->guest->state}, {"session", device->guest->session}});
+                    }
+                    return;
+                }
                 peer->conn->send(sessionsMessage());
                 peer->conn->send(proposalsMessage());
                 if (Clock::now() - versionsRead_ > kVersionAge)
@@ -1381,8 +1514,12 @@ private:
                 session->onSnapshot(str(message, "screen"));
             return;
         }
+        if (peer->guest && !guestAllows(peer, type, message))
+            return;
         if (type == "ping")
             peer->conn->send({{"type", "pong"}});
+        else if (type == "share" || type == "shares" || type == "share-revoke" || type == "share-confirm" || type == "share-move")
+            onShareRequest(peer, type, message);
         else if (type == "subscribe")
             onSubscribe(peer, message);
         else if (type == "start")
@@ -1509,6 +1646,8 @@ private:
             Peer *peer = peerBySerial(serial);
             if (!peer)
                 return;
+            if (reason.empty())
+                forgetConversation(id);
             if (reason.empty())
                 forgetLabel(assistant, id);
             if (reason.empty() && assistant == "claude")
@@ -1725,6 +1864,8 @@ private:
                 ok["label"] = session->label();
             peer->conn->send(ok);
         }
+        if (std::string(command.type) == "answer")
+            noteAnswer(peer, *session, message.value("choice", ""));
     }
 
     // ---- Renames: kept in ~/.config/pvai/labels.json ----
@@ -1787,7 +1928,7 @@ private:
             return;
         }
         peer->subscriptions.insert(id);
-        peer->conn->send({{"type", "history"}, {"session", id}, {"entries", session->history(message.value("limit", 200))}});
+        peer->conn->send({{"type", "history"}, {"session", id}, {"entries", historyView(*session, message.value("limit", 200))}});
     }
 
     void onPrompt(Peer *peer, const json &message)
@@ -1815,18 +1956,29 @@ private:
             return reject(peer, ref, id, "empty");
         if (text.size() > kMaxPrompt)
             return reject(peer, ref, id, "too-long");
+        // A guest's slash and shell commands would do what its requests may not
+        // (/exit, /model, /logout, ! anything): they are refused.
+        if (peer->guest && !text.empty() && (text[0] == '/' || text[0] == '!')) {
+            logLine("guest \"" + peer->deviceName + "\": prompt refused: guest-denied (a command)");
+            return reject(peer, ref, id, "guest-denied");
+        }
         // A message from a session to itself is no agent message: a proposal
-        // whose target the app could not place has landed in its sender.
-        if (const std::string from = oneLine(message.value("from", ""), 128); !from.empty()) {
+        // whose target the app could not place has landed in its sender. A
+        // guest's message is never an agent message, whatever it claims.
+        if (const std::string from = oneLine(message.value("from", ""), 128); !from.empty() && !peer->guest) {
             if (from == hostName() + "/" + id || (!peersSelf_.empty() && from == peersSelf_ + "/" + id))
                 return reject(peer, ref, id, "self-message");
         }
-        const std::string header = fromLine(message);
+        const std::string header = peer->guest ? std::string() : fromLine(message);
         // With files and no text the header stands alone: the paths follow it, never lead.
         Prompt prompt{text.empty() ? trim(header) : header + text, message.value("voice", false), ref};
         prompt.agent = !header.empty();
         prompt.files = std::move(files);
+        const std::string typedText = prompt.text;
+        const std::vector<std::string> typedFiles = prompt.files;
         const bool typed = session->prompt(std::move(prompt));
+        if (peer->guest)
+            noteGuestPrompt(peer, *session, typedText, typedFiles);
         peer->conn->send({{"type", "accepted"}, {"ref", ref}, {"session", id},
                           {"delivery", typed && !session->confirmsDelivery() ? "typed" : "queued"}});
     }
@@ -2146,6 +2298,7 @@ private:
             take(job.ended ? Clock::now() + std::chrono::milliseconds(20) : job.deadline);
         take(setup_->deadline());
         take(directDeadline());
+        take(shareDeadline());
         if (!kept_.empty())
             take(kept_.front().expires);
         take(nextSweep_);
@@ -2323,7 +2476,7 @@ private:
             admitted_ = {print, *device, Clock::now()};
             return true;
         }
-        return window_ && Clock::now() < window_->until;
+        return (window_ && Clock::now() < window_->until) || invitesOpen();
     }
 
     static std::string peerAddress(const sockaddr_storage &address)
@@ -2407,11 +2560,13 @@ private:
         if (device) {
             peer->device = print;
             peer->deviceName = device->name;
+            peer->guest = device->guest.has_value();
             // lastSeen is written at most once a minute per device.
             if (unixNow() - device->lastSeen >= 60)
                 Devices(devicesPath()).seen(print, unixNow());
-            logLine(h.address + ": login of \"" + device->name + "\"");
-        } else if (window_ && Clock::now() < window_->until) {
+            logLine(h.address + ": login of \"" + device->name + "\""
+                    + (device->guest ? " (guest of " + device->guest->session + ")" : std::string()));
+        } else if ((window_ && Clock::now() < window_->until) || invitesOpen()) {
             peer->pairing = print;
             peer->deadline = h.deadline;
             peer->conn->setMaxLine(kPairLineMax);
@@ -2430,7 +2585,8 @@ private:
         auto reject = [&](const char *reason) {
             peer->conn->send({{"type", "rejected"}, {"reason", reason}});
         };
-        if (!window_ || Clock::now() >= window_->until) {
+        const bool windowOpen = window_ && Clock::now() < window_->until;
+        if (!windowOpen && !invitesOpen()) {
             reject("no-window");
             directFailure(peer->address, "no pairing window");
             return;
@@ -2438,8 +2594,26 @@ private:
         const auto request = parsePair(message);
         const std::string exporter = peer->ssl ? pairExporter(peer->ssl) : std::string();
         // The proof is keyed with the 16 bytes the code encodes.
-        const auto key = base32Decode(window_->code);
-        const bool good = request && key && !exporter.empty() && sameSecret(hmacHex(*key, exporter), request->proof);
+        auto proves = [&](const std::string &code) {
+            const auto key = base32Decode(code);
+            return request && key && !exporter.empty() && sameSecret(hmacHex(*key, exporter), request->proof);
+        };
+        // An invitation to a session (one device, one use).
+        for (auto it = invites_.begin(); it != invites_.end(); ++it)
+            if (proves(it->code)) {
+                const Invite invite = *it;
+                invites_.erase(it);
+                pairGuest(peer, *request, invite);
+                return;
+            }
+        if (!windowOpen) {
+            // Only invitations are open: a wrong proof costs the sender its
+            // address, and the invitations stay (a passer-by must not spend them).
+            reject("bad-proof");
+            directFailure(peer->address, "bad proof");
+            return;
+        }
+        const bool good = proves(window_->code);
         const unsigned long long waiter = window_->waiter;
         window_.reset();
         if (!good) {
@@ -2448,7 +2622,7 @@ private:
             notifyWaiter(waiter, {{"type", "pair-closed"}, {"reason", "bad-proof"}});
             return;
         }
-        Devices(devicesPath()).add({peer->pairing, request->name, unixNow(), 0});
+        Devices(devicesPath()).add({peer->pairing, request->name, unixNow(), 0, std::nullopt});
         peer->conn->send({{"type", "paired"}, {"host", hostName()}, {"fingerprint", peer->pairing}});
         logLine(peer->address + ": paired \"" + request->name + "\" " + peer->pairing);
         notifyWaiter(waiter, {{"type", "pair-done"}, {"device", request->name}, {"fingerprint", peer->pairing}});
@@ -2523,15 +2697,549 @@ private:
         json names = json::array();
         for (const auto &device : removed) {
             names.push_back(device.name);
-            logLine("revoked \"" + device.name + "\" " + device.fingerprint);
+            logLine("revoked \"" + device.name + "\" " + device.fingerprint + (device.guest ? " (guest of " + device.guest->session + ")" : std::string()));
             for (auto &other : peers_)
                 if (other->device == device.fingerprint) {
                     other->conn->closeAfterFlush();
                     dead_.push_back(other.get());
                 }
+            expiredSeen_.erase(device.fingerprint);
         }
+        refreshGuests(true);
         peer->conn->send({{"type", "revoked"}, {"devices", names}});
         peer->conn->closeAfterFlush();
+    }
+
+    // ---- Sharing a session (PROTOCOL.md, "Sharing a session") ----
+
+    static bool expiredShare(const Guest &g) { return g.expires > 0 && unixNow() >= g.expires; }
+
+    FileSig devicesSig() const
+    {
+        struct stat st;
+        if (::stat(devicesFile_.c_str(), &st) != 0)
+            return {};
+        return {static_cast<long long>(st.st_mtime), static_cast<long long>(st.st_size), static_cast<long long>(st.st_ino)};
+    }
+
+    // The guests of devices.json, read again when the file changed.
+    void refreshGuests(bool force = false)
+    {
+        const FileSig sig = devicesSig();
+        if (!force && sig == guestsSig_)
+            return;
+        guestsSig_ = sig;
+        guests_.clear();
+        for (const Device &device : Devices(devicesPath()).load())
+            if (device.guest)
+                guests_[device.fingerprint] = device;
+    }
+
+    // The assistant's own id of a session's conversation: Claude Code's, else
+    // the session's id (a Codex thread and a Kimi session are their conversation).
+    static std::string conversationOf(Session &session)
+    {
+        std::string id = session.conversationId();
+        if (id.empty() && session.assistant() != "claude")
+            id = session.id();
+        return id;
+    }
+
+    // The peer's guest entry, with its scope checked against the session's
+    // conversation as it is now.
+    Device *guestDevice(const Peer &peer)
+    {
+        const auto it = guests_.find(peer.device);
+        if (it == guests_.end())
+            return nullptr;
+        checkScope(it->second);
+        return &it->second;
+    }
+
+    void checkScope(Device &device)
+    {
+        if (device.guest->state != "active")
+            return;
+        Session *live = session(device.guest->session);
+        if (!live)
+            return;
+        const std::string now = conversationOf(*live);
+        if (!now.empty() && now != device.guest->conversation)
+            setGuestState(device, "scope-moved", "the conversation changed");
+    }
+
+    void persistGuest(const Device &device)
+    {
+        if (!Devices(devicesPath()).setGuest(device.fingerprint, *device.guest))
+            logLine("share: cannot write " + devicesPath());
+        guestsSig_ = devicesSig(); // our own write: no need to read it back
+    }
+
+    void tellGuest(const Device &device, const std::string &state)
+    {
+        for (auto &peer : peers_)
+            if (peer->guest && peer->device == device.fingerprint && !peer->conn->closing())
+                peer->conn->send({{"type", "share-state"}, {"state", state}, {"session", device.guest->session}});
+    }
+
+    void setGuestState(Device &device, const std::string &state, const std::string &why)
+    {
+        if (device.guest->state == state)
+            return;
+        device.guest->state = state;
+        persistGuest(device);
+        sessionsDirty_ = true;
+        logLine("share of \"" + device.name + "\" (" + device.guest->session + "): " + state + " (" + why + ")");
+        tellGuest(device, state);
+    }
+
+    // A session is gone for good (its wrapper ended, stop, an assistant that
+    // closed the thread); a restart that replaces it does not come here.
+    void sessionEndedForShares(const std::string &id)
+    {
+        for (auto &[fingerprint, device] : guests_)
+            if (device.guest->session == id && device.guest->state != "ended")
+                setGuestState(device, "ended", "the session ended");
+    }
+
+    // A conversation was forgotten: its guest prompts go, and a share on it is over.
+    void forgetConversation(const std::string &id)
+    {
+        prompts_->forget(id);
+        for (auto &[fingerprint, device] : guests_)
+            if (device.guest->conversation == id && device.guest->state != "ended")
+                setGuestState(device, "ended", "the conversation was forgotten");
+    }
+
+    // Attention of these kinds is a dialog (the others are about the account, the process, the model).
+    static bool dialogKind(const std::string &kind)
+    {
+        return kind != "login" && kind != "ended" && kind != "model" && kind != "limited" && kind != "stuck";
+    }
+
+    // What a guest is told of something sent to all apps: its session's
+    // events only, and nothing at all while the share is not active.
+    std::optional<json> guestView(Peer &peer, const json &message)
+    {
+        const Device *device = guestDevice(peer);
+        if (!device)
+            return std::nullopt;
+        const Guest &g = *device->guest;
+        const bool open = g.state == "active" && !expiredShare(g);
+        const std::string type = str(message, "type");
+        if (type == "sessions") {
+            json list = json::array();
+            if (open && message.contains("sessions"))
+                for (const json &entry : message["sessions"])
+                    if (str(entry, "id") == g.session) {
+                        json copy = entry;
+                        if (!g.dialogs) { // the dialog is the owner's to see unless the share has dialogs on
+                            copy["dialog"] = nullptr;
+                            copy["dialogInfo"] = nullptr;
+                        }
+                        list.push_back(std::move(copy));
+                    }
+            return json({{"type", "sessions"}, {"sessions", list}});
+        }
+        if (!open)
+            return std::nullopt;
+        if (type == "dropped") {
+            json mine = json::array();
+            for (const json &prompt : message["prompts"])
+                if (str(prompt, "session") == g.session)
+                    mine.push_back(prompt);
+            if (mine.empty())
+                return std::nullopt;
+            return json({{"type", "dropped"}, {"prompts", mine}});
+        }
+        static const std::set<std::string> events = {"history", "entry", "say", "attention", "usage", "delivered", "uploaded",
+                                                     "model", "effort", "mode", "dialog-answered"};
+        if (!events.count(type) || str(message, "session") != g.session)
+            return std::nullopt;
+        if (type == "attention" && !g.dialogs && dialogKind(str(message, "kind")))
+            return std::nullopt;
+        return message;
+    }
+
+    // A guest's request: false when it was refused (and answered). Expiry and
+    // the scope are checked on every request; `ping` always goes through.
+    bool guestAllows(Peer *peer, const std::string &type, const json &message)
+    {
+        const json ref = message.contains("ref") ? message["ref"] : json();
+        const json sessionField = message.contains("session") && message["session"].is_string() ? message["session"] : json();
+        auto refuse = [&](const std::string &reason) {
+            logLine("guest \"" + peer->deviceName + "\": " + type + " refused: " + reason);
+            peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"session", sessionField}, {"reason", reason}});
+            if (type == "upload" || type == "download" || type == "fetch")
+                peer->conn->closeAfterFlush(); // what follows is not lines, or not for it
+            return false;
+        };
+        if (type == "ping")
+            return true;
+        const Device *device = guestDevice(*peer);
+        if (!device)
+            return refuse("ended"); // its entry is gone (the connection is closing)
+        const Guest &g = *device->guest;
+        if (expiredShare(g))
+            return refuse("expired");
+        if (g.state != "active")
+            return refuse(g.state);
+        static const std::set<std::string> allowed = {"hello", "subscribe", "unsubscribe", "prompt", "interrupt", "upload", "fetch", "answer"};
+        if (!allowed.count(type))
+            return refuse("guest-denied");
+        if (type == "hello")
+            return true;
+        if (!sessionField.is_string() || sessionField.get<std::string>() != g.session)
+            return refuse("guest-denied");
+        if (type == "answer" && !g.dialogs)
+            return refuse("guest-denied");
+        return true;
+    }
+
+    // Who answered: a guest by its device's name (never by what it sent), an
+    // owner device by its name, an owner on this host (loopback, app socket, CLI) as "owner".
+    static std::string answerer(const Peer &peer)
+    {
+        return peer.deviceName.empty() ? "owner" : peer.deviceName;
+    }
+
+    // A dialog was answered: every app hears who did, and the history says so.
+    void noteAnswer(Peer *peer, Session &target, const std::string &choice)
+    {
+        const std::string by = answerer(*peer);
+        const std::string shown = cut(oneLine(choice, 400), 200);
+        logLine(target.id() + ": answer " + oneLine(choice, 40) + " by " + by);
+        broadcast({{"type", "dialog-answered"}, {"session", target.id()}, {"choice", shown}, {"answeredBy", by}});
+        json entry = {{"id", "a" + randomHex(6)}, {"time", nowIso()}, {"kind", "answer"}, {"text", shown}, {"answeredBy", by}};
+        auto &own = daemonEntries_[target.id()];
+        own.push_back(entry);
+        while (own.size() > kMaxDaemonEntries)
+            own.pop_front();
+        toSubscribers(target.id(), {{"type", "entry"}, {"session", target.id()}, {"entry", entry}});
+    }
+
+    // A guest's prompt went into its session: the log (size, not the text) and
+    // the record that lets the history say who sent it.
+    void noteGuestPrompt(Peer *peer, Session &target, const std::string &text, const std::vector<std::string> &files)
+    {
+        const Device *device = guestDevice(*peer);
+        if (!device)
+            return;
+        logLine("guest \"" + peer->deviceName + "\" prompt to " + target.id() + ": " + std::to_string(text.size()) + " bytes"
+                + (files.empty() ? "" : ", " + std::to_string(files.size()) + " file(s)"));
+        const long long now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        prompts_->record(device->guest->conversation, text, files.empty() ? std::string() : withFiles(text, files), now, peer->deviceName);
+    }
+
+    bool invitesOpen()
+    {
+        const auto now = Clock::now();
+        std::erase_if(invites_, [&](const Invite &i) { return i.until && now >= *i.until; });
+        return !invites_.empty();
+    }
+
+    std::string uniqueDeviceName(const std::string &wanted)
+    {
+        std::set<std::string> taken = {"owner"};
+        for (const Device &device : Devices(devicesPath()).load())
+            taken.insert(device.name);
+        if (!taken.count(wanted))
+            return wanted;
+        const std::string base = wanted.size() > 56 ? wanted.substr(0, utf8Boundary(wanted, 56)) : wanted;
+        for (int n = 2;; ++n)
+            if (const std::string candidate = base + " " + std::to_string(n); !taken.count(candidate))
+                return candidate;
+    }
+
+    // The device that proved an invitation's code becomes a guest of its session.
+    void pairGuest(Peer *peer, const PairRequest &request, const Invite &invite)
+    {
+        auto reject = [&](const char *reason) { peer->conn->send({{"type", "rejected"}, {"reason", reason}}); };
+        Session *target = session(invite.session);
+        if (!target) {
+            reject("no-window");
+            logLine(peer->address + ": invitation " + invite.id + ": the session " + invite.session + " is gone");
+            return;
+        }
+        Device device{peer->pairing, uniqueDeviceName(request.name), unixNow(), 0, std::nullopt};
+        Guest guest{invite.assistant, invite.session, invite.conversation, invite.expires, invite.dialogs, "active"};
+        const std::string now = conversationOf(*target);
+        if (!now.empty() && now != invite.conversation)
+            guest.state = "scope-moved"; // the conversation moved on since the invitation: the owner confirms
+        device.guest = guest;
+        if (!Devices(devicesPath()).add(device)) {
+            logLine("share: cannot write " + devicesPath());
+            peer->conn->send({{"type", "error"}, {"code", "save-failed"}, {"text", "the device list could not be written"}});
+            return;
+        }
+        refreshGuests(true);
+        peer->conn->send({{"type", "paired"}, {"host", hostName()}, {"fingerprint", peer->pairing}, {"session", invite.session}, {"guest", true}});
+        logLine(peer->address + ": paired guest \"" + device.name + "\" " + peer->pairing + " for session " + invite.session
+                + (invite.dialogs ? " (dialogs on)" : "") + (guest.state != "active" ? ", " + guest.state : std::string()));
+        sessionsDirty_ = true;
+    }
+
+    // A session by id, or by label when exactly one has it.
+    Session *sessionFor(const std::string &key)
+    {
+        if (Session *exact = session(key))
+            return exact;
+        Session *found = nullptr;
+        for (Session *candidate : sessions())
+            if (candidate->label() == key) {
+                if (found)
+                    return nullptr;
+                found = candidate;
+            }
+        return found;
+    }
+
+    Device *findGuest(const std::string &key)
+    {
+        for (auto &[fingerprint, device] : guests_)
+            if (fingerprint == key || device.name == key)
+                return &device;
+        return nullptr;
+    }
+
+    json shareJson(const Device &device)
+    {
+        const Guest &g = *device.guest;
+        const Session *live = session(g.session);
+        return {{"name", device.name}, {"fingerprint", device.fingerprint}, {"added", device.added}, {"lastSeen", device.lastSeen},
+                {"session", g.session}, {"assistant", g.assistant}, {"label", live ? json(live->label()) : json()},
+                {"conversation", g.conversation}, {"expires", g.expires > 0 ? json(g.expires) : json()},
+                {"expired", expiredShare(g)}, {"dialogs", g.dialogs}, {"state", g.state}};
+    }
+
+    // The requests of the owner (share, shares, share-revoke, share-confirm,
+    // share-move): from the CLI on the daemon's socket, or from an app that
+    // is not a guest (a guest never gets this far).
+    void onShareRequest(Peer *peer, const std::string &type, const json &message)
+    {
+        const json ref = message.contains("ref") ? message["ref"] : json();
+        auto answer = [&](const json &reply) {
+            peer->conn->send(reply);
+            if (peer->kind == Kind::Unknown)
+                peer->conn->closeAfterFlush();
+        };
+        auto reject = [&](const std::string &reason, const std::string &text = {}) {
+            json reply = {{"type", "rejected"}, {"ref", ref}, {"reason", reason}};
+            if (!text.empty())
+                reply["text"] = text;
+            logLine(type + " refused: " + reason);
+            answer(reply);
+        };
+        auto field = [&](const char *key) {
+            return message.contains(key) && message[key].is_string() ? message[key].get<std::string>() : std::string();
+        };
+        refreshGuests();
+        if (type == "shares") {
+            json list = json::array(), open = json::array();
+            for (auto &[fingerprint, device] : guests_) {
+                checkScope(device);
+                list.push_back(shareJson(device));
+            }
+            invitesOpen();
+            for (const Invite &invite : invites_) {
+                const Session *live = session(invite.session);
+                open.push_back({{"id", invite.id}, {"session", invite.session}, {"assistant", invite.assistant},
+                                {"label", live ? json(live->label()) : json()}, {"dialogs", invite.dialogs},
+                                {"expires", invite.expires > 0 ? json(invite.expires) : json()}});
+            }
+            return answer({{"type", "shares"}, {"ref", ref}, {"shares", list}, {"invites", open}});
+        }
+        if (type == "share") {
+            const std::string key = field("session");
+            Session *target = key.empty() ? nullptr : sessionFor(key);
+            if (!target)
+                return reject("unknown-session");
+            if (direct_.fd < 0 || !tls_)
+                return reject("not-listening", "direct access is off; turn it on with pvai listen ADDR");
+            long long ttl = kShareDefaultSeconds; // 0: never
+            if (message.contains("ttl") && !message["ttl"].is_null()) {
+                const json &value = message["ttl"];
+                if (value.is_string() && value.get<std::string>() == "none") {
+                    ttl = 0;
+                } else if (value.is_string()) {
+                    const auto parsed = parseDuration(value.get<std::string>());
+                    if (!parsed)
+                        return reject("bad-ttl");
+                    ttl = *parsed;
+                } else if (value.is_number_integer() && value.get<long long>() >= 1 && value.get<long long>() <= kShareMaxSeconds) {
+                    ttl = value.get<long long>();
+                } else {
+                    return reject("bad-ttl");
+                }
+            }
+            if (message.contains("dialogs") && !message["dialogs"].is_null() && !message["dialogs"].is_boolean())
+                return reject("bad-request");
+            const std::string conversation = conversationOf(*target);
+            if (conversation.empty())
+                return reject("not-ready", "the session has not reported its conversation yet");
+            invitesOpen();
+            if (invites_.size() >= kMaxInvites)
+                return reject("too-many");
+            Invite invite;
+            invite.id = "i" + randomHex(3);
+            invite.code = pairCode();
+            invite.session = target->id();
+            invite.assistant = target->assistant();
+            invite.conversation = conversation;
+            invite.dialogs = message.value("dialogs", false);
+            if (ttl > 0) {
+                invite.expires = unixNow() + ttl;
+                invite.until = Clock::now() + std::chrono::seconds(ttl);
+            }
+            std::string host = field("host");
+            if (host.empty())
+                host = linkHost();
+            const std::string name = field("name").empty() ? hostName() : oneLine(field("name"), kDeviceNameMax);
+            const std::string link = shareLink(host, direct_.port, tls_->fingerprint(), invite.code, name, invite.session);
+            invites_.push_back(invite);
+            logLine("share created: session " + invite.session + " (" + invite.assistant + "), invitation " + invite.id
+                    + (invite.dialogs ? ", dialogs on" : "") + (ttl > 0 ? ", " + std::to_string(ttl) + " s" : ", no expiry"));
+            return answer({{"type", "shared"}, {"ref", ref}, {"id", invite.id}, {"link", link}, {"session", invite.session},
+                           {"assistant", invite.assistant}, {"label", target->label()}, {"dialogs", invite.dialogs},
+                           {"expires", invite.expires > 0 ? json(invite.expires) : json()}, {"warning", kShareWarning}});
+        }
+        const std::string key = field("name");
+        if (type == "share-revoke") {
+            if (key.empty())
+                return reject("bad-request");
+            bool saved = true;
+            const auto removed = Devices(devicesPath()).removeGuests(key, &saved);
+            if (!saved)
+                return reject("save-failed", "the device list could not be written");
+            json names = json::array(), cancelled = json::array();
+            for (const Device &device : removed) {
+                names.push_back(device.name);
+                logLine("share revoked: \"" + device.name + "\" " + device.fingerprint + " (" + device.guest->session + ")");
+                for (auto &other : peers_)
+                    if (other->device == device.fingerprint) {
+                        other->conn->closeAfterFlush();
+                        dead_.push_back(other.get());
+                    }
+                expiredSeen_.erase(device.fingerprint);
+            }
+            refreshGuests(true);
+            for (auto it = invites_.begin(); it != invites_.end();) {
+                if (it->id == key) {
+                    cancelled.push_back(it->id);
+                    logLine("share invitation cancelled: " + it->id + " (" + it->session + ")");
+                    it = invites_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (names.empty() && cancelled.empty())
+                return reject("unknown-share");
+            return answer({{"type", "share-revoked"}, {"ref", ref}, {"shares", names}, {"invites", cancelled}});
+        }
+        Device *device = key.empty() ? nullptr : findGuest(key);
+        if (!device)
+            return reject(key.empty() ? "bad-request" : "unknown-share");
+        checkScope(*device);
+        Guest &g = *device->guest;
+        if (type == "share-confirm") {
+            if (g.state != "scope-moved")
+                return reject("not-scope-moved");
+            Session *live = session(g.session);
+            if (!live)
+                return reject("unknown-session");
+            const std::string conversation = conversationOf(*live);
+            if (conversation.empty())
+                return reject("not-ready", "the session has not reported its conversation yet");
+            g.conversation = conversation;
+            g.state = "active";
+            persistGuest(*device);
+            logLine("share of \"" + device->name + "\" (" + g.session + ") confirmed for conversation " + conversation);
+            reopenGuests(*device);
+            return answer({{"type", "share-confirmed"}, {"ref", ref}, {"name", device->name}, {"session", g.session}, {"conversation", conversation}});
+        }
+        // share-move: the same conversation under another session id (a Claude `start.resume`).
+        Session *to = sessionFor(field("session"));
+        if (!to)
+            return reject("unknown-session");
+        if (to->assistant() != g.assistant || conversationOf(*to) != g.conversation || g.conversation.empty())
+            return reject("conversation-mismatch");
+        const std::string from = g.session;
+        g.session = to->id();
+        g.state = "active";
+        persistGuest(*device);
+        missing_.erase(from);
+        logLine("share of \"" + device->name + "\" moved from " + from + " to " + g.session);
+        reopenGuests(*device);
+        return answer({{"type", "share-moved"}, {"ref", ref}, {"name", device->name}, {"session", g.session}, {"from", from}});
+    }
+
+    // The share is active again (confirmed, or moved): the guest's connections
+    // are told, and get the session list; they subscribe again.
+    void reopenGuests(const Device &device)
+    {
+        sessionsDirty_ = true;
+        for (auto &peer : peers_)
+            if (peer->guest && peer->device == device.fingerprint && !peer->conn->closing()) {
+                peer->subscriptions.clear();
+                peer->conn->send({{"type", "share-state"}, {"state", "active"}, {"session", device.guest->session}});
+            }
+    }
+
+    // Once per loop: invitations that ran out, shares that expired (their
+    // connections close), conversations that moved, sessions that did not come back.
+    void shareTick()
+    {
+        invitesOpen();
+        const auto now = Clock::now();
+        for (auto &[fingerprint, device] : guests_) {
+            Guest &g = *device.guest;
+            if (expiredShare(g)) {
+                if (expiredSeen_.insert(fingerprint).second)
+                    logLine("share of \"" + device.name + "\" (" + g.session + ") expired");
+                for (auto &peer : peers_)
+                    if (peer->guest && peer->kind == Kind::App && peer->device == fingerprint && !peer->conn->closing()) {
+                        peer->conn->send({{"type", "share-state"}, {"state", "expired"}, {"session", g.session}});
+                        peer->conn->closeAfterFlush();
+                        dead_.push_back(peer.get());
+                    }
+                continue;
+            }
+            if (g.state == "ended")
+                continue;
+            checkScope(device);
+            if (session(g.session)) {
+                missing_.erase(g.session);
+            } else if (const auto since = missing_.find(g.session); since == missing_.end()) {
+                missing_[g.session] = now;
+            } else if (now - since->second >= shareGrace()) {
+                setGuestState(device, "ended", "the session did not come back");
+            }
+        }
+    }
+
+    // When shareTick is due: the next expiry of a connected guest, the end of
+    // a grace period, an invitation's end; every 5 s while a share is open.
+    std::optional<Clock::time_point> shareDeadline() const
+    {
+        std::optional<Clock::time_point> next;
+        auto take = [&](Clock::time_point at) {
+            if (!next || at < *next)
+                next = at;
+        };
+        const auto now = Clock::now();
+        for (const Invite &invite : invites_)
+            if (invite.until)
+                take(*invite.until);
+        for (const auto &[fingerprint, device] : guests_) {
+            const Guest &g = *device.guest;
+            if (g.state != "ended")
+                take(now + std::chrono::seconds(5));
+            if (g.expires > 0 && !expiredSeen_.count(fingerprint))
+                take(now + std::chrono::seconds(std::max<long long>(0, g.expires - unixNow())));
+            if (const auto since = missing_.find(g.session); since != missing_.end())
+                take(since->second + shareGrace());
+        }
+        return next;
     }
 
     // Deadlines before login, the pairing window, the lockout's memory.
@@ -2634,6 +3342,19 @@ private:
     std::vector<Handshake> handshakes_;
     std::optional<PairWindow> window_;
     Lockout lockout_;
+
+    // Sharing a session: open invitations, the guests (the devices that have
+    // a share, as devices.json holds them, read again when it changes), what
+    // guests sent, and the daemon's own history entries.
+    std::vector<Invite> invites_;
+    std::map<std::string, Device> guests_;
+    std::string devicesFile_; // devicesPath(), looked up once
+    FileSig guestsSig_;
+    std::unique_ptr<GuestPrompts> prompts_;
+    std::map<std::string, std::deque<json>> daemonEntries_; // per session: dialog answers
+    std::map<std::string, Clock::time_point> missing_;      // a share's session that is not there, since
+    std::set<std::string> expiredSeen_;                     // guests whose expiry was logged
+    static constexpr std::size_t kMaxDaemonEntries = 100;
 
     // Agent messages
     std::vector<Proposal> proposals_;

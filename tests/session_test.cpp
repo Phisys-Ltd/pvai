@@ -570,7 +570,8 @@ esac
         std::string kinds;
         for (const auto &e : hist.value("entries", json::array()))
             kinds += e.value("kind", "") + ",";
-        check(kinds == "prompt,tool,result,text,", "the history: prompt, tool, result, text: " + hist.dump());
+        // The owner's answer to the permission dialog earlier is the daemon's own `answer` entry (since 0.7.0).
+        check(kinds == "prompt,tool,answer,result,text,", "the history: prompt, tool, answer, result, text: " + hist.dump());
 
         // An error with a null code and message still ends the turn.
         a.send({{"type", "prompt"}, {"ref", 48}, {"session", "k-1"}, {"text", "Nochmal"}});
