@@ -273,8 +273,6 @@ std::string Setup::login(const std::string &assistant, const std::string &binary
     std::vector<std::string> argv;
     if (assistant == "claude")
         argv = token ? std::vector<std::string>{binary, "setup-token"} : std::vector<std::string>{binary, "auth", "login"};
-    else if (assistant == "codex")
-        argv = {binary, "login", "--device-auth"};
     else if (assistant == "kimi")
         argv = {binary, "login"};
     else
@@ -288,7 +286,8 @@ std::string Setup::login(const std::string &assistant, const std::string &binary
     return tasks_.count(assistant) ? "" : "cannot-start";
 }
 
-// Claude Code `auth logout`, Codex `logout`; Kimi Code has no logout command.
+// Claude Code `auth logout`; Kimi Code has no logout command (Codex logs in and
+// out through its app server, not here).
 std::string Setup::logout(const std::string &assistant, const std::string &binary, const json &ref)
 {
     if (busy(assistant))
@@ -296,8 +295,6 @@ std::string Setup::logout(const std::string &assistant, const std::string &binar
     std::vector<std::string> argv;
     if (assistant == "claude")
         argv = {binary, "auth", "logout"};
-    else if (assistant == "codex")
-        argv = {binary, "logout"};
     else if (assistant == "kimi")
         return "not-supported";
     else

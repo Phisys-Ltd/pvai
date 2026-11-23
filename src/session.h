@@ -297,9 +297,16 @@ public:
     // The account's name (an email) when the assistant says it, else null
     // (a token login, an API key, not known). Never a token.
     const json &account() const { return accountName_; }
-    // A login or logout of this assistant just ended (`kind` "login" or
-    // "logout", `ok` whether it went through); the login is read again after.
-    virtual void authChanged(const std::string &, bool) {}
+    // An assistant that logs in and out itself, without a child process of
+    // Setup (Codex: its app server): the daemon hands login, login-cancel and
+    // logout to it; it sends the `login` and `logout` events itself and reads
+    // the login again when it is done. Each returns the reason for a
+    // `rejected`, or empty.
+    virtual bool ownAuth() const { return false; }
+    virtual bool authBusy() const { return false; }
+    virtual std::string login(const json &, const std::string &) { return "not-supported"; }
+    virtual std::string loginCancel() { return "no-login"; }
+    virtual std::string logout(const json &) { return "not-supported"; }
     // Reads it again where the assistant can say (`done` with true when it
     // changed); after an install, looks for the program again.
     virtual void refreshLogin(std::function<void(bool changed)> done) { done(false); }

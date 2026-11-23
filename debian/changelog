@@ -1,3 +1,9 @@
+pvai (0.6.1-1) trixie; urgency=medium
+
+  * Codex login and logout go through the app server (account/login/start with a device code, account/login/completed, account/read, account/logout) instead of the CLI: a running app server no longer misses a login made after a logout (sessions got 401 until auth.json was rewritten). The app server is no longer restarted after an account change. `done` is sent only once account/read shows the account. The log shows the CLI and app server versions at connect, with a warning when they differ.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 23 Nov 2026 12:00:00 +0100
+
 pvai (0.6.0-1) trixie; urgency=medium
 
   * Codex threads the daemon started stay detached across daemon restarts and crashes (kept in ~/.config/pvai/codex-threads.json), so stop archives them instead of only letting go.

@@ -125,6 +125,9 @@ public:
     std::atomic<int> rejectTurn{0}; // turn/start answers an error: 1 a model the account may not use, 2 a login problem
     std::atomic<bool> rejectStart{false}; // thread/start answers an error
     std::atomic<bool> hasAccount{false};  // account/read answers a ChatGPT account
+    std::atomic<bool> loginFail{false};   // account/login/completed says success false
+    std::atomic<bool> loginHold{false};   // account/login/completed does not come (the owner has not entered the code)
+    std::string loginMarker;              // file `codex login status` looks at: made by a login, removed by a logout
     std::atomic<bool> kidActive{false}; // the subagent thread t-kid of t-new (found by the first rescan: idle until a test says so)
     json kid() const
     {
@@ -206,7 +209,26 @@ protected:
         else if (method == "account/read")
             reply(id, hasAccount ? json{{"account", {{"type", "chatgpt"}, {"email", "codex.user@example.com"}, {"planType", "plus"}}}, {"requiresOpenaiAuth", true}}
                                  : json{{"account", nullptr}, {"requiresOpenaiAuth", true}});
-        else if (method == "account/rateLimits/read")
+        else if (method == "account/login/start") {
+            reply(id, {{"type", params.value("type", "")}, {"loginId", "login-1"}, {"userCode", "ABCD-12345"},
+                       {"verificationUrl", "https://auth.openai.com/codex/device"}});
+            if (!loginHold) {
+                if (!loginFail) {
+                    hasAccount = true;
+                    if (!loginMarker.empty())
+                        std::ofstream(loginMarker) << "in";
+                }
+                writeNow({{"jsonrpc", "2.0"}, {"method", "account/login/completed"},
+                          {"params", {{"success", !loginFail}, {"error", loginFail ? json("the code expired") : json()}, {"loginId", "login-1"}}}});
+            }
+        } else if (method == "account/login/cancel")
+            reply(id, {{"status", "canceled"}});
+        else if (method == "account/logout") {
+            hasAccount = false;
+            if (!loginMarker.empty())
+                std::remove(loginMarker.c_str());
+            reply(id, json::object());
+        } else if (method == "account/rateLimits/read")
             reply(id, {{"rateLimits", json::object()}});
         else if (method == "model/list")
             reply(id, {{"data", {{{"model", "gpt-test"}, {"hidden", false}}, {{"model", "gpt-hidden"}, {"hidden", true}}}}});
@@ -378,9 +400,8 @@ esac
               "update) echo checking; echo 'npm ERR! needs root' >&2; exit 1;;\n"
               "app-server) echo \"$*\" >> \"$d/codex.calls\";;\n"
               "login) if [ \"$2\" = status ]; then [ -e \"$d/codex.in\" ] && { echo 'Logged in using ChatGPT'; exit 0; }; echo 'Not logged in'; exit 1; fi\n"
-              "  echo '1. Open this link in your browser and sign in to your account'; echo '   https://auth.openai.com/codex/device';\n"
-              "  echo '2. Enter this one-time code (expires in 15 minutes)'; echo '   ABCD-12345'; sleep 1; touch \"$d/codex.in\";;\n"
-              "logout) rm -f \"$d/codex.in\"; echo 'Logged out';;\nesac\n",
+              "  echo 'the CLI login must not be used' >> \"$d/codex.cli-auth\"; exit 1;;\n"
+              "logout) echo 'the CLI logout must not be used' >> \"$d/codex.cli-auth\"; exit 1;;\nesac\n",
               true);
     ::setenv("PATH", (bin + ":" + std::getenv("PATH")).c_str(), 1);
     ::setenv("PVAI_CODEX", (bin + "/codex").c_str(), 1);
@@ -419,6 +440,7 @@ esac
     writeFile(transcripts + "/running-1.jsonl", userLine("still running"));
 
     FakeCodex codex(home + "/.codex/app-server-control/app-server-control.sock");
+    codex.loginMarker = bin + "/codex.in";
     FakeKimi kimi(kimiSocket);
 
     DaemonProcess daemon;
@@ -652,9 +674,16 @@ esac
         check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 1100; }).value("reason", "") == "not-logged-in",
               "codex without a login: rejected not-logged-in");
         check(codex.call("thread/start", {}, 300).is_null(), "and no thread/start went to the app server");
-        codex.hasAccount = true;
+        // The login runs in the app server: a link and code from account/login/start, done after
+        // account/login/completed and an account/read that shows the account.
         a.send({{"type", "login"}, {"ref", 1101}, {"assistant", "codex"}});
-        check(!a.next("login", [](const json &m) { return m.value("assistant", "") == "codex" && m.value("state", "") == "done"; }, 6000).empty(),
+        const json waiting = a.next("login", [](const json &m) { return m.value("ref", 0) == 1101 && !m.value("code", json()).is_null(); }, 6000);
+        check(waiting.value("state", "") == "waiting" && waiting.value("url", "") == "https://auth.openai.com/codex/device"
+                  && waiting.value("code", "") == "ABCD-12345",
+              "codex login: link and code from the app server: " + waiting.dump());
+        check(!codex.call("account/login/start", [](const json &p) { return p.value("type", "") == "chatgptDeviceCode"; }).is_null(),
+              "account/login/start with chatgptDeviceCode");
+        check(a.next("login", [](const json &m) { return m.value("ref", 0) == 1101 && m.value("state", "") == "done"; }, 6000).value("state", "") == "done",
               "the codex login goes through");
         const json named = a.next("assistants", [&](const json &m) {
             const json c = codexEntry(m);
@@ -2274,17 +2303,6 @@ esac
               return false;
           }).empty(),
           "codex loggedIn true from codex login status");
-    // The app server holds the account in memory: after a login over an account it knew, it is restarted once
-    // no thread works (`codex app-server daemon restart`).
-    auto restarts = [&]() {
-        for (int i = 0; i < 80; ++i) {
-            if (readFile(bin + "/codex.calls").find("app-server daemon restart") != std::string::npos)
-                return true;
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        return false;
-    };
-    check(restarts(), "a login over a known account restarts the shared app server");
     a.send({{"type", "login"}, {"ref", 39}, {"assistant", "claude"}});
     login = a.next("login", [](const json &m) { return m.value("assistant", "") == "claude" && m.value("state", "") == "code-needed"; });
     check(login.value("url", "").rfind("https://claude.com/cai/oauth/authorize?", 0) == 0, "claude: the link, and it wants the code: " + login.dump());
@@ -2323,13 +2341,12 @@ esac
     a.send({{"type", "logout"}, {"ref", 46}, {"assistant", "kimi"}});
     check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 46; }).value("reason", "") == "not-supported",
           "logout of Kimi: not-supported");
-    // Codex's logout: the account goes, and the app server (which keeps it in memory) is restarted.
-    fs::remove(bin + "/codex.calls");
+    // Codex's logout goes through the app server (account/logout, then account/read); no restart.
     a.send({{"type", "logout"}, {"ref", 47}, {"assistant", "codex"}});
     check(a.next("logout", [](const json &m) { return m.value("assistant", "") == "codex" && m.value("state", "") == "done"; }, 6000).value("state", "") == "done",
           "codex logout done");
-    check(restarts(), "and the shared app server is restarted");
-    codex.hasAccount = false;
+    check(!codex.call("account/logout").is_null(), "account/logout went to the app server");
+    check(readFile(bin + "/codex.calls").find("app-server daemon restart") == std::string::npos, "and the app server was not restarted");
     check(!a.next("assistants", [](const json &m) {
               for (const auto &x : m.value("assistants", json::array()))
                   if (x.value("name", "") == "codex")
@@ -2339,6 +2356,29 @@ esac
           "assistants: codex loggedIn false, account null");
     a.send({{"type", "login"}, {"ref", 48}, {"assistant", "codex"}});
     check(!a.next("login", [](const json &m) { return m.value("assistant", "") == "codex" && m.value("state", "") == "done"; }, 6000).empty(), "logged in again");
+    // A login the owner never completes can be cancelled; one the server refuses ends failed with its reason.
+    codex.loginHold = true;
+    a.send({{"type", "login"}, {"ref", 49}, {"assistant", "codex"}});
+    check(!a.next("login", [](const json &m) { return m.value("ref", 0) == 49 && !m.value("code", json()).is_null(); }, 6000).empty(),
+          "a held codex login waits with its code");
+    a.send({{"type", "login"}, {"ref", 50}, {"assistant", "codex"}});
+    check(a.next("rejected", [](const json &m) { return m.value("ref", 0) == 50; }).value("reason", "") == "busy", "a second codex login: busy");
+    a.send({{"type", "login-cancel"}, {"ref", 51}, {"assistant", "codex"}});
+    const json cancelled = a.next("login", [](const json &m) { return m.value("ref", 0) == 49 && m.value("state", "") != "waiting"; }, 6000);
+    check(cancelled.value("state", "") == "failed" && cancelled.value("error", "") == "cancelled", "login-cancel: failed, cancelled: " + cancelled.dump());
+    check(!codex.call("account/login/cancel", [](const json &p) { return p.value("loginId", "") == "login-1"; }).is_null(),
+          "account/login/cancel went to the app server");
+    codex.loginHold = false;
+    codex.loginFail = true;
+    a.send({{"type", "logout"}, {"ref", 52}, {"assistant", "codex"}});
+    a.next("logout", [](const json &m) { return m.value("ref", 0) == 52 && m.value("state", "") == "done"; }, 6000);
+    a.send({{"type", "login"}, {"ref", 53}, {"assistant", "codex"}});
+    const json refused = a.next("login", [](const json &m) { return m.value("ref", 0) == 53 && m.value("state", "") == "failed"; }, 6000);
+    check(refused.value("error", "") == "the code expired", "a refused codex login: failed with the reason: " + refused.dump());
+    codex.loginFail = false;
+    a.send({{"type", "login"}, {"ref", 54}, {"assistant", "codex"}});
+    check(!a.next("login", [](const json &m) { return m.value("ref", 0) == 54 && m.value("state", "") == "done"; }, 6000).empty(), "and logged in again");
+    check(!fs::exists(bin + "/codex.cli-auth"), "the codex CLI was never asked to log in or out");
 
     // ---- Claude token login: the token is a fallback. The decision (account
     // login or not) comes from `auth status` without it; the marker file

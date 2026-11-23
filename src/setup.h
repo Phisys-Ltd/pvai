@@ -3,7 +3,8 @@
 // output read as it comes. An install is a shell script (steps marked with
 // "pvai-step: NAME" lines); a login runs the assistant's own login command
 // in a pseudo-terminal, which shows a link and a code (Claude Code asks for
-// a code back instead). A logout runs the assistant's own logout command
+// a code back instead; Codex logs in and out through its app server, see
+// CodexBackend). A logout runs the assistant's own logout command
 // like an install runs its script.
 #pragma once
 

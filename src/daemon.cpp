@@ -992,11 +992,12 @@ private:
         std::string reason = !chosen ? "unknown-assistant" : "";
         if (reason.empty() && type == "login")
             reason = !chosen->installedHere() ? "not-installed"
+                     : chosen->ownAuth()      ? (setup_->busy(chosen->name()) ? "busy" : chosen->login(ref, message.value("method", "")))
                                               : setup_->login(chosen->name(), chosen->program(), ref, message.value("method", ""));
         else if (reason.empty() && type == "login-code")
             reason = setup_->loginCode(chosen->name(), message.value("code", ""));
         else if (reason.empty())
-            reason = setup_->loginCancel(chosen->name());
+            reason = chosen->ownAuth() ? chosen->loginCancel() : setup_->loginCancel(chosen->name());
         if (!reason.empty())
             peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", reason}});
         else if (type == "login")
@@ -1037,7 +1038,7 @@ private:
         std::string reason = !chosen ? "unknown-assistant" : !chosen->installedHere() ? "not-installed" : "";
         if (reason.empty() && chosen->name() == "kimi")
             reason = "not-supported";
-        else if (reason.empty() && !setup_->busy(chosen->name()) && chosen->loggedIn() == json(false)
+        else if (reason.empty() && !setup_->busy(chosen->name()) && !chosen->authBusy() && chosen->loggedIn() == json(false)
                  && !(chosen->name() == "claude" && !readClaudeToken().empty()))
             reason = "not-logged-in";
         // A Claude logout drops the stored token, the marker and the decision
@@ -1045,7 +1046,8 @@ private:
         if (reason.empty() && chosen->name() == "claude" && !setup_->busy("claude"))
             claude_->dropToken();
         if (reason.empty())
-            reason = setup_->logout(chosen->name(), chosen->program(), ref);
+            reason = chosen->ownAuth() ? (setup_->busy(chosen->name()) ? "busy" : chosen->logout(ref))
+                                       : setup_->logout(chosen->name(), chosen->program(), ref);
         if (!reason.empty())
             peer->conn->send({{"type", "rejected"}, {"ref", ref}, {"reason", reason}});
         else
@@ -1066,12 +1068,9 @@ private:
         if (kind == "login" && ok)
             if (auto *kimi = dynamic_cast<KimiBackend *>(chosen))
                 kimi->setLoggedIn(true);
-        if (kind == "login" || kind == "logout") {
-            chosen->authChanged(kind, ok);
-            // A login went through: the next login problem is news again.
-            if (kind == "login" && ok)
-                rearmLogin(name);
-        }
+        // A login went through: the next login problem is news again.
+        if (kind == "login" && ok)
+            rearmLogin(name);
         broadcast(assistantsMessage());
         chosen->refreshVersion([this] { broadcast(assistantsMessage()); });
         chosen->refreshLogin([this](bool changed) {

@@ -94,7 +94,14 @@ public:
     json efforts() const override { return codexEfforts(); }
     json modes() const override;
     void refreshLogin(std::function<void(bool changed)> done) override;
-    void authChanged(const std::string &kind, bool ok) override;
+    // Login and logout go through the app server (account/login/start,
+    // account/login/completed, account/login/cancel, account/logout), so the
+    // server that runs the threads is the one that holds the account.
+    bool ownAuth() const override { return true; }
+    bool authBusy() const override { return auth_.active; }
+    std::string login(const json &ref, const std::string &method) override;
+    std::string loginCancel() override;
+    std::string logout(const json &ref) override;
 
     void conversations(const std::string &cwd, std::function<void(std::vector<Conversation>)> done) override;
     void start(const StartRequest &request, Started done) override;
@@ -134,9 +141,26 @@ private:
     // The account the app server says is logged in (account/read): the
     // email of a ChatGPT login, else null (an API key has no name).
     void readAccount(std::function<void(bool changed)> done);
-    // Restarts the shared app server when an account change is waiting for
-    // it and no thread works.
-    void maybeRestart();
+    // A login or logout in progress (one at a time), see login() in the .cpp.
+    struct Auth {
+        bool active = false;
+        bool logout = false;
+        bool sent = false;           // the request went to the app server
+        unsigned generation = 0;     // bumped when it ends: answers of an ended one are ignored
+        json ref;
+        std::string loginId, url, code;
+        Clock::time_point connectBy; // the app server must be ready by then
+        Clock::time_point until;     // the whole login
+    };
+    void beginAuth(const json &ref, bool logout);
+    void sendAuth();
+    void emitAuth(const std::string &state, const std::string &error = {});
+    void finishAuth(bool ok, const std::string &error);
+    void loginCompleted(const json &params);
+    // account/read, then `done` with the account's type: chatgpt, apiKey or none.
+    void confirmAccount(unsigned generation, std::function<void(const std::string &type)> done);
+    void cancelOnServer(const std::string &loginId);
+    void logVersions();
     void adopt(const std::string &id);
     // The ids of the threads this daemon started (new or resumed), kept in
     // codex-threads.json of the config directory so they stay detached across
@@ -159,9 +183,7 @@ private:
     json limits_ = {{"fiveHour", nullptr}, {"sevenDay", nullptr}};
     json models_ = json::array();
     std::string serverVersion_;
-    bool serverAccount_ = false;   // the app server holds an account (it keeps it in memory)
-    bool restartWanted_ = false;   // a login or logout changed what the server holds
-    bool restarting_ = false;
+    Auth auth_;
     std::set<std::string> own_;      // threads the daemon started: detached, also after a restart
     std::set<std::string> stopped_;  // threads stopped here: not adopted again
     std::set<std::string> adopting_; // thread/resume sent

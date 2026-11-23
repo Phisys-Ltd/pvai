@@ -965,18 +965,11 @@ while a token is in effect (the stored fallback token or a
 then. Codex: `account/read` of its app server, the `email` of a ChatGPT
 login; `null` for an API key (it has no name), without a login, or while the
 app server does not answer. Kimi: always `null` (ACP says none). The Codex
-app server keeps the account in memory: it picks up a login when it had no
-account (checked: `codex login --with-api-key` against a running server,
-`account/read` changed from none to the key), but not a logout (the same
-server still reported the account after `codex logout` deleted
-`auth.json`), and another account replacing a known one is assumed not seen
-either. So after a Codex login over a known account and after every
-Codex logout the daemon restarts the shared app server (`codex app-server
-daemon restart`) as soon as no Codex session is busy or waiting and no
-`pvai codex` TUI runs; the Codex sessions end with it (their
-conversations stay: `conversations`, `start.resume`), and `account` and
-`models` are those of the new account once it is back (an `assistants`
-message follows).
+app server keeps the account in memory and does not reliably take over a
+login made by another process (the `codex` CLI), so since 0.6.1 Codex
+logs in and out through the app server itself (see "Install and login"):
+the account the app reads is the one the server holds, and the server is
+not restarted for an account change.
 
 ### Login problems
 
@@ -1347,9 +1340,15 @@ one task per assistant at a time.
   `not-installed`, `busy`) runs the assistant's own login in a
   pseudo-terminal, without a browser on the host, and reads link and code
   off its output:
-  - Codex: `codex login --device-auth`: `url`
-    `https://auth.openai.com/codex/device` and a `code` such as
-    `ABCD-12345` (15 minutes); it is done when the owner has entered it.
+  - Codex (since 0.6.1 through the app server, not the CLI):
+    `account/login/start` with `chatgptDeviceCode` gives the `url`
+    (`https://auth.openai.com/codex/device`) and a `code` such as
+    `ABCD-12345`. When the server says `account/login/completed` the
+    daemon asks `account/read`; `done` is sent only when that shows an
+    account, else `failed` with the server's reason as `error`. If the
+    app server is not ready within 30 seconds, the login is `failed`
+    ("the Codex app server is not reachable"). `login-cancel` cancels it
+    in the server too (`failed`, `error: "cancelled"`).
   - Kimi: `kimi login`: `url` with the code in it, and the `code`
     (30 minutes).
   - Claude Code: `claude auth login`: `url` only, then `code-needed`: the
@@ -1362,8 +1361,8 @@ one task per assistant at a time.
   forms are the assistants' own and may change with their versions: `text`
   always carries the last line as it came.
 - `{"type": "logout", "ref", "assistant"}` (since 0.5.39; `welcome.logout:
-  true`) runs the assistant's own logout as a child process: `claude auth
-  logout`, `codex logout`. `rejected`: `unknown-assistant`, `not-installed`,
+  true`) runs the assistant's own logout as a child process, `claude auth
+  logout` (Codex: `account/logout` of its app server, then `account/read`). `rejected`: `unknown-assistant`, `not-installed`,
   `busy` (a login or logout of that assistant is running), `not-logged-in`
   (`loggedIn` is `false`), `not-supported` (Kimi Code has no logout
   command). Events `logout` follow (`running` with the last line of output

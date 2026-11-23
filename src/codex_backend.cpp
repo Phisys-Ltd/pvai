@@ -793,12 +793,10 @@ void CodexBackend::refreshLogin(std::function<void(bool changed)> done)
 
 // account/read: {"account": {"type": "chatgpt", "email": ..., "planType": ...}
 // | {"type": "apiKey"} | null}. Only the email is taken, never a token
-// (account/read has none, and auth.json is not read). The app server keeps
-// the account in memory, so what it says is its own view: `serverAccount_`.
+// (account/read has none, and auth.json is not read).
 void CodexBackend::readAccount(std::function<void(bool changed)> done)
 {
     auto apply = [this, done](const json &account) {
-        serverAccount_ = account.is_object();
         json name;
         if (account.is_object() && str(account, "type") == "chatgpt" && member(account, "email").is_string()
             && loggedIn_ != json(false))
@@ -814,31 +812,206 @@ void CodexBackend::readAccount(std::function<void(bool changed)> done)
     });
 }
 
-// A login or logout ended. The app server holds the account in memory: it
-// picks up a login when it had none (checked against codex 0.166), but not a
-// logout, and an account replaced by another is assumed not seen either. It
-// is restarted then, as soon as no thread works.
-void CodexBackend::authChanged(const std::string &kind, bool ok)
+// ---- Login and logout through the app server ----
+//
+// The app server holds the account in memory, and the CLI's login does not
+// reach a running server reliably (0.171 never took over a login made with
+// `codex login` after a logout). So the server itself logs in and out:
+// account/login/start gives a link and a code, account/login/completed says
+// how it ended, account/read confirms the account before `done` is sent.
+
+namespace {
+
+constexpr auto kLoginTime = std::chrono::minutes(30);
+constexpr auto kLogoutTime = std::chrono::minutes(1);
+constexpr auto kConnectTime = std::chrono::seconds(30);
+
+std::string accountType(const json &account)
 {
-    if (serverAccount_ && (kind == "logout" || ok))
-        restartWanted_ = true;
-    maybeRestart();
+    const std::string type = account.is_object() ? str(account, "type") : "";
+    return type == "chatgpt" || type == "apiKey" ? type : "none";
 }
 
-void CodexBackend::maybeRestart()
+} // namespace
+
+void CodexBackend::beginAuth(const json &ref, bool logout)
 {
-    if (!restartWanted_ || restarting_ || bin_.empty() || !ready_ || !tuis_.empty())
+    auth_ = Auth{};
+    auth_.active = true;
+    auth_.logout = logout;
+    auth_.ref = ref;
+    auth_.connectBy = Clock::now() + kConnectTime;
+    auth_.until = Clock::now() + (logout ? kLogoutTime : kLoginTime);
+    emitAuth(logout ? "running" : "waiting");
+    if (ready_)
+        sendAuth();
+}
+
+std::string CodexBackend::login(const json &ref, const std::string &method)
+{
+    if (auth_.active)
+        return "busy";
+    if (!method.empty() && method != "account")
+        return "bad-method";
+    beginAuth(ref, false);
+    return {};
+}
+
+std::string CodexBackend::logout(const json &ref)
+{
+    if (auth_.active)
+        return "busy";
+    beginAuth(ref, true);
+    return {};
+}
+
+std::string CodexBackend::loginCancel()
+{
+    if (!auth_.active || auth_.logout)
+        return "no-login";
+    host_.log("codex: login cancelled");
+    cancelOnServer(auth_.loginId);
+    finishAuth(false, "cancelled");
+    return {};
+}
+
+void CodexBackend::cancelOnServer(const std::string &loginId)
+{
+    if (!loginId.empty() && ready_)
+        call("account/login/cancel", {{"loginId", loginId}});
+}
+
+void CodexBackend::emitAuth(const std::string &state, const std::string &error)
+{
+    json message = {{"type", auth_.logout ? "logout" : "login"}, {"ref", auth_.ref}, {"assistant", "codex"},
+                    {"state", state}, {"text", nullptr}};
+    if (!auth_.logout) {
+        message["url"] = auth_.url.empty() ? json() : json(auth_.url);
+        message["code"] = auth_.code.empty() ? json() : json(auth_.code);
+    }
+    if (!error.empty())
+        message["error"] = error;
+    host_.broadcast(message);
+}
+
+void CodexBackend::sendAuth()
+{
+    if (!auth_.active || auth_.sent)
         return;
-    for (const CodexSession *session : sessionsOf<CodexSession>())
-        if (session->state() != "idle")
+    auth_.sent = true;
+    const unsigned generation = auth_.generation;
+    if (auth_.logout) {
+        host_.log("codex: logout started (app server)");
+        call("account/logout", json::object(), [this, generation](const json &, const json &error) {
+            if (generation != auth_.generation)
+                return;
+            if (!error.is_null()) {
+                host_.log("codex: logout failed: " + cut(str(error, "message"), 200));
+                return finishAuth(false, cut(str(error, "message"), 200));
+            }
+            confirmAccount(generation, [this](const std::string &type) {
+                host_.log("codex: account after logout: " + type);
+                finishAuth(type == "none", type == "none" ? "" : "the app server still holds an account");
+            });
+        });
+        return;
+    }
+    host_.log("codex: login started (app server)");
+    call("account/login/start", {{"type", "chatgptDeviceCode"}}, [this, generation](const json &result, const json &error) {
+        const std::string loginId = str(result, "loginId");
+        if (generation != auth_.generation) {
+            // Cancelled (or timed out) while the request was on its way: the server's login is cancelled too.
+            cancelOnServer(loginId);
             return;
-    restartWanted_ = false;
-    restarting_ = true;
-    host_.log("codex: restarting the app server (the account changed)");
-    host_.runProcess({bin_, "app-server", "daemon", "restart"}, std::chrono::seconds(60), [this](int status, const std::string &) {
-        restarting_ = false;
-        host_.log("codex: app server restart " + std::string(status == 0 ? "done" : "failed (status " + std::to_string(status) + ")"));
-        // The link ends with the old server; the reconnect reads everything again.
+        }
+        if (!error.is_null() || loginId.empty() || str(result, "userCode").empty() || str(result, "verificationUrl").empty()) {
+            const std::string why = !error.is_null() ? cut(str(error, "message"), 200) : "the app server gave no device code";
+            host_.log("codex: login completed failed: " + why);
+            return finishAuth(false, why);
+        }
+        auth_.loginId = loginId;
+        auth_.url = str(result, "verificationUrl");
+        auth_.code = str(result, "userCode");
+        emitAuth("waiting");
+    });
+}
+
+// account/login/completed {success, error, loginId}.
+void CodexBackend::loginCompleted(const json &params)
+{
+    if (!auth_.active || auth_.logout || auth_.loginId.empty())
+        return;
+    const json id = member(params, "loginId");
+    if (id.is_string() && id.get<std::string>() != auth_.loginId)
+        return;
+    const unsigned generation = auth_.generation;
+    if (!flag(params, "success")) {
+        std::string why = member(params, "error").is_string() ? cut(str(params, "error"), 200) : "";
+        if (why.empty())
+            why = "the login failed";
+        host_.log("codex: login completed failed: " + why);
+        return finishAuth(false, why);
+    }
+    host_.log("codex: login completed ok");
+    confirmAccount(generation, [this](const std::string &type) {
+        host_.log("codex: account after login: " + type);
+        finishAuth(type != "none", type == "none" ? "the app server holds no account after the login" : "");
+    });
+}
+
+void CodexBackend::confirmAccount(unsigned generation, std::function<void(const std::string &type)> done)
+{
+    call("account/read", json::object(), [this, generation, done](const json &result, const json &error) {
+        if (generation != auth_.generation)
+            return;
+        done(error.is_null() ? accountType(member(result, "account")) : "none");
+    });
+}
+
+// The login or logout is over: the apps hear it, after the login state is read
+// again (so the `assistants` that follows is right), and a login that went
+// through makes the next login problem news again.
+void CodexBackend::finishAuth(bool ok, const std::string &error)
+{
+    if (!auth_.active)
+        return;
+    const unsigned generation = ++auth_.generation;
+    auto announce = [this, generation, ok, error] {
+        if (generation != auth_.generation)
+            return;
+        emitAuth(ok ? "done" : "failed", error);
+        const bool wasLogin = !auth_.logout;
+        auth_ = Auth{};
+        auth_.generation = generation;
+        if (ok && wasLogin)
+            for (Session *session : host_.sessions())
+                if (session->assistant() == "codex")
+                    session->rearmLogin();
+        host_.assistantsChanged();
+    };
+    if (!ok) {
+        announce();
+        refreshLogin([this](bool changed) {
+            if (changed)
+                host_.assistantsChanged();
+        });
+        return;
+    }
+    // Still busy while the login is read again (late answers of the ended one are ignored).
+    refreshLogin([announce](bool) { announce(); });
+}
+
+void CodexBackend::logVersions()
+{
+    host_.runProcess({bin_, "--version"}, std::chrono::seconds(10), [this, server = serverVersion_](int status, const std::string &output) {
+        std::string cli = trim(output);
+        if (const auto space = cli.find_last_of(" \t"); space != std::string::npos)
+            cli = cli.substr(space + 1);
+        if (status != 0 || cli.empty())
+            cli = "unknown";
+        host_.log("codex: CLI " + cli + ", app server " + (server.empty() ? "unknown" : server));
+        if (cli != "unknown" && !server.empty() && cli != server)
+            host_.log("codex: warning: the CLI (" + cli + ") and the app server (" + server + ") are different versions");
     });
 }
 
@@ -848,12 +1021,23 @@ void CodexBackend::tick(Clock::time_point now)
 {
     if (bin_.empty())
         return;
+    if (auth_.active) {
+        if (now >= auth_.until) {
+            host_.log(std::string("codex: ") + (auth_.logout ? "logout" : "login") + " timed out");
+            cancelOnServer(auth_.loginId);
+            finishAuth(false, "timed out");
+        } else if (!auth_.sent && ready_) {
+            sendAuth();
+        } else if (!auth_.sent && now >= auth_.connectBy) {
+            host_.log("codex: the app server is not ready, the login or logout fails");
+            finishAuth(false, "the Codex app server is not reachable");
+        }
+    }
     if (link_.isOpen()) {
         if (ready_ && now >= nextRescan_) {
             nextRescan_ = now + kRescan;
             rescan();
         }
-        maybeRestart();
         if (!link_.flush())
             lost();
         return;
@@ -880,6 +1064,8 @@ void CodexBackend::initialized(const json &result)
 {
     link_.notify("initialized", nullptr);
     serverVersion_ = agentVersion(str(result, "userAgent"));
+    logVersions();
+    sendAuth(); // a login or logout that waited for the server
     for (CodexSession *session : sessionsOf<CodexSession>())
         session->setVersion(serverVersion_);
     call("account/rateLimits/read", json::object(),
@@ -907,13 +1093,16 @@ std::optional<Clock::time_point> CodexBackend::deadline() const
 {
     if (bin_.empty())
         return std::nullopt;
-    if (link_.isOpen() && restartWanted_ && !restarting_)
-        return std::min(nextRescan_, Clock::now() + std::chrono::seconds(1)); // look again whether it is idle
-    return link_.isOpen() ? nextRescan_ : nextTry_;
+    auto next = link_.isOpen() ? nextRescan_ : nextTry_;
+    if (auth_.active)
+        next = std::min(next, auth_.sent ? auth_.until : std::min(auth_.until, auth_.connectBy));
+    return next;
 }
 
 void CodexBackend::onLost()
 {
+    if (auth_.active && auth_.sent)
+        finishAuth(false, "Codex app server ended");
     adopting_.clear(); // their answers will not come
     subagents_.clear();
     for (CodexSession *session : sessionsOf<CodexSession>())
@@ -943,6 +1132,8 @@ void CodexBackend::service()
                 const json &params = object("params");
                 if (method == "account/rateLimits/updated") {
                     setLimits(member(params, "rateLimits"));
+                } else if (method == "account/login/completed") {
+                    loginCompleted(params);
                 } else if (method == "account/updated") {
                     refreshLogin([this](bool changed) {
                         if (changed)
