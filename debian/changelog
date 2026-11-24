@@ -1,3 +1,10 @@
+pvai (0.7.1-1) trixie; urgency=medium
+
+  * Newer Claude Code asks a trust question for every --add-dir directory, and a session hung in "starting" on it. pvai now answers "Yes, add it" itself, but only when the directory in that question is exactly pvai's own inbox; any other directory is left to the owner.
+  * Tests build on macOS: close-on-exec sockets are made without SOCK_CLOEXEC.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 24 Nov 2026 10:00:00 +0100
+
 pvai (0.7.0-1) trixie; urgency=medium
 
   * Several users on one host, each with an own daemon: the daemon also listens for apps on a unix socket, app.sock in the runtime directory (directory 0700, socket 0600), with the same rules as loopback TCP (token in hello, no wrapper or hook messages). If port 127.0.0.1:7470 is taken by another user's daemon, the daemon starts anyway and logs it; apps reach it over app.sock. New command `pvai endpoint` prints {"token", "socket", "port"} (port null when not held, socket null when none; starts the daemon like `pvai token`). `pvai listen` and the log now say when the direct-access port is in use and how to choose another.

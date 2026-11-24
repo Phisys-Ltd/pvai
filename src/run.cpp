@@ -4,6 +4,7 @@
 #include "common.h"
 #include "run.h"
 #include "screen.h"
+#include "inbox.h"
 #include "service.h"
 #include "text.h"
 
@@ -333,6 +334,67 @@ private:
     bool seen_ = false;
 };
 
+// Spots Claude Code's "Adding a new directory" question for pvai's own inbox
+// (--add-dir): true once per such dialog. Any other directory is left alone.
+// Letters only, like TrustSpotter.
+class AddDirSpotter {
+public:
+    explicit AddDirSpotter(const std::string &dir)
+    {
+        for (const char c : dir)
+            if (std::isalpha(static_cast<unsigned char>(c)))
+                want_ += c;
+    }
+
+    bool feed(const char *data, std::size_t n)
+    {
+        for (std::size_t i = 0; i < n; ++i) {
+            const unsigned char c = static_cast<unsigned char>(data[i]);
+            switch (state_) {
+            case State::Text:
+                if (c == 0x1b)
+                    state_ = State::Escape;
+                else if (std::isalpha(c))
+                    letters_ += static_cast<char>(c);
+                break;
+            case State::Escape:
+                state_ = c == '[' ? State::Csi : c == ']' ? State::Osc : State::Text;
+                break;
+            case State::Csi:
+                if (c >= 0x40 && c <= 0x7e)
+                    state_ = State::Text;
+                break;
+            case State::Osc:
+                if (c == 0x07 || c == 0x1b)
+                    state_ = State::Text;
+                break;
+            }
+        }
+        static const std::string head = "Addinganewdirectory", tail = "Thissession";
+        bool match = false;
+        for (;;) {
+            const auto at = letters_.find(head);
+            if (at == std::string::npos)
+                break;
+            const auto end = letters_.find(tail, at + head.size());
+            if (end == std::string::npos)
+                break; // the dialog is not complete yet
+            // Only the exact inbox path counts; consume the dialog either way.
+            if (letters_.compare(at + head.size(), end - at - head.size(), want_) == 0 && !want_.empty())
+                match = true;
+            letters_.erase(0, end + tail.size());
+        }
+        if (letters_.size() > 400)
+            letters_.erase(0, letters_.size() - 200);
+        return match;
+    }
+
+private:
+    enum class State { Text, Escape, Csi, Osc };
+    State state_ = State::Text;
+    std::string letters_, want_;
+};
+
 struct Viewer {
     std::unique_ptr<Conn> conn; // only its fd and buffers; frames are not lines
     std::string in;
@@ -435,6 +497,7 @@ int runWrapper(const WrapperOptions &options)
     ModeTracker modes;
     TrustSpotter trust;
     bool trustAsked = false;
+    AddDirSpotter addDir(inboxRoot());
     // A dialog no hook reports (a picker, a notice to confirm): read off
     // the screen once the output has paused.
     Screen screen(size.ws_row, size.ws_col);
@@ -624,6 +687,7 @@ int runWrapper(const WrapperOptions &options)
         modes = ModeTracker();
         trust = TrustSpotter();
         trustAsked = false;
+        addDir = AddDirSpotter(inboxRoot());
         screen.reset();
         screenCheckAt.reset();
         if (daemon && !screenShown.empty()) {
@@ -740,6 +804,12 @@ int runWrapper(const WrapperOptions &options)
                 screen.feed(buffer, static_cast<std::size_t>(n));
                 lastOutputAt = Clock::now();
                 screenCheckAt = Clock::now() + std::chrono::milliseconds(250);
+                if (addDir.feed(buffer, static_cast<std::size_t>(n))) {
+                    // "Yes, add it" is the second option; the first is "No, exit".
+                    // Return follows after a gap so Ink sees the arrow first.
+                    toMaster += "\x1b[B";
+                    returnAt = Clock::now() + std::chrono::milliseconds(200);
+                }
                 if (trust.feed(buffer, static_cast<std::size_t>(n))) {
                     trustAsked = true;
                     if (daemon)
