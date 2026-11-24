@@ -44,7 +44,7 @@ int main(int argc, char **argv)
 
     // Another user's daemon holds the TCP port: here, a listener of the test.
     const int port = 20000 + static_cast<int>(::getpid() % 20000);
-    const int blocker = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0); // not inherited by the daemon and its helpers
+    const int blocker = cloexecSocket(AF_INET); // not inherited by the daemon and its helpers
     const int one = 1;
     ::setsockopt(blocker, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     sockaddr_in in{};
@@ -136,7 +136,7 @@ int main(int argc, char **argv)
     second.stop();
 
     // Direct access on a port in use.
-    const int busy = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    const int busy = cloexecSocket(AF_INET);
     in.sin_port = htons(static_cast<uint16_t>(port + 1));
     ::setsockopt(busy, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     check(::bind(busy, reinterpret_cast<sockaddr *>(&in), sizeof in) == 0 && ::listen(busy, 4) == 0, "the test holds the direct port");

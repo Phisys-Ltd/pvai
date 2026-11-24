@@ -5,6 +5,7 @@
 
 #include "common.h"
 
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #ifdef __linux__
@@ -31,6 +32,19 @@
 namespace pvai::test {
 
 // ---- check() and the summary
+
+// A close-on-exec stream socket; SOCK_CLOEXEC is Linux only, so set the flag afterwards.
+inline int cloexecSocket(int domain)
+{
+    const int fd = ::socket(domain, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+    if (::fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
 
 inline int &failures()
 {
@@ -162,7 +176,7 @@ public:
     // On another unix socket (the app socket).
     explicit LineClient(const std::string &path)
     {
-        fd_ = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        fd_ = cloexecSocket(AF_UNIX);
         sockaddr_un addr{};
         addr.sun_family = AF_UNIX;
         std::snprintf(addr.sun_path, sizeof addr.sun_path, "%s", path.c_str());

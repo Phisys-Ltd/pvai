@@ -48,7 +48,7 @@ bool g_aliases = true;
 
 bool canBind(unsigned source)
 {
-    const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    const int fd = cloexecSocket(AF_INET);
     sockaddr_in from{};
     from.sin_family = AF_INET;
     from.sin_addr.s_addr = htonl(0x7f000000u | source);
@@ -183,7 +183,7 @@ struct Tls {
         BIO_free(kb);
         BIO_free(cb);
 
-        fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        fd = cloexecSocket(AF_INET);
         sockaddr_in from{};
         from.sin_family = AF_INET;
         from.sin_addr.s_addr = htonl(0x7f000000u | static_cast<unsigned>(g_aliases ? source : 1));
