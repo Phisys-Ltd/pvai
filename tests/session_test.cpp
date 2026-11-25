@@ -123,6 +123,9 @@ public:
 
     std::atomic<int> threadListCalls{0};
     std::atomic<int> rejectTurn{0}; // turn/start answers an error: 1 a model the account may not use, 2 a login problem
+    std::atomic<bool> holdTurn{false};     // turn/start is not answered
+    std::string turnAnswerId;              // turn/start answers {"turn": {"id": ...}} (guarded by the test's timing)
+    std::atomic<bool> answerWithTurn{false};
     std::atomic<bool> rejectStart{false}; // thread/start answers an error
     std::atomic<bool> hasAccount{false};  // account/read answers a ChatGPT account
     std::atomic<bool> loginFail{false};   // account/login/completed says success false
@@ -253,6 +256,10 @@ protected:
             if (params.value("threadId", "") == "t-tui")
                 data.push_back({{"item", {{"type", "agentMessage"}, {"id", "i1"}, {"text", "earlier answer"}}}, {"completedAtMs", 1000}});
             reply(id, {{"data", data}});
+        } else if (method == "turn/start" && holdTurn) {
+            // no answer
+        } else if (method == "turn/start" && answerWithTurn) {
+            reply(id, {{"turn", {{"id", turnAnswerId}, {"status", "inProgress"}}}});
         } else if (method == "turn/start" && rejectTurn > 0) {
             if (rejectTurn == 1)
                 writeNow({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32600},
@@ -882,6 +889,40 @@ esac
         check(heard.logins == 1 && heard.says == std::vector<std::string>{loginText}, "a rejected turn/start with a 401: login attention again, after the working turn");
         check(heard.state == "idle", "idle: " + heard.state);
         codex.rejectTurn = 0;
+        a.drain();
+
+        // A turn/start swallowed by a turn that ended: the answer names the ended turn, no turn/started comes.
+        codex.turnAnswerId = "u30";
+        codex.answerWithTurn = true;
+        check(prompt(310, "limit"), "swallow: a prompt");
+        codex.send({{"method", "turn/started"}, {"params", {{"threadId", "t-new"}, {"turn", {{"id", "u30"}}}}}});
+        codex.send({{"method", "error"}, {"params", {{"threadId", "t-new"}, {"turnId", "u30"}, {"willRetry", false},
+                    {"error", {{"message", "usage limit"}}}}}});
+        heard = gather(500);
+        check(heard.state == "idle", "swallow: the failed turn is over: " + heard.state);
+        check(prompt(311, "into the ended turn"), "swallow: the next prompt goes in");
+        heard = gather(800);
+        check(heard.state == "idle", "swallow: its turn/start answered with the ended turn, no turn/started: idle again: " + heard.state);
+        codex.answerWithTurn = false;
+        a.drain();
+
+        // An idle status after the answered turn/start clears busy.
+        check(prompt(312, "answered but idle"), "idle status: a prompt");
+        heard = gather(400);
+        check(heard.state == "busy", "idle status: busy while the turn runs on: " + heard.state);
+        codex.send({{"method", "thread/status/changed"}, {"params", {{"threadId", "t-new"}, {"status", {{"type", "idle"}}}}}});
+        heard = gather(600);
+        check(heard.state == "idle", "idle status: Codex says idle after the answer, so the session is: " + heard.state);
+
+        // The stop button with nothing to stop but a busy state.
+        codex.holdTurn = true;
+        check(prompt(313, "never answered"), "interrupt: a prompt whose turn/start is never answered");
+        heard = gather(300);
+        check(heard.state == "busy", "interrupt: busy: " + heard.state);
+        a.send({{"type", "interrupt"}, {"ref", 314}, {"session", "t-new"}});
+        heard = gather(600);
+        check(heard.state == "idle", "interrupt: no turn id, the stop button unsticks it: " + heard.state);
+        codex.holdTurn = false;
         a.drain();
     }
 

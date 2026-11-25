@@ -209,6 +209,7 @@ void CodexSession::submit(const Prompt &prompt)
     const std::string text = (prompt.voice ? kMicMark : "") + withFiles(prompt.text, others);
     state_ = "busy";
     turnPending_ = true;
+    turnStartAnswered_ = false;
     promptVoice(text);
     const std::string id = id_;
     Host &host = host_;
@@ -243,10 +244,14 @@ void CodexSession::submit(const Prompt &prompt)
         nextEffort_.clear();
     }
     backend_.call(compact ? "thread/compact/start" : "turn/start", params,
-                  [&host, id, text](const json &, const json &error) {
+                  [&host, id, text](const json &result, const json &error) {
                       auto *self = dynamic_cast<CodexSession *>(host.session(id));
-                      if (!self || error.is_null())
+                      if (!self)
                           return;
+                      if (error.is_null()) {
+                          self->turnStartAnswered(str(member(result, "turn"), "id"));
+                          return;
+                      }
                       // Refused: the prompt never became a turn. It goes into the
                       // history with the reason, so that it is not lost silently.
                       self->turnPending_ = false;
@@ -261,6 +266,35 @@ void CodexSession::submit(const Prompt &prompt)
                       self->deliver();
                       self->changed();
                   });
+}
+
+// turn/start (or thread/compact/start) was accepted. From here on an idle
+// status of the thread is the truth, and the turn it made can be named.
+void CodexSession::turnStartAnswered(const std::string &turn)
+{
+    if (!turnPending_)
+        return; // turn/started came first and took over
+    turnStartAnswered_ = true;
+    if (turn.empty())
+        return; // no id in the answer: turn/started or an idle status settles it
+    if (turn == endedTurn_ || turn == failedTurn_) {
+        // Codex appended the prompt to a turn that had ended already (an
+        // `error` came before its turn/completed): no turn/started will follow.
+        host_.log(id_ + ": the prompt went into the ended turn " + turn + ", not busy");
+        turnPending_ = false;
+        if (turnId_.empty()) {
+            state_ = "idle";
+            dialog_.clear();
+            deliver();
+        }
+        changed();
+        return;
+    }
+    // A turn of its own, turn/started is late: the stop button can reach it.
+    turnPending_ = false;
+    if (turnId_.empty())
+        turnId_ = turn;
+    changed();
 }
 
 void CodexSession::failTurn(const std::string &turn, const std::string &message, bool login)
@@ -425,10 +459,19 @@ std::string CodexSession::stop()
 
 void CodexSession::interrupt()
 {
+    host_.log(id_ + ": interrupt from the app (state " + state_ + (turnPending_ ? ", a turn/start in flight" : "") + ")");
     if (!request_.is_null())
         reply(false);
     if (!turnId_.empty())
         backend_.call("turn/interrupt", {{"threadId", id_}, {"turnId", turnId_}});
+    else if (state_ == "busy" || turnPending_) {
+        // No turn to stop, yet busy: the state is stale (a turn/start that
+        // never became a turn). Give it up here.
+        turnPending_ = false;
+        state_ = "idle";
+        dialog_.clear();
+        deliver();
+    }
     changed();
 }
 
@@ -539,8 +582,11 @@ void CodexSession::onNotification(const std::string &method, const json &params)
         auto [state, dialog] = stateOf(status);
         // turn/start is on its way (the thread is not busy yet), or the turn
         // has not reported its end: no other prompt may go in.
-        if (state == "idle" && (turnPending_ || !turnId_.empty()))
+        // Once turn/start was answered, an idle thread is the truth.
+        if (state == "idle" && ((turnPending_ && !turnStartAnswered_) || !turnId_.empty()))
             return;
+        if (state == "idle")
+            turnPending_ = false;
         // A dialog we hold the request for says better what it is.
         if (state == "waiting" && !request_.is_null())
             dialog = dialogOf(str(request_, "method"));
@@ -562,6 +608,7 @@ void CodexSession::onNotification(const std::string &method, const json &params)
     } else if (method == "turn/started") {
         turnId_ = str(member(params, "turn"), "id");
         turnPending_ = false;
+        turnStartAnswered_ = true;
         answer_.clear();
         if (state_ == "idle") {
             state_ = "busy";

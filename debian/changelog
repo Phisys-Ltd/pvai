@@ -1,3 +1,9 @@
+pvai (0.7.2-1) trixie; urgency=medium
+
+  * A Codex session no longer stays busy when a turn/start is swallowed by a turn that ends at the same moment (usage limit: queued prompts failing in a row): the answer to turn/start is read, an idle status after it is believed, and the stop button resets a busy session that has no turn to stop. The stop is logged.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 25 Nov 2026 13:48:39 +0100
+
 pvai (0.7.1-1) trixie; urgency=medium
 
   * Newer Claude Code asks a trust question for every --add-dir directory, and a session hung in "starting" on it. pvai now answers "Yes, add it" itself, but only when the directory in that question is exactly pvai's own inbox; any other directory is left to the owner.

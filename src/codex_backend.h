@@ -63,6 +63,7 @@ private:
     // A turn failed (turn/completed with an error, an `error` that is not a
     // retry, a rejected turn/start): a text entry, `say` and, for a login
     // problem, the "login" attention. `turn` may be empty (a rejection).
+    void turnStartAnswered(const std::string &turn);
     void failTurn(const std::string &turn, const std::string &message, bool login);
     // The turn is over for good: nothing runs, the prompt is free again.
     void finishTurn();
@@ -71,6 +72,7 @@ private:
     bool detached_;
     std::string turnId_;       // the running turn
     bool turnPending_ = false; // turn/start sent, turn/started not seen yet
+    bool turnStartAnswered_ = false; // ... and turn/start has been answered: an idle status settles it
     json request_;             // the approval the thread waits on: id, method, params
     std::deque<json> queued_;  // approvals that came while one is shown, shown in turn
     std::map<std::string, std::string> outputs_; // command output by item id, while it runs
