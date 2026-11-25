@@ -785,6 +785,7 @@ void ClaudeSession::onHook(const json &event)
         remember();
 
     const bool trust = dialog_ == "trust"; // answered in the terminal: the next hook says so
+    const bool screenDialog = dialog_ == "screen"; // a dialog before the start (add-dir) read off the screen
     if (name != "Notification" && name != "PermissionRequest")
         dialog_.clear();
     if (name == "UserPromptSubmit" || name == "Stop" || name == "SessionStart" || name == "PreToolUse" || name == "PostToolUse")
@@ -826,7 +827,7 @@ void ClaudeSession::onHook(const json &event)
     if (name == "SessionStart") {
         limited_ = nullptr;
         const std::string source = str(event, "source");
-        if (state_ == "starting" || (state_ == "waiting" && trust) || source == "clear" || source == "resume")
+        if (state_ == "starting" || (state_ == "waiting" && (trust || screenDialog)) || source == "clear" || source == "resume")
             state_ = "idle";
         if (source == "clear") { // a new transcript: its output count starts at 0
             endSlash();

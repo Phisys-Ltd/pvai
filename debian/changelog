@@ -1,6 +1,7 @@
 pvai (0.7.3-1) trixie; urgency=medium
 
   * The inbox add-dir question is answered from the screen, once, with retries: Claude Code ignores keys right after it draws the dialog, and a redraw (a viewer attaching with another size) used to send another Down and an Enter on "No, exit". pvai now presses Down until the arrow stands on "Yes, add it", then Enter, and gives up (logged) after 8 keys.
+  * A session whose start waited on a dialog read off the screen (the add-dir question answered by hand or by pvai) goes idle on SessionStart; it stayed "waiting" with no dialog.
 
  -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 25 Nov 2026 16:24:53 +0100
 
