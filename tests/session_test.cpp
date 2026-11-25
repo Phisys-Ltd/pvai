@@ -3191,6 +3191,8 @@ esac
     a.send({{"type", "restart"}, {"ref", 20}, {"session", fresh2}});
     check(a.next("rejected").value("reason", "") == "busy", "not during a turn");
     hook(fresh2, {{"hook_event_name", "Stop"}, {"last_assistant_message", "ok"}});
+    // A restart resumes only a conversation Claude Code has written.
+    writeFile(transcripts + "/sess-1.jsonl", userLine("x"));
     a.send({{"type", "restart"}, {"ref", 21}, {"session", fresh2}});
     check(a.next("restarting").value("session", "") == fresh2, "restarting");
     check(!waitSession(a, fresh2, [](const json &s) { return s.value("state", "") == "starting"; }).empty(), "starting again");
