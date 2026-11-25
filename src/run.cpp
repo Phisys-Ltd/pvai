@@ -418,8 +418,10 @@ std::vector<std::string> resumeCommand(const std::vector<std::string> &command, 
         }
         out.push_back(arg);
     }
-    out.push_back("--resume");
-    out.push_back(id);
+    if (!id.empty()) {
+        out.push_back("--resume");
+        out.push_back(id);
+    }
     return out;
 }
 
@@ -483,7 +485,9 @@ int runWrapper(const WrapperOptions &options)
     };
     if (!spawn())
         return 1;
-    std::string restartWith; // the conversation to go on with once the child has ended
+    // The conversation to go on with once the child has ended; empty: a
+    // fresh start (no transcript to resume yet).
+    std::optional<std::string> restartWith;
     std::optional<Clock::time_point> restartKillAt;
 
     if (tty) {
@@ -691,8 +695,8 @@ int runWrapper(const WrapperOptions &options)
     // pseudo-terminal, with the screen state of a new start.
     auto relaunch = [&]() -> bool {
         ::close(master);
-        command = resumeCommand(command, restartWith);
-        restartWith.clear();
+        command = resumeCommand(command, *restartWith);
+        restartWith.reset();
         restartKillAt.reset();
         if (!spawn())
             return false;
@@ -804,7 +808,7 @@ int runWrapper(const WrapperOptions &options)
             soonest(std::min(msUntil(submitCheck->at), 100LL));
         if (!daemon)
             soonest(msUntil(nextReconnect));
-        if (!restartWith.empty())
+        if (restartWith)
             soonest(100);
         if (::poll(fds.data(), fds.size(), static_cast<int>(timeout)) < 0 && errno != EINTR)
             break;
@@ -834,7 +838,7 @@ int runWrapper(const WrapperOptions &options)
                         daemon->send({{"type", "dialog"}, {"kind", "trust"}});
                 }
             } else if (n == 0 || (errno != EAGAIN && errno != EINTR)) {
-                if (restartWith.empty())
+                if (!restartWith)
                     break; // Claude Code is gone
                 ::waitpid(g_child, nullptr, 0);
                 if (!relaunch())
@@ -911,14 +915,12 @@ int runWrapper(const WrapperOptions &options)
                 } else if (type == "snapshot") {
                     daemon->send({{"type", "snapshot"}, {"screen", screenSnapshot(screen)}});
                 } else if (type == "terminate") {
-                    restartWith.clear();
+                    restartWith.reset();
                     forwardSignal(SIGHUP);
                 } else if (type == "restart") {
                     restartWith = message.value("resume", "");
-                    if (!restartWith.empty()) {
-                        forwardSignal(SIGHUP);
-                        restartKillAt = Clock::now() + std::chrono::seconds(5);
-                    }
+                    forwardSignal(SIGHUP);
+                    restartKillAt = Clock::now() + std::chrono::seconds(5);
                 }
             }
             if (!alive) {
@@ -971,7 +973,7 @@ int runWrapper(const WrapperOptions &options)
 
         // A child that has ended while something it started still holds
         // the terminal open gives no end of file: look for it directly.
-        if (!restartWith.empty()) {
+        if (restartWith) {
             if (::waitpid(g_child, nullptr, WNOHANG) == g_child) {
                 if (!relaunch())
                     break;

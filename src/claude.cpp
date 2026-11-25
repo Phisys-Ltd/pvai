@@ -575,6 +575,16 @@ void ClaudeSession::interrupt()
 // Claude Code ignored because it installed an update and waits for a restart. The wrapper ends Claude Code and starts it again with
 // `--resume`; SessionStart (source resume) makes the session idle again,
 // and what was queued goes in then.
+// The conversation a restart resumes: none when Claude Code has not written
+// its transcript yet (no prompt went in), as `--resume` of it would fail.
+std::string ClaudeSession::resumable() const
+{
+    if (claudeSession_.empty())
+        return {};
+    std::error_code ec;
+    return std::filesystem::is_regular_file(ClaudeBackend::projectDir(cwd()) + "/" + claudeSession_ + ".jsonl", ec) ? claudeSession_ : std::string();
+}
+
 std::string ClaudeSession::restart()
 {
     if (!restartable())
@@ -593,7 +603,7 @@ std::string ClaudeSession::restart()
     held_ = false;
     for (auto &queued : queue_)
         queued.returnFailures = 0;
-    wrapper_.send({{"type", "restart"}, {"resume", claudeSession_}});
+    wrapper_.send({{"type", "restart"}, {"resume", resumable()}});
     began_ = Clock::now();
     state_ = "starting";
     // The old process takes its subagents with it.
@@ -711,7 +721,7 @@ std::string DetachedClaudeSession::restart()
         return "not-restartable";
     if (!restartNow())
         return "busy";
-    replacement_ = StartRequest{cwd(), label(), {}, claudeSession(), id()};
+    replacement_ = StartRequest{cwd(), label(), {}, resumable(), id()};
     host_.log(id() + ": restart replaces its pvai run " + (wrapperVersion().empty() ? std::string("(unversioned)") : wrapperVersion()));
     stopping_ = true;
     terminate();
