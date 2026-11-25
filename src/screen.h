@@ -67,6 +67,12 @@ private:
 // prompt box that stays: a session survey above it, an ask with numbered
 // options and a footer under it.
 std::string screenDialog(const Screen &screen);
+// Claude Code's "Adding a new directory" question for `dir` (letters only
+// compared, so a wrapped path matches), read off the screen: Gone when it is
+// not shown (or asks about another directory), Enter when the arrow stands on
+// "Yes, add it", Down when it does not (or cannot be found).
+enum class AddDirAction { Gone, Down, Enter };
+AddDirAction addDirAction(const Screen &screen, const std::string &dir);
 // The options of a session survey as screenDialog's text shows them (id =
 // the key Claude Code takes, label), or the numbered rows ("1. Yes") of any
 // other text with at least two; else empty.

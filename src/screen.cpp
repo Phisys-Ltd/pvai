@@ -753,6 +753,36 @@ std::vector<std::pair<std::string, std::string>> surveyOptions(const std::string
     return out;
 }
 
+AddDirAction addDirAction(const Screen &screen, const std::string &dir)
+{
+    auto letters = [](const std::string &text) {
+        std::string out;
+        for (const char c : text)
+            if (std::isalpha(static_cast<unsigned char>(c)))
+                out += c;
+        return out;
+    };
+    const std::string want = letters(dir);
+    std::string all;
+    int yesRow = -1;
+    for (int r = 0; r < screen.rows(); ++r) {
+        const std::string row = screen.row(r);
+        all += letters(row);
+        if (row.find("Yes, add it") != std::string::npos)
+            yesRow = r;
+    }
+    static const std::string head = "Addinganewdirectory", tail = "Thissession";
+    const auto at = all.find(head);
+    if (want.empty() || at == std::string::npos)
+        return AddDirAction::Gone;
+    const auto end = all.find(tail, at + head.size());
+    if (end == std::string::npos || all.compare(at + head.size(), end - at - head.size(), want) != 0)
+        return AddDirAction::Gone;
+    if (yesRow >= 0 && screen.row(yesRow).find("\xE2\x9D\xAF") != std::string::npos)
+        return AddDirAction::Enter;
+    return AddDirAction::Down;
+}
+
 std::string screenDialog(const Screen &screen)
 {
     // A dialog always takes the prompt box's place: while the box shows,

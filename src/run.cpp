@@ -498,6 +498,19 @@ int runWrapper(const WrapperOptions &options)
     TrustSpotter trust;
     bool trustAsked = false;
     AddDirSpotter addDir(inboxRoot());
+    // The add-dir answer is read off the screen: Claude Code ignores keys in
+    // the first moments after drawing the dialog, and a redraw (a viewer
+    // with another size) shows it again. The spotter only starts it.
+    std::optional<Clock::time_point> addDirAt; // next step while an answer is pending
+    int addDirSteps = 0;
+    bool addDirLatch = false; // gave up: no new answer until the dialog has left the screen
+    auto addDirLog = [&](const std::string &what) {
+        if (const int fd = ::open((runtimeDir() + "/daemon.log").c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0600); fd >= 0) {
+            const std::string line = "pvai: session " + id + ": add-dir dialog: " + what + "\n";
+            writeAll(fd, line.data(), line.size());
+            ::close(fd);
+        }
+    };
     // A dialog no hook reports (a picker, a notice to confirm): read off
     // the screen once the output has paused.
     Screen screen(size.ws_row, size.ws_col);
@@ -688,6 +701,9 @@ int runWrapper(const WrapperOptions &options)
         trust = TrustSpotter();
         trustAsked = false;
         addDir = AddDirSpotter(inboxRoot());
+        addDirAt.reset();
+        addDirSteps = 0;
+        addDirLatch = false;
         screen.reset();
         screenCheckAt.reset();
         if (daemon && !screenShown.empty()) {
@@ -772,6 +788,8 @@ int runWrapper(const WrapperOptions &options)
         auto soonest = [&](long long ms) { timeout = timeout < 0 ? ms : std::min(timeout, ms); };
         if (returnAt)
             soonest(msUntil(*returnAt));
+        if (addDirAt)
+            soonest(msUntil(*addDirAt));
         if (pacedAt)
             soonest(msUntil(*pacedAt));
         if (resizeBackAt)
@@ -805,10 +823,10 @@ int runWrapper(const WrapperOptions &options)
                 lastOutputAt = Clock::now();
                 screenCheckAt = Clock::now() + std::chrono::milliseconds(250);
                 if (addDir.feed(buffer, static_cast<std::size_t>(n))) {
-                    // "Yes, add it" is the second option; the first is "No, exit".
-                    // Return follows after a gap so Ink sees the arrow first.
-                    toMaster += "\x1b[B";
-                    returnAt = Clock::now() + std::chrono::milliseconds(200);
+                    if (!addDirAt && !addDirLatch) {
+                        addDirAt = Clock::now() + std::chrono::milliseconds(700);
+                        addDirSteps = 0;
+                    }
                 }
                 if (trust.feed(buffer, static_cast<std::size_t>(n))) {
                     trustAsked = true;
@@ -1096,6 +1114,28 @@ int runWrapper(const WrapperOptions &options)
                 reportDraft(false); // the screen says when shell mode is gone
             } else
                 pacedAt = Clock::now() + pacedGap;
+        }
+        if (addDirLatch && !addDirAt && addDirAction(screen, inboxRoot()) == AddDirAction::Gone)
+            addDirLatch = false;
+        if (addDirAt && Clock::now() >= *addDirAt) {
+            if (screen.syncOpen()) {
+                addDirAt = Clock::now() + std::chrono::milliseconds(100);
+            } else {
+                const auto action = addDirAction(screen, inboxRoot());
+                if (action == AddDirAction::Gone) {
+                    addDirLog("answered after " + std::to_string(addDirSteps) + " keys");
+                    addDirAt.reset();
+                } else if (addDirSteps >= 8) {
+                    addDirLog("gave up after 8 keys, the dialog is still shown");
+                    addDirAt.reset();
+                    addDirLatch = true;
+                } else {
+                    ++addDirSteps;
+                    toMaster += action == AddDirAction::Enter ? "\r" : "\x1b[B";
+                    addDirLog(std::string("sent ") + (action == AddDirAction::Enter ? "Enter" : "Down"));
+                    addDirAt = Clock::now() + std::chrono::milliseconds(700);
+                }
+            }
         }
         if (returnAt && Clock::now() >= *returnAt) {
             toMaster += "\r";

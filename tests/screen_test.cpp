@@ -408,5 +408,18 @@ int main()
         feed(s, "\x1b[2J\x1b[HNot logged in \xC2\xB7 Run /login");
         check(!pvai::screenLoginShown(s), "no prompt box: not decided");
     }
+    {
+        // The add-dir question: Enter only with the arrow on "Yes, add it".
+        const std::string dir = "/home/u/.cache/pvai/inbox";
+        pvai::Screen s(14, 60);
+        const std::string frame = "\x1b[2J\x1b[H Adding a new directory\r\n\r\n   " + dir + "\r\n\r\n This session will be able to read files there\r\n\r\n";
+        feed(s, frame + " \xE2\x9D\xAF 1. No, exit\r\n   2. Yes, add it\r\n\r\n Enter to confirm \xC2\xB7 Esc to cancel");
+        check(pvai::addDirAction(s, dir) == pvai::AddDirAction::Down, "arrow on No: Down");
+        check(pvai::addDirAction(s, "/other/dir") == pvai::AddDirAction::Gone, "another directory is never answered");
+        feed(s, frame + "   1. No, exit\r\n \xE2\x9D\xAF 2. Yes, add it\r\n\r\n Enter to confirm \xC2\xB7 Esc to cancel");
+        check(pvai::addDirAction(s, dir) == pvai::AddDirAction::Enter, "arrow on Yes: Enter");
+        feed(s, "\x1b[2J\x1b[H\xE2\x9D\xAF ");
+        check(pvai::addDirAction(s, dir) == pvai::AddDirAction::Gone, "dialog gone");
+    }
     return pvai::test::finish();
 }
