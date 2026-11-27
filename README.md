@@ -43,6 +43,15 @@ Claude ends such a turn with a `🔊 ` line meant for the ear. An Esc that
 interrupts a turn fires no hook: the wrapper reports the key and the daemon
 looks for Claude Code's interrupt note in the session transcript.
 
+## Agent skill
+
+The daemon installs its skill (`skills/pvai/SKILL.md`, embedded in the
+binary) on every start into `~/.claude/skills/pvai/` (Claude Code) and
+`~/.agents/skills/pvai/` (Codex and Kimi Code). It rewrites a copy that
+carries the `managed-by: pvai` frontmatter key when the content differs, and
+leaves a file without that key, or a symlink, alone: a skill you wrote
+yourself is never overwritten.
+
 ## Build and use
 
 Installation (apt, Homebrew, source), setting up a user, connecting the

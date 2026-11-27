@@ -18,8 +18,18 @@ find_package(OpenSSL 3 REQUIRED)
 # The version is generated into its own file: a release recompiles that one.
 configure_file(src/version.cpp.in ${CMAKE_CURRENT_BINARY_DIR}/version.cpp @ONLY)
 
+# The agent skill is embedded: skill_data.cpp is regenerated when SKILL.md changes.
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/skill_data.cpp
+    COMMAND ${CMAKE_COMMAND} -DIN=${CMAKE_CURRENT_SOURCE_DIR}/skills/pvai/SKILL.md
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/skill_data.cpp -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_skill.cmake
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/skills/pvai/SKILL.md ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_skill.cmake
+    VERBATIM)
+
 add_library(pvai_core STATIC
     ${CMAKE_CURRENT_BINARY_DIR}/version.cpp
+    ${CMAKE_CURRENT_BINARY_DIR}/skill_data.cpp
+    src/skill.cpp
     src/codex.cpp
     src/common.cpp
     src/claude.cpp
@@ -81,6 +91,8 @@ if(BUILD_TESTING)
     add_test(NAME share COMMAND pvai-share-test $<TARGET_FILE:pvai>)
     pvai_test(pvai-screen-test tests/screen_test.cpp)
     add_test(NAME screen COMMAND pvai-screen-test)
+    pvai_test(pvai-skill-test tests/skill_test.cpp)
+    add_test(NAME skill COMMAND pvai-skill-test)
     pvai_test(pvai-transcript-test tests/transcript_test.cpp)
     add_test(NAME transcript COMMAND pvai-transcript-test)
 endif()

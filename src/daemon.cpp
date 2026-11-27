@@ -13,6 +13,7 @@
 #include "codex_backend.h"
 #include "kimi_backend.h"
 #include "common.h"
+#include "skill.h"
 #include "inbox.h"
 #include "pairing.h"
 #include "setup.h"
@@ -3407,6 +3408,8 @@ int runDaemon(int port)
     if (tcpFd >= 0)
         std::fprintf(stderr, ", 127.0.0.1:%d", port);
     std::fprintf(stderr, "\n");
+    for (const std::string &line : installSkills(homeDir()))
+        std::fprintf(stderr, "pvai daemon: %s\n", line.c_str());
     Daemon daemon(unixFd, appFd, tcpFd, port);
     daemon.setAppSocket(appFd >= 0 ? appPath : std::string());
     return daemon.run();

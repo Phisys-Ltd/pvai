@@ -299,7 +299,7 @@ const char *const kVoiceContext =
     "from the screen. To write to another session, also on another host (the owner may say \"ask M4\" or "
     "\"tell the taifun session\"), list them with `pvai peers` and send with `pvai propose HOST/SESSION "
     "\"TEXT\"` (to answer a message, the command its first line names, with `--reply`); the owner releases "
-    "each message in the app, so it arrives later, and the answer comes back as a new prompt.";
+    "each message in the app, so it arrives later, and the answer comes back as a new prompt. The pvai skill describes shell commands for the owner, messages to other sessions and a suggested work style.";
 
 std::string findBinary(const std::string &name)
 {
