@@ -492,6 +492,10 @@ esac
           "welcome announces effort and lists the levels of Claude Code and Codex: " + welcome.dump());
     check(welcome.value("installed", json()) == json({{"claude", "1.0.0"}, {"codex", "5.5.5"}, {"kimi", "2.4.1"}}),
           "welcome.installed: " + welcome.value("installed", json()).dump());
+    const json skill = welcome.value("skill", json());
+    check(skill.value("name", "") == "pvai" && skill.value("summary", "").rfind("pvai skill: ", 0) == 0 && skill["targets"].size() == 2
+              && skill["targets"][0].contains("path") && skill["targets"][0].value("status", "") != "",
+          "welcome.skill: " + skill.dump());
 
     // ---- Kimi Code over ACP: the fake agent.
     {

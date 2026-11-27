@@ -5,6 +5,7 @@
 #include "run.h"
 #include "service.h"
 #include "share.h"
+#include "skill.h"
 #include "tls.h"
 
 #include <qrcodegen.hpp>
@@ -1218,6 +1219,25 @@ int runCodex(const std::vector<std::string> &args)
 
 } // namespace
 
+// One line (two when a target is not ours to manage) before the assistant takes
+// over the owner's terminal. Read-only: the daemon does the installing.
+static void announceSkill()
+{
+    if (!::isatty(STDERR_FILENO))
+        return;
+    const std::string home = pvai::homeDir();
+    std::fprintf(stderr, "%s\n", pvai::kSkillSummary);
+    for (const pvai::SkillResult &r : pvai::checkSkills(home)) {
+        if (r.status != "user file" && r.status != "symlink" && r.status != "error")
+            continue;
+        std::string shown = r.path;
+        if (!home.empty() && shown.rfind(home, 0) == 0)
+            shown = "~" + shown.substr(home.size());
+        std::fprintf(stderr, "pvai skill: %s left alone (%s)\n", shown.c_str(),
+                     r.status == "error" ? ("error: " + r.detail).c_str() : r.status.c_str());
+    }
+}
+
 int main(int argc, char **argv)
 {
     ::signal(SIGPIPE, SIG_IGN);
@@ -1250,6 +1270,8 @@ int main(int argc, char **argv)
             if (program == "claude" && options.command[0] == "claude")
                 if (const std::string found = claudeBinary(); !found.empty())
                     options.command[0] = found;
+            if (!options.detached && (program == "claude" || program == "codex" || program == "kimi"))
+                announceSkill();
             if (program == "codex" && !options.detached)
                 return runCodex({options.command.begin() + 1, options.command.end()});
             // Claude Code reports through the hooks and the status line; a

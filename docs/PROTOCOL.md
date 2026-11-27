@@ -1749,6 +1749,27 @@ requests below.
   shows "Not logged in" in its footer). pvai does not probe the network
   for it.
 
+## Agent skill (since 0.8.0)
+
+The daemon installs its embedded skill `skills/pvai/SKILL.md` on start, to
+`~/.claude/skills/pvai/SKILL.md` and `~/.agents/skills/pvai/SKILL.md`. A
+file is written when missing or an outdated copy of ours, i.e. its
+frontmatter holds `managed-by: pvai`. A file without that marker (the
+owner's own) and a symlink are never touched.
+
+- `welcome.skill` says what happened at start:
+  ```json
+  {"name": "pvai", "summary": "pvai skill: spoken prompts and the \ud83d\udd0a line, ...",
+   "targets": [{"path": "/home/x/.claude/skills/pvai/SKILL.md", "status": "written"},
+               {"path": "/home/x/.agents/skills/pvai/SKILL.md", "status": "user file"}]}
+  ```
+  `status` is `written`, `up to date`, `user file`, `symlink` or `error`
+  (the target then also has `"error": "reason"`). `summary` is one line.
+  A guest's `welcome` has no `skill`.
+- An app may show `summary` briefly when it creates or connects to a
+  session. `pvai run` prints it too (stderr, only on a terminal), plus a
+  line for each target that is a user file, a symlink or an error.
+
 ## Versions and updates
 
 - `welcome.installed`: the version of each assistant installed on this

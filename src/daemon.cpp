@@ -380,6 +380,19 @@ bool goodTarget(const std::string &to)
 
 class Daemon : public Host {
 public:
+    // What welcome.skill says: the results of the install at start.
+    void setSkills(const std::vector<SkillResult> &results)
+    {
+        json targets = json::array();
+        for (const SkillResult &r : results) {
+            json t = {{"path", r.path}, {"status", r.status}};
+            if (r.status == "error")
+                t["error"] = r.detail;
+            targets.push_back(t);
+        }
+        skill_ = {{"name", "pvai"}, {"summary", kSkillSummary}, {"targets", targets}};
+    }
+
     Daemon(int unixFd, int appFd, int tcpFd, int port)
         : unixFd_(unixFd)
         , appFd_(appFd)
@@ -1365,7 +1378,7 @@ private:
                 {"peers", true}, {"forget", true}, {"model", true}, {"effort", true}, {"logout", true}, {"rename", true}, {"tokenLogin", true},
                 {"upload", {{"maxFile", kMaxUploadFile}, {"maxSession", kMaxUploadSession},
                             {"maxProposal", proposalLimits().proposal}, {"maxOutbox", proposalLimits().outbox}}},
-                {"proposalFiles", true}, {"fetch", {{"maxFile", kMaxUploadFile}}}};
+                {"proposalFiles", true}, {"fetch", {{"maxFile", kMaxUploadFile}}}, {"skill", skill_}};
     }
 
     // What this peer is told as `welcome`: an owner's feature flag for sharing,
@@ -1381,6 +1394,7 @@ private:
             assistant["account"] = nullptr;
         for (const char *key : {"conversations", "peers", "forget", "model", "effort", "logout", "rename", "tokenLogin", "proposalFiles"})
             welcome[key] = false;
+        welcome.erase("skill"); // the owner's home paths
         if (const Device *device = guestDevice(peer)) {
             const Guest &g = *device->guest;
             welcome["guest"] = {{"session", g.session}, {"assistant", g.assistant}, {"rights", guestRights(g.dialogs)},
@@ -3317,6 +3331,7 @@ private:
     int appFd_;                 // the app socket; -1 without
     int tcpFd_;                 // 127.0.0.1:port; -1 when taken
     int port_;
+    json skill_ = json::object(); // welcome.skill, set at start
     std::string appSocket_;     // its path; empty without
     std::string listenError_;   // why direct access is not up
     std::string token_ = token();
@@ -3408,9 +3423,11 @@ int runDaemon(int port)
     if (tcpFd >= 0)
         std::fprintf(stderr, ", 127.0.0.1:%d", port);
     std::fprintf(stderr, "\n");
-    for (const std::string &line : installSkills(homeDir()))
-        std::fprintf(stderr, "pvai daemon: %s\n", line.c_str());
+    const std::vector<SkillResult> skills = installSkills(homeDir());
+    for (const SkillResult &r : skills)
+        std::fprintf(stderr, "pvai daemon: %s\n", skillLogLine(r).c_str());
     Daemon daemon(unixFd, appFd, tcpFd, port);
+    daemon.setSkills(skills);
     daemon.setAppSocket(appFd >= 0 ? appPath : std::string());
     return daemon.run();
 }
