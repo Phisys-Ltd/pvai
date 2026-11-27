@@ -1759,12 +1759,13 @@ owner's own) and a symlink are never touched.
 
 - `welcome.skill` says what happened at start:
   ```json
-  {"name": "pvai", "summary": "pvai skill: spoken prompts and the \ud83d\udd0a line, ...",
+  {"name": "pvai", "summary": "pvai skill: voice prompts and \ud83d\udd0a, copyable ! commands, ...",
    "targets": [{"path": "/home/x/.claude/skills/pvai/SKILL.md", "status": "written"},
                {"path": "/home/x/.agents/skills/pvai/SKILL.md", "status": "user file"}]}
   ```
   `status` is `written`, `up to date`, `user file`, `symlink` or `error`
-  (the target then also has `"error": "reason"`). `summary` is one line.
+  (the target then also has `"error": "reason"`). `summary` is one short
+  line (it fits a status bar).
   A guest's `welcome` has no `skill`.
 - An app may show `summary` briefly when it creates or connects to a
   session. `pvai run` prints it too (stderr, only on a terminal), plus a

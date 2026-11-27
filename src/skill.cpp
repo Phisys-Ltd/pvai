@@ -104,8 +104,8 @@ const char *const kTargets[] = {"/.claude/skills/pvai", "/.agents/skills/pvai"};
 } // namespace
 
 const char *const kSkillSummary =
-    "pvai skill: spoken prompts and the \xF0\x9F\x94\x8A line, shell commands for the owner as copyable ! blocks, "
-    "messages to other sessions and hosts, a suggested work style with cheaper agents for builds and research.";
+    "pvai skill: voice prompts and \xF0\x9F\x94\x8A, copyable ! commands, messages to other sessions, "
+    "cheaper agents for builds and research.";
 
 std::vector<SkillResult> installSkills(const std::string &home)
 {
